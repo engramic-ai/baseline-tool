@@ -174,7 +174,7 @@ The report estimates how the device would fare in the CE+ tests:
 A script can't log in to your cloud services to check MFA, so v3.3's MFA auto-fail is handled by attestation. Edit `config/cloud-services.json`:
 
 ```json
-{ "name": "Microsoft 365 / Entra ID", "mfaEnforced": true, "adminMfaEnforced": true, "verifiedOn": "2026-09-16", "verifiedBy": "Paul" }
+{ "name": "Microsoft 365 / Entra ID", "mfaEnforced": true, "adminMfaEnforced": true, "verifiedOn": "2026-09-16", "verifiedBy": "IT admin" }
 ```
 
 Installed apps such as OneDrive, Dropbox, Slack and Xero are detected and listed as needing an attestation. Attestations older than 12 months are flagged.

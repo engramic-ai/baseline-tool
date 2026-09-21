@@ -162,7 +162,9 @@ function Get-CEFirmwareCatalogRecord {
     $result.Key = $key
 
     $uri = $null
-    try { $uri = [Uri]("$($base.TrimEnd('/'))/v1/firmware/$($key.Vendor)/$($key.Id)") } catch { $uri = $null }
+    $vendorSeg = [Uri]::EscapeDataString([string]$key.Vendor)
+    $idSeg = [Uri]::EscapeDataString([string]$key.Id)
+    try { $uri = [Uri]("$($base.TrimEnd('/'))/v1/firmware/$vendorSeg/$idSeg") } catch { $uri = $null }
     $local = $uri -and @('localhost', '127.0.0.1', '::1', '[::1]') -contains $uri.Host
     if (-not $uri -or -not ($uri.Scheme -eq 'https' -or ($uri.Scheme -eq 'http' -and $local))) {
         $result.Status = 'Error'

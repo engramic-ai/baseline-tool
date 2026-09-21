@@ -12,6 +12,48 @@
 
 $script:CEValidRisk = @('Low', 'Medium', 'High')
 
+# Undo 'Command' entries are generated from this fixed set of cmdlets and tools
+# (see the Remediations\*.ps1 that call Add-CEUndoCommand). Restore-CEUndoLog will
+# only run a command whose AST invokes solely these, by name, so a tampered or
+# forged undo log cannot turn a rollback into arbitrary elevated code execution.
+$script:CEUndoAllowedCommands = @(
+    'Set-NetFirewallProfile', 'Enable-NetFirewallRule', 'Set-NetFirewallRule',
+    'Enable-LocalUser', 'Disable-LocalUser',
+    'Add-MpPreference', 'Remove-MpPreference', 'Set-MpPreference',
+    'Enable-WindowsOptionalFeature', 'Disable-WindowsOptionalFeature',
+    'Set-Service', 'Set-ItemProperty', 'New-ItemProperty', 'Remove-ItemProperty',
+    'Set-CESecurityPolicyValue', 'Suspend-BitLocker', 'Write-Warning',
+    'net', 'net.exe', 'auditpol', 'auditpol.exe', 'wevtutil', 'wevtutil.exe'
+)
+
+function Test-CEUndoCommandAllowed {
+    <#
+        Returns $null if an undo command is safe to run, otherwise the reason it
+        was refused. Safe means it parses, contains no script blocks or method /
+        static calls, and every command it invokes is named literally and appears
+        in $script:CEUndoAllowedCommands. A structured undo model would remove the
+        need to run command strings at all; until then this constrains them.
+    #>
+    param([string]$Command)
+    $tokens = $null; $errs = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseInput($Command, [ref]$tokens, [ref]$errs)
+    if ($errs -and @($errs).Count) { return 'does not parse' }
+    $danger = @($ast.FindAll({
+                param($n)
+                ($n -is [System.Management.Automation.Language.ScriptBlockExpressionAst]) -or
+                ($n -is [System.Management.Automation.Language.InvokeMemberExpressionAst])
+            }, $true))
+    if ($danger.Count) { return 'contains a script block or method call' }
+    $commands = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true))
+    if (-not $commands.Count) { return 'no command to run' }
+    foreach ($c in $commands) {
+        $name = $c.GetCommandName()
+        if (-not $name) { return 'command invoked indirectly' }
+        if ($script:CEUndoAllowedCommands -notcontains $name) { return "command '$name' is not allow-listed" }
+    }
+    return $null
+}
+
 function Register-CERemediation {
     [CmdletBinding()]
     param(
@@ -276,6 +318,11 @@ function Restore-CEUndoLog {
             elseif ($r.Type -eq 'Command') {
                 Write-Host "[$($item.ItemId)] $($r.Description)"
                 Write-Host "    $($r.Command)" -ForegroundColor DarkGray
+                $refused = Test-CEUndoCommandAllowed ([string]$r.Command)
+                if ($refused) {
+                    Write-Warning "[$($item.ItemId)] Refusing to run undo command ($refused). The undo log may be tampered with or from a different version; skipping this step."
+                    continue
+                }
                 if ($PSCmdlet.ShouldProcess($r.Description, "[$($item.ItemId)] Run undo command")) {
                     $sb = [scriptblock]::Create($r.Command)
                     & $sb

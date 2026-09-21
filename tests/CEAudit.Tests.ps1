@@ -2972,10 +2972,10 @@ Describe 'SC-13 AI agent plaintext credentials' {
         }
     }
     function global:New-TestMcpServer {
-        param([string]$Acl = '', [object[]]$Creds = @(), [string]$Transport = 'stdio')
+        param([string]$Acl = '', [object[]]$Entries = @(), [string]$Transport = 'stdio')
         [ordered]@{ toolId = 'claude-code'; configPath = '.claude.json'; serverName = 'github'; transport = $Transport
-            command = 'npx'; argsSummary = '@x'; endpoint = ''; credentialCount = @($Creds).Count
-            credentials = @($Creds); configAclIssue = $Acl }
+            command = 'npx'; argsSummary = '@x'; endpoint = ''; credentialCount = @($Entries).Count
+            credentials = @($Entries); configAclIssue = $Acl }
     }
     BeforeEach { Set-TestDevice 'Insecure' }
 
@@ -2985,17 +2985,17 @@ Describe 'SC-13 AI agent plaintext credentials' {
     }
     It 'Fails when a plaintext credential sits in a config others can modify' {
         $cred = [ordered]@{ key = 'GITHUB_TOKEN'; provider = 'github'; type = 'pat-classic'; storage = 'plaintext-config' }
-        Mock -ModuleName CEAudit Get-CEMcpInventory { New-TestMcp -Plaintext 1 -Servers @(New-TestMcpServer -Acl '.claude.json is writable by S-1-5-32-545' -Creds @($cred)) }
+        Mock -ModuleName CEAudit Get-CEMcpInventory { New-TestMcp -Plaintext 1 -Servers @(New-TestMcpServer -Acl '.claude.json is writable by S-1-5-32-545' -Entries @($cred)) }
         (@(Invoke-CEAuditCore -Id 'SC-13')[0]).Status | Should -Be 'Fail'
     }
     It 'Warns when a plaintext credential is in a locked-down config' {
         $cred = [ordered]@{ key = 'GITHUB_TOKEN'; provider = 'github'; type = 'pat-classic'; storage = 'plaintext-config' }
-        Mock -ModuleName CEAudit Get-CEMcpInventory { New-TestMcp -Plaintext 1 -Servers @(New-TestMcpServer -Acl '' -Creds @($cred)) }
+        Mock -ModuleName CEAudit Get-CEMcpInventory { New-TestMcp -Plaintext 1 -Servers @(New-TestMcpServer -Acl '' -Entries @($cred)) }
         (@(Invoke-CEAuditCore -Id 'SC-13')[0]).Status | Should -Be 'Warn'
     }
     It 'Passes when every credential is a reference' {
         $cred = [ordered]@{ key = 'GITHUB_TOKEN'; provider = 'github'; type = 'unknown'; storage = 'env-var-reference' }
-        Mock -ModuleName CEAudit Get-CEMcpInventory { New-TestMcp -Plaintext 0 -Servers @(New-TestMcpServer -Creds @($cred)) }
+        Mock -ModuleName CEAudit Get-CEMcpInventory { New-TestMcp -Plaintext 0 -Servers @(New-TestMcpServer -Entries @($cred)) }
         (@(Invoke-CEAuditCore -Id 'SC-13')[0]).Status | Should -Be 'Pass'
     }
     It 'is Manual in a machine context where contents were not read' {

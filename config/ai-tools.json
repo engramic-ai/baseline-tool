@@ -1,6 +1,6 @@
 {
   "notes": "AI assistants and agents recognised on the device (UA-07, SC-09, UA-10). service: the cloud account to attest MFA for (null when it varies or is local). canActOnDevice: the tool can run commands, edit files or control apps, so it is treated like a remote access tool. enabled: false keeps an entry listed without detecting it (e.g. apps preinstalled with Windows). Signals: programs (Add/Remove Programs name and optional publisher), uninstallKeys, appx (Store package name), processes (image, optional path and command line patterns), paths (under the user profile) and vscodeExtensions (folder patterns under .vscode\\extensions). Names were checked against vendor documentation, winget-pkgs manifests and npm; see sources. Candidate for hosting on the catalog service.",
-  "lastReviewed": "2026-09-17",
+  "lastReviewed": "2026-09-21",
   "tools": [
     {
       "id": "claude-desktop",
@@ -32,7 +32,15 @@
       "notes": "Can run local MCP servers and includes Claude Code.",
       "sources": [
         "https://github.com/microsoft/winget-pkgs/tree/master/manifests/a/Anthropic/Claude",
-        "https://code.claude.com/docs/en/setup"
+        "https://code.claude.com/docs/en/setup",
+        "https://modelcontextprotocol.io/quickstart/user"
+      ],
+      "mcpConfigs": [
+        {
+          "path": "AppData\\Roaming\\Claude\\claude_desktop_config.json",
+          "format": "json",
+          "root": "mcpServers"
+        }
       ]
     },
     {
@@ -68,7 +76,15 @@
       "notes": "Coding agent that runs commands and edits files. Claude Code inside WSL is not visible from Windows.",
       "sources": [
         "https://code.claude.com/docs/en/setup",
-        "https://registry.npmjs.org/@anthropic-ai/claude-code/latest"
+        "https://registry.npmjs.org/@anthropic-ai/claude-code/latest",
+        "https://code.claude.com/docs/en/mcp"
+      ],
+      "mcpConfigs": [
+        {
+          "path": ".claude.json",
+          "format": "json",
+          "root": "mcpServers"
+        }
       ]
     },
     {
@@ -164,7 +180,15 @@
       "notes": "Agent mode runs terminal commands and edits files.",
       "sources": [
         "https://marketplace.visualstudio.com/items?itemName=GitHub.copilot-chat",
-        "https://code.visualstudio.com/docs/copilot/chat/chat-agent-mode"
+        "https://code.visualstudio.com/docs/copilot/chat/chat-agent-mode",
+        "https://code.visualstudio.com/docs/copilot/chat/mcp-servers"
+      ],
+      "mcpConfigs": [
+        {
+          "path": "AppData\\Roaming\\Code\\User\\mcp.json",
+          "format": "jsonc",
+          "root": "servers"
+        }
       ]
     },
     {
@@ -276,7 +300,15 @@
       "notes": "AI code editor whose agent runs terminal commands, edits files and uses MCP servers.",
       "sources": [
         "https://github.com/microsoft/winget-pkgs/tree/master/manifests/a/Anysphere/Cursor",
-        "https://cursor.com/docs/context/mcp"
+        "https://cursor.com/docs/context/mcp",
+        "https://docs.cursor.com/context/model-context-protocol"
+      ],
+      "mcpConfigs": [
+        {
+          "path": ".cursor\\mcp.json",
+          "format": "json",
+          "root": "mcpServers"
+        }
       ]
     },
     {

@@ -146,7 +146,7 @@ Compliance is based on the last scheduled audit. A device that hasn't completed 
 
 ## The checks in detail
 
-56 checks across the five Cyber Essentials control themes, plus NCSC hardening and the AI/virtualisation footprint. The full list, with the requirement each check maps to, is in [docs/CONTROL-MAPPING.md](docs/CONTROL-MAPPING.md).
+57 checks across the five Cyber Essentials control themes, plus NCSC hardening and the AI/virtualisation footprint. The full list, with the requirement each check maps to, is in [docs/CONTROL-MAPPING.md](docs/CONTROL-MAPPING.md).
 
 | Theme | Examples |
 |---|---|

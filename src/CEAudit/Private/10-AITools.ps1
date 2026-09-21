@@ -224,13 +224,26 @@ function Get-CEAiPosture {
     })
     $environments = @($wslEnvs) + @($containerEnvs)
 
-    $deviations = @($agents | Where-Object { $_.elevated -or $_.asSystem }).Count + @($wslEnvs | Where-Object { $_.defaultUidRoot }).Count
+    $mcp = Get-CEMcpInventory -Context $Context
+    $plaintext = [int]$mcp.credentialsPlaintext
+    # A plaintext credential is a containment failure in its own right, so it folds
+    # into deviations; credentialsPlaintext is also exposed on its own so admins can
+    # key rules off it deliberately.
+    $agentDeviations = @($agents | Where-Object { $_.elevated -or $_.asSystem }).Count + @($wslEnvs | Where-Object { $_.defaultUidRoot }).Count
+    $deviations = [int]$agentDeviations + $plaintext
 
     return [ordered]@{
-        agentsFound  = @($agents).Count
-        contained    = ([int]$deviations -eq 0)
-        deviations   = [int]$deviations
-        agents       = $agents
-        environments = $environments
+        agentsFound          = @($agents).Count
+        contained            = ([int]$deviations -eq 0)
+        deviations           = [int]$deviations
+        agents               = $agents
+        environments         = $environments
+        mcpServers           = @($mcp.mcpServers)
+        mcpConfigsFound      = [int]$mcp.mcpConfigsFound
+        mcpConfigsParsed     = [int]$mcp.mcpConfigsParsed
+        mcpConfigsUnreadable = @($mcp.mcpConfigsUnreadable)
+        credentialsFound     = [int]$mcp.credentialsFound
+        credentialsPlaintext = $plaintext
+        scanBounds           = [string]$mcp.scanBounds
     }
 }

@@ -388,10 +388,19 @@ function Export-CEHtml {
             }
             else { "<li>$(& $e $_.type): $(& $e $_.name)</li>" }
         }) -join ''
+    $mcpLi = (@($aiPosture.mcpServers) | Where-Object { $_.serverName } | ForEach-Object {
+            $creds = @($_.credentials)
+            $plainN = @($creds | Where-Object { $_.storage -eq 'plaintext-config' }).Count
+            $credTxt = if (-not $creds.Count) { 'no credentials' }
+            elseif ($plainN) { "<span class='agent-admin'>$plainN credential$(if ($plainN -ne 1) { 's' }) in plaintext</span>" }
+            else { "$($creds.Count) credential$(if ($creds.Count -ne 1) { 's' }), referenced" }
+            $detail = if ($_.endpoint) { [string]$_.endpoint } elseif ($_.command) { [string]$_.command } else { '' }
+            "<li>$(& $e $_.serverName) <span class='ref'>($(& $e $_.toolId), $(& $e $_.transport))</span>$(if ($detail) { " &mdash; $(& $e $detail)" }) &mdash; $credTxt</li>"
+        }) -join ''
     $aiDevCls = if ($aiPosture.contained) { 'ok' } else { 'bad' }
     $aiDevTxt = if ($aiPosture.contained) { 'contained' } else { "$($aiPosture.deviations) deviation(s)" }
     $aiEmpty = if ($aiPosture.agentsFound -eq 0) { "<p class='ref'>No AI tools detected in this session.$(if ($Context.IsSystem) { ' Shadow AI is collected per user; run as the signed-in user for the full picture.' })</p>" } else { '' }
-    $aiHtml = "<h2 id='ai'>AI on this device</h2><div class='aibox'><div class='h'><strong>$($aiPosture.agentsFound) AI tool(s) found</strong><span class='dev0 $aiDevCls'>$aiDevTxt</span></div>$aiEmpty$(if ($agentsLi) { "<ul>$agentsLi</ul>" })$(if ($envLi) { "<div class='ref' style='margin-top:8px'>Where AI runs</div><ul>$envLi</ul>" })</div>"
+    $aiHtml = "<h2 id='ai'>AI on this device</h2><div class='aibox'><div class='h'><strong>$($aiPosture.agentsFound) AI tool(s) found</strong><span class='dev0 $aiDevCls'>$aiDevTxt</span></div>$aiEmpty$(if ($agentsLi) { "<ul>$agentsLi</ul>" })$(if ($envLi) { "<div class='ref' style='margin-top:8px'>Where AI runs</div><ul>$envLi</ul>" })$(if ($mcpLi) { "<div class='ref' style='margin-top:8px'>MCP servers</div><ul>$mcpLi</ul>" })</div>"
 
     $applyCmd = & $e ".\app\Apply-CEChangeset.ps1 -Path '$ChangesetPath' -WhatIf"
 

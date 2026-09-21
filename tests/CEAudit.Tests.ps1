@@ -2168,7 +2168,7 @@ Describe 'Malware download test (MP-11, CE+ TC3)' {
         $html | Should -Match ([regex]::Escape('eicar.com.txt)</a> <span class="ref">right-click and choose <em>Save link as</em></span>'))
         $html | Should -Match ([regex]::Escape('eicar_com.zip)</a> <span class="ref">click to download</span>'))
         $html | Should -Match 'Expect an alert'
-        $html | Should -Match 'Last result: <span class="st st-Info">Info</span> No blocked test download'
+        $html | Should -Match 'Last result: <span class=''st st-Info''>&#8505; Info</span> No blocked test download'
         $html | Should -Not -Match 'X5O!P%@AP' -Because 'the report must never contain the test file itself'
         $md = Get-Content $r.Paths.Markdown -Raw
         $md | Should -Match ([regex]::Escape('- [EICAR test file (eicar.com)](https://secure.eicar.org/eicar.com) (right-click and choose Save link as)'))

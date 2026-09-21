@@ -826,6 +826,9 @@ Describe 'Desktop app result rendering' {
         function New-CEAiLine { param([string]$Text, [switch]$Bad) 'line' }
         function Set-CEStatusStack { param($Summary) }
         function New-CELegendItem { param([string]$Colour, [string]$Text) 'legend' }
+        function Set-UiRichText { param($Block, [object[]]$Parts) $Block.Text = (@($Parts | ForEach-Object { $_['Text'] }) -join '') }
+        function Set-UiTabHeader { param($Tab, [string]$Label, $Count) $Tab.Header = "$Label $Count" }
+        function Set-UiTabsEnabled { param([bool]$On) }
         function Get-CEAiPosture { param($Context) [ordered]@{ agentsFound = 1; contained = $true; deviations = 0; agents = @([ordered]@{ name = 'Test agent'; elevated = $false; asSystem = $false; running = $true }); environments = @([ordered]@{ type = 'wsl'; name = 'Debian'; wslVersion = 2; defaultUidRoot = $false; autoMount = $true; networking = 'nat' }) } }
         # Read by the app functions via dynamic scope.
         Set-Variable -Name statusOrder -Value @('Pass', 'Fail', 'Warn', 'Manual', 'Skipped', 'NotApplicable', 'Error')
@@ -841,9 +844,11 @@ Describe 'Desktop app result rendering' {
         $ui.AiAgents = [pscustomobject]@{ Children = (New-Object System.Collections.ArrayList) }
         $ui.AiEnvs = [pscustomobject]@{ Children = (New-Object System.Collections.ArrayList) }
         $ui.AiControls = [pscustomobject]@{ ItemsSource = $null }
-        $ui.AiOverview = [pscustomobject]@{ Visibility = '' }
-        $ui.AiOverviewText = [pscustomobject]@{ Text = '' }
-        $ui.AiOverviewDev = [pscustomobject]@{ Text = ''; Foreground = $null }
+        $ui.AiLine = [pscustomobject]@{ Visibility = '' }
+        $ui.AiLineText = [pscustomobject]@{ Text = '' }
+        $ui.ActMeta = [pscustomobject]@{ Text = '' }
+        $ui.OvEmpty = [pscustomobject]@{ Visibility = '' }
+        $ui.OvBody = [pscustomobject]@{ Visibility = '' }
         $ui.StatusStack = [pscustomobject]@{ Child = $null }
         $ui.StatusLegend = [pscustomobject]@{ Children = (New-Object System.Collections.ArrayList) }
         $ui.ThemeFilter = [pscustomobject]@{ SelectedValue = '(all)' }
@@ -854,7 +859,11 @@ Describe 'Desktop app result rendering' {
         $ui.TcGrid.ItemsSource.Count | Should -Be 5
         $ui.FindingCount.Text | Should -Match 'shown'
         $ui.SelCount.Text | Should -Match 'ticked'
-        $ui.AiOverview.Visibility | Should -Be 'Visible'
+        $ui.AiLine.Visibility | Should -Be 'Visible'
+        $ui.AiLineText.Text | Should -Match 'AI tool'
+        $ui.OvBody.Visibility | Should -Be 'Visible'
+        $ui.VerdictText.Text | Should -Not -BeNullOrEmpty
+        $ui.ChangesTab.Header | Should -Match '^Fixes \d+$'
         $ui.FwBars.Children.Count | Should -Be 3
         $ui.AiSummary.Text | Should -Match 'AI tool'
         $ui.AiAgents.Children.Count | Should -BeGreaterThan 0

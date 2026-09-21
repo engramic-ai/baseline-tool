@@ -160,6 +160,85 @@ $script:OutputRoot = $OutputRoot
       <Setter Property="TextWrapping" Value="Wrap"/>
     </Style>
 
+    <!-- Tabs are a flat underline rail. The stock templates draw their own boxes and
+         backgrounds whatever properties are set, so both templates are replaced. -->
+    <Style TargetType="TabControl">
+      <Setter Property="Background" Value="Transparent"/>
+      <Setter Property="BorderThickness" Value="0"/>
+      <Setter Property="Padding" Value="0"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="TabControl">
+            <Grid>
+              <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+              <Border BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1">
+                <TabPanel IsItemsHost="True" Margin="0,0,0,-1"/>
+              </Border>
+              <ContentPresenter Grid.Row="1" ContentSource="SelectedContent" Margin="0,10,0,0"/>
+            </Grid>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <!-- Colour and weight live on the header label (TabLabel), not on the TabItem: anything set on
+         the TabItem is inherited by the page content and would embolden every tab body. -->
+    <Style TargetType="TabItem">
+      <Setter Property="Padding" Value="12,8,12,9"/>
+      <Setter Property="Margin" Value="0,0,2,0"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="TabItem">
+            <Border x:Name="B" Background="Transparent" BorderBrush="Transparent" BorderThickness="0,0,0,2" Padding="{TemplateBinding Padding}">
+              <ContentPresenter ContentSource="Header" VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsSelected" Value="True">
+                <Setter TargetName="B" Property="BorderBrush" Value="{StaticResource Accent}"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style x:Key="TabLabel" TargetType="TextBlock">
+      <Setter Property="Foreground" Value="{StaticResource Muted}"/>
+      <Setter Property="FontWeight" Value="Medium"/>
+      <Style.Triggers>
+        <DataTrigger Binding="{Binding IsMouseOver, RelativeSource={RelativeSource AncestorType=TabItem}}" Value="True">
+          <Setter Property="Foreground" Value="{StaticResource Ink}"/>
+        </DataTrigger>
+        <DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=TabItem}}" Value="True">
+          <Setter Property="Foreground" Value="{StaticResource Ink}"/>
+          <Setter Property="FontWeight" Value="SemiBold"/>
+        </DataTrigger>
+        <DataTrigger Binding="{Binding IsEnabled, RelativeSource={RelativeSource AncestorType=TabItem}}" Value="False">
+          <Setter Property="Foreground" Value="#AAB3B0"/>
+        </DataTrigger>
+      </Style.Triggers>
+    </Style>
+    <!-- Count beside a tab label: mono, teal when that tab is selected -->
+    <Style x:Key="TabCount" TargetType="TextBlock">
+      <Setter Property="FontSize" Value="11.5"/>
+      <Setter Property="FontWeight" Value="Normal"/>
+      <Setter Property="Margin" Value="5,0,0,0"/>
+      <Setter Property="Foreground" Value="{StaticResource Muted}"/>
+      <Style.Triggers>
+        <DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=TabItem}}" Value="True">
+          <Setter Property="Foreground" Value="#006D6E"/>
+        </DataTrigger>
+      </Style.Triggers>
+    </Style>
+    <!-- In-text actions (banner links) -->
+    <Style TargetType="Hyperlink">
+      <Setter Property="Foreground" Value="#006D6E"/>
+      <Setter Property="FontWeight" Value="SemiBold"/>
+      <Setter Property="TextDecorations" Value="{x:Null}"/>
+      <Style.Triggers>
+        <Trigger Property="IsMouseOver" Value="True"><Setter Property="TextDecorations" Value="Underline"/></Trigger>
+      </Style.Triggers>
+    </Style>
+
     <!-- Status pill used by several grids: binds to a column called Status -->
     <DataTemplate x:Key="StatusPill">
       <Border x:Name="Pill" CornerRadius="10" Padding="9,2" HorizontalAlignment="Left" Background="#ECEFED">
@@ -227,7 +306,7 @@ $script:OutputRoot = $OutputRoot
             </Canvas>
           </Viewbox>
           <StackPanel VerticalAlignment="Center">
-            <TextBlock Text="ENGRAMIC BASELINE" Foreground="{StaticResource Ink}" FontSize="17" FontWeight="Bold"/>
+            <TextBlock Text="ENGRAMIC BASELINE" Foreground="{StaticResource Ink}" FontSize="14" FontWeight="SemiBold"/>
             <TextBlock x:Name="DeviceText" Foreground="{StaticResource Muted}" Margin="0,2,0,0" FontSize="12"/>
           </StackPanel>
         </StackPanel>
@@ -258,55 +337,71 @@ $script:OutputRoot = $OutputRoot
             </Button.ContextMenu>
           </Button>
         </WrapPanel>
-        <StackPanel Grid.Column="1" VerticalAlignment="Center" Width="280">
-          <TextBlock x:Name="StatusText" Text="Ready" Foreground="{StaticResource Muted}" TextTrimming="CharacterEllipsis"/>
-          <ProgressBar x:Name="Progress" Height="6" Margin="0,4,0,0" Minimum="0" Maximum="100" Value="0" Foreground="#008687" Background="#E2E8E6" BorderThickness="0"/>
-        </StackPanel>
       </Grid>
     </Border>
 
-    <!-- Activity log -->
-    <Expander DockPanel.Dock="Bottom" x:Name="LogExpander" Header="Activity log" Margin="20,0,20,10">
-      <TextBox x:Name="LogBox" Height="150" IsReadOnly="True" FontFamily="Geist Mono, Consolas" FontSize="12"
-               VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" Background="#F6F8F8" BorderBrush="{StaticResource Line}"/>
-    </Expander>
+    <!-- Activity bar: the current task and its progress, expanding into the full log -->
+    <Border DockPanel.Dock="Bottom" Background="White" BorderBrush="{StaticResource Line}" BorderThickness="0,1,0,0">
+      <StackPanel>
+        <Grid x:Name="ActBar" Margin="20,7,20,7" Background="Transparent" Cursor="Hand">
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/>
+          </Grid.ColumnDefinitions>
+          <TextBlock x:Name="ActChevron" Text="&#8964;" FontSize="14" Foreground="{StaticResource Muted}" VerticalAlignment="Center" Margin="0,0,8,0"/>
+          <TextBlock Grid.Column="1" Text="ACTIVITY" FontSize="11" FontWeight="SemiBold" Foreground="{StaticResource Ink}" VerticalAlignment="Center" Margin="0,0,12,0"/>
+          <TextBlock x:Name="StatusText" Grid.Column="2" Text="Ready" FontSize="12" Foreground="{StaticResource Ink}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+          <TextBlock x:Name="ActMeta" Grid.Column="3" FontSize="11.5" Foreground="{StaticResource Muted}" VerticalAlignment="Center" Margin="12,0,12,0"/>
+          <ProgressBar x:Name="Progress" Grid.Column="4" Width="220" Height="6" Minimum="0" Maximum="100" Value="0" Foreground="#008687" Background="#E2E8E6" BorderThickness="0" VerticalAlignment="Center" Visibility="Collapsed"/>
+        </Grid>
+        <TextBox x:Name="LogBox" Height="150" IsReadOnly="True" FontFamily="Geist Mono, Consolas" FontSize="12" Margin="20,0,20,10" Visibility="Collapsed"
+                 VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" Background="#F6F8F8" BorderBrush="{StaticResource Line}"/>
+      </StackPanel>
+    </Border>
 
     <Grid Margin="20,14,20,10">
       <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-      <Border x:Name="VerdictBanner" Background="White" BorderBrush="#9FC4BB" BorderThickness="6,1,1,1" CornerRadius="6" Padding="16,12" Margin="0,0,0,12">
+      <Border x:Name="VerdictBanner" Background="White" BorderBrush="#B8C4C0" BorderThickness="6,1,1,1" CornerRadius="6" Padding="18,14,18,13" Margin="0,0,0,14">
         <StackPanel>
-          <TextBlock x:Name="VerdictText" FontSize="16" FontWeight="SemiBold" Text="No results yet" TextWrapping="Wrap"/>
-          <TextBlock x:Name="VerdictSub" Foreground="{StaticResource Muted}" Margin="0,3,0,0" TextWrapping="Wrap"
-                     Text="Run an audit to check this device against Cyber Essentials v3.3 (Danzell), the Cyber Essentials Plus tests and NCSC guidance. The audit only reads settings; nothing changes until you apply fixes."/>
+          <TextBlock x:Name="VerdictText" FontSize="20" FontWeight="SemiBold" Text="No results yet" TextWrapping="Wrap"/>
+          <TextBlock x:Name="VerdictSub" Foreground="{StaticResource Muted}" Margin="0,4,0,0" TextWrapping="Wrap"
+                     Text="Checks this device against Cyber Essentials v3.3, the CE+ device tests and NCSC guidance. Reads settings only; nothing changes until you apply fixes."/>
+          <Border x:Name="AiLine" BorderBrush="{StaticResource Line}" BorderThickness="0,1,0,0" Margin="0,8,0,0" Padding="0,8,0,0" Visibility="Collapsed">
+            <Grid>
+              <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+              <TextBlock Text="AI" FontSize="11" FontWeight="SemiBold" Foreground="{StaticResource Muted}" VerticalAlignment="Center" Margin="0,0,10,0"/>
+              <TextBlock x:Name="AiLineText" Grid.Column="1" VerticalAlignment="Center" TextWrapping="Wrap"/>
+              <TextBlock Grid.Column="2" VerticalAlignment="Center" Margin="12,0,0,0"><Hyperlink x:Name="AiTabLink">AI tab &#8594;</Hyperlink></TextBlock>
+            </Grid>
+          </Border>
         </StackPanel>
       </Border>
 
       <TabControl x:Name="Tabs" Grid.Row="1" Background="Transparent" BorderThickness="0" Padding="0,10,0,0">
         <!-- Overview -->
-        <TabItem Header="  Overview  ">
+        <TabItem Header="Overview">
           <ScrollViewer VerticalScrollBarVisibility="Auto">
             <StackPanel Margin="0,4,8,8">
-              <Border x:Name="AiOverview" BorderBrush="#008687" BorderThickness="3,1,1,1" CornerRadius="6" Background="White" Padding="14,10" Margin="0,0,0,12" Visibility="Collapsed">
-                <Grid>
-                  <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                  <TextBlock x:Name="AiOverviewText" TextWrapping="Wrap" VerticalAlignment="Center"/>
-                  <TextBlock x:Name="AiOverviewDev" Grid.Column="1" FontWeight="SemiBold" VerticalAlignment="Center" Margin="12,0,0,0"/>
-                </Grid>
-              </Border>
-              <TextBlock Text="Frameworks" Style="{StaticResource H2}"/>
+              <StackPanel x:Name="OvEmpty" Margin="0,30,0,0" MaxWidth="560" HorizontalAlignment="Left">
+                <TextBlock x:Name="OvEmptyTitle" FontSize="15" FontWeight="SemiBold" Text="Run an audit to see where this device stands" TextWrapping="Wrap"/>
+                <TextBlock x:Name="OvEmptyText" Foreground="{StaticResource Muted}" Margin="0,4,0,0" TextWrapping="Wrap"
+                           Text="Frameworks, controls by status and any fixes will appear here. A standard-user run skips checks that need administrator rights."/>
+              </StackPanel>
+              <StackPanel x:Name="OvBody" Visibility="Collapsed">
+              <TextBlock Text="Frameworks" Style="{StaticResource H2}" Margin="0,4,0,8"/>
               <TextBlock Text="% of applicable controls met - target 100%" Foreground="{StaticResource Muted}" FontSize="11.5" Margin="0,0,0,2"/>
               <StackPanel x:Name="FwBars" Margin="0,2,0,10"/>
               <TextBlock Text="Controls by status" Style="{StaticResource H2}"/>
               <Border x:Name="StatusStack" Height="26" BorderBrush="{StaticResource Line}" BorderThickness="1" Margin="0,2,0,6"/>
               <WrapPanel x:Name="StatusLegend" Margin="0,0,0,6"/>
-              <TextBlock Margin="0,12,0,0" Foreground="{StaticResource Muted}" TextWrapping="Wrap"
+              <TextBlock Margin="0,18,0,0" FontSize="11.5" Foreground="{StaticResource Muted}" TextWrapping="Wrap"
                          Text="Reported as they are - each framework carries its own judgement. Self-assessment aid: it does not replace an IASME-licensed Certification Body and cannot see routers, cloud tenants or other devices in scope."/>
+              </StackPanel>
             </StackPanel>
           </ScrollViewer>
         </TabItem>
 
         <!-- AI -->
-        <TabItem Header="  AI  ">
+        <TabItem Header="AI">
           <ScrollViewer VerticalScrollBarVisibility="Auto">
             <StackPanel Margin="0,4,8,8">
               <Border Background="White" BorderBrush="#008687" BorderThickness="3,1,1,1" CornerRadius="6" Padding="14,10" Margin="0,0,0,10">
@@ -333,7 +428,7 @@ $script:OutputRoot = $OutputRoot
         </TabItem>
 
         <!-- Frameworks -->
-        <TabItem Header="  Frameworks  ">
+        <TabItem Header="Frameworks">
           <ScrollViewer VerticalScrollBarVisibility="Auto">
             <StackPanel Margin="0,4,8,8">
               <TextBlock Text="Cyber Essentials Plus readiness (device tests)" Style="{StaticResource H2}"/>
@@ -363,7 +458,7 @@ $script:OutputRoot = $OutputRoot
         </TabItem>
 
         <!-- Controls -->
-        <TabItem x:Name="FindingsTab" Header="  Controls  ">
+        <TabItem x:Name="FindingsTab" Header="Controls">
           <Grid Margin="0,4,0,0">
             <Grid.RowDefinitions>
               <RowDefinition Height="Auto"/><RowDefinition Height="2*"/><RowDefinition Height="6"/><RowDefinition Height="*" MinHeight="120"/>
@@ -411,7 +506,7 @@ $script:OutputRoot = $OutputRoot
         </TabItem>
 
         <!-- Changeset -->
-        <TabItem x:Name="ChangesTab" Header="  Fixes  ">
+        <TabItem x:Name="ChangesTab" Header="Fixes">
           <Grid Margin="0,4,0,0">
             <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
             <TextBlock TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,0,0,10"
@@ -451,7 +546,7 @@ $script:OutputRoot = $OutputRoot
         </TabItem>
 
         <!-- Manual actions -->
-        <TabItem x:Name="ManualTab" Header="  Manual actions  ">
+        <TabItem x:Name="ManualTab" Header="Manual actions">
           <Grid Margin="0,4,0,0">
             <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
             <TextBlock TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,0,0,10"
@@ -470,7 +565,7 @@ $script:OutputRoot = $OutputRoot
         </TabItem>
 
         <!-- History -->
-        <TabItem x:Name="HistoryTab" Header="  History  ">
+        <TabItem x:Name="HistoryTab" Header="History">
           <Grid Margin="0,4,0,0">
             <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
             <TextBlock TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,0,0,10"
@@ -581,19 +676,83 @@ function Set-UiBusy {
     $script:Busy = $On
     foreach ($n in @('RunBtn', 'ChooseChecksBtn', 'LoadBtn', 'PreviewBtn', 'ApplyBtn', 'RollbackBtn', 'RestartAdminBtn')) { $ui[$n].IsEnabled = -not $On }
     $ui.Progress.IsIndeterminate = $false
-    if ($On) { $ui.Progress.Value = 0; $ui.StatusText.Text = $Text } else { $ui.Progress.Value = 0 }
+    $ui.Progress.Value = 0
+    $ui.Progress.Visibility = if ($On) { 'Visible' } else { 'Collapsed' }
+    $ui.StatusText.Foreground = Get-Brush $(if ($On) { '#3D6AA0' } else { '#0B0F0E' })
+    if ($On) { $ui.StatusText.Text = $Text; $ui.ActMeta.Text = '' }
+}
+
+function Set-UiRichText {
+    # Fill a TextBlock from parts: @{ Text; Colour; Weight; Link = { ... } }. A part with Link becomes a Hyperlink.
+    param($Block, [object[]]$Parts)
+    $Block.Inlines.Clear()
+    foreach ($p in $Parts) {
+        if (-not $p) { continue }
+        $run = New-Object Windows.Documents.Run ([string]$p['Text'])
+        if ($p['Colour']) { $run.Foreground = Get-Brush $p['Colour'] }
+        if ($p['Weight']) { $run.FontWeight = $p['Weight'] }
+        if ($p['Link']) {
+            $link = New-Object Windows.Documents.Hyperlink $run
+            $link.Add_Click($p['Link'])
+            [void]$Block.Inlines.Add($link)
+        }
+        else { [void]$Block.Inlines.Add($run) }
+    }
+}
+
+function Set-UiVerdict {
+    # Headline plus an optional softer second clause: "6 controls need attention - 5 to confirm"
+    param([string]$Head, [string]$Soft = '', [string]$Rail = '#B8C4C0')
+    $parts = @(@{ Text = $Head })
+    if ($Soft) {
+        $parts += @{ Text = (' ' + [char]0xB7 + ' '); Colour = '#B6BFBC'; Weight = 'Normal' }
+        $parts += @{ Text = $Soft; Colour = '#566360'; Weight = 'Medium' }
+    }
+    Set-UiRichText -Block $ui.VerdictText -Parts $parts
+    $ui.VerdictBanner.BorderBrush = Get-Brush $Rail
+}
+
+function Set-UiTabHeader {
+    # Tab label with an optional mono count beside it (styled by the TabCount resource).
+    param($Tab, [string]$Label, $Count)
+    $sp = New-Object Windows.Controls.StackPanel
+    $sp.Orientation = 'Horizontal'
+    $t = New-Object Windows.Controls.TextBlock
+    $t.Style = $window.FindResource('TabLabel')
+    $t.Text = $Label; $t.VerticalAlignment = 'Center'
+    [void]$sp.Children.Add($t)
+    if ($null -ne $Count) {
+        $c = New-Object Windows.Controls.TextBlock
+        $c.Style = $window.FindResource('TabCount')
+        $c.FontFamily = (Get-CEMono); $c.Text = [string]$Count; $c.VerticalAlignment = 'Center'
+        [void]$sp.Children.Add($c)
+    }
+    $Tab.Header = $sp
+}
+
+function Set-UiTabsEnabled {
+    # Everything but Overview is dimmed while an audit runs.
+    param([bool]$On)
+    $i = 0
+    foreach ($t in $ui.Tabs.Items) { if ($i -gt 0) { $t.IsEnabled = $On }; $i++ }
+}
+
+function Set-UiLogOpen {
+    param([bool]$On)
+    $ui.LogBox.Visibility = if ($On) { 'Visible' } else { 'Collapsed' }
+    $ui.ActChevron.Text = [string][char]$(if ($On) { 0x2303 } else { 0x2304 })
 }
 
 function ConvertTo-UiText {
-    param($Value)
+    param($Value, [string]$Format = 'd MMM yyyy HH:mm')
     if ($null -eq $Value) { return '' }
-    if ($Value -is [datetime]) { return $Value.ToString('d MMM yyyy HH:mm') }
+    if ($Value -is [datetime]) { return $Value.ToString($Format) }
     # A DateTime deserialized from JSON comes back as an object with a DateTime / value property.
     if ($Value -isnot [string]) {
         $inner = if ($Value.PSObject.Properties['DateTime']) { $Value.DateTime } elseif ($Value.PSObject.Properties['value']) { $Value.value } else { $null }
         if ($inner) {
             $dt = [datetime]::MinValue
-            if ([datetime]::TryParse([string]$inner, [ref]$dt)) { return $dt.ToString('d MMM yyyy HH:mm') }
+            if ([datetime]::TryParse([string]$inner, [ref]$dt)) { return $dt.ToString($Format) }
             return [string]$inner
         }
     }
@@ -889,7 +1048,12 @@ $script:Timer.Add_Tick({
     if (-not $job) { $script:Timer.Stop(); return }
 
     $total = [int]$script:Sync.Total
-    if ($total -gt 0) { $ui.Progress.Value = [math]::Min(100, 100 * [int]$script:Sync.Done / $total) }
+    $done = [int]$script:Sync.Done
+    if ($total -gt 0) {
+        $ui.Progress.Value = [math]::Min(100, 100 * $done / $total)
+        $ui.ActMeta.Text = "$done / $total"
+        if ($job.Label -eq 'Audit') { Set-UiVerdict -Head 'Auditing' -Soft "$done of $total checks" -Rail '#3D6AA0' }
+    }
     if ($script:Sync.Current) { $ui.StatusText.Text = "$($job.Label): $($script:Sync.Current)" }
 
     $info = $job.PS.Streams.Information
@@ -909,6 +1073,7 @@ $script:Timer.Add_Tick({
         Set-UiBusy $false
         if ($failure) {
             $ui.StatusText.Text = "$($job.Label) failed"
+            if ($job.Label -eq 'Audit') { Set-UiTabsEnabled $true; Set-UiVerdict -Head 'Audit failed'; $ui.VerdictSub.Text = [string]$failure.Message }
             Write-UiLog "ERROR: $($failure.Message)"
             [void](Show-UiMessage -Text "$($job.Label) failed:`n$($failure.Message)" -Icon 'Error')
             return
@@ -1075,7 +1240,7 @@ function Set-CEStatusStack {
 
 function New-CEFrameworkBar {
     # One framework row: label | fraction | neutral bar (filled to %) | % | deviation.
-    param([string]$Label, [string]$Fraction, [int]$Percent, [int]$Deviation)
+    param([string]$Label, [string]$Fraction, [int]$Percent, [int]$Deviation, [switch]$NotRun)
     $grid = New-Object Windows.Controls.Grid
     $grid.Margin = '0,4,0,4'
     foreach ($w in 190, 74, -1, 46, 56) {
@@ -1085,6 +1250,7 @@ function New-CEFrameworkBar {
     }
     $lab = New-Object Windows.Controls.TextBlock
     $lab.Text = $Label; $lab.VerticalAlignment = 'Center'; $lab.TextTrimming = 'CharacterEllipsis'
+    if ($NotRun) { $lab.Foreground = Get-Brush '#566360' }
     [Windows.Controls.Grid]::SetColumn($lab, 0); [void]$grid.Children.Add($lab)
 
     $fr = New-Object Windows.Controls.TextBlock
@@ -1100,18 +1266,20 @@ function New-CEFrameworkBar {
     $c2 = New-Object Windows.Controls.ColumnDefinition; $c2.Width = New-Object Windows.GridLength([double](100 - $p), ([Windows.GridUnitType]::Star))
     $inner.ColumnDefinitions.Add($c1); $inner.ColumnDefinitions.Add($c2)
     $fill = New-Object Windows.Controls.Border; $fill.Background = Get-Brush ((Get-CEBucketStyle 'met').Light)
+    if ($NotRun) { $track.Opacity = 0.45; $fill.Background = $null }
     [Windows.Controls.Grid]::SetColumn($fill, 0); [void]$inner.Children.Add($fill)
     $track.Child = $inner
     [Windows.Controls.Grid]::SetColumn($track, 2); [void]$grid.Children.Add($track)
 
     $pc = New-Object Windows.Controls.TextBlock
     $pc.Text = "$p%"; $pc.FontFamily = (Get-CEMono); $pc.FontWeight = 'Bold'; $pc.HorizontalAlignment = 'Right'; $pc.VerticalAlignment = 'Center'
+    if ($NotRun) { $pc.Text = 'not run'; $pc.FontWeight = 'Normal'; $pc.FontSize = 11.5; $pc.Foreground = Get-Brush '#566360'; [Windows.Controls.Grid]::SetColumnSpan($pc, 2) }
     [Windows.Controls.Grid]::SetColumn($pc, 3); [void]$grid.Children.Add($pc)
 
     $dv = New-Object Windows.Controls.TextBlock
     $dv.FontFamily = (Get-CEMono); $dv.FontSize = 12; $dv.FontWeight = 'SemiBold'; $dv.HorizontalAlignment = 'Right'; $dv.VerticalAlignment = 'Center'
-    if ($Deviation -gt 0) { $dv.Text = ([char]0x25BC) + " $Deviation"; $dv.Foreground = Get-Brush '#A9721A' }
-    else { $dv.Text = '-'; $dv.Foreground = Get-Brush '#566360' }
+    if ($Deviation -gt 0 -and -not $NotRun) { $dv.Text = ([char]0x25BC) + " $Deviation"; $dv.Foreground = Get-Brush '#A9721A' }
+    else { $dv.Text = $(if ($NotRun) { '' } else { '-' }); $dv.Foreground = Get-Brush '#566360' }
     [Windows.Controls.Grid]::SetColumn($dv, 4); [void]$grid.Children.Add($dv)
     return $grid
 }
@@ -1156,11 +1324,13 @@ function Set-CEAiTab {
     }
     $ui.AiControls.ItemsSource = $ct.DefaultView
 
-    if ($ui.AiOverview) {
-        $ui.AiOverviewText.Text = "$($Ai.agentsFound) AI tool(s) found. " + $(if ($Ai.contained) { 'Contained - none running as administrator, no root distribution.' } else { 'Some agents need attention.' }) + ' See the AI tab for detail.'
-        $ui.AiOverviewDev.Text = if ($Ai.contained) { 'contained' } else { "$dev deviation(s)" }
-        $ui.AiOverviewDev.Foreground = if ($Ai.contained) { Get-Brush '#006D6E' } else { Get-Brush '#C23F2C' }
-        $ui.AiOverview.Visibility = 'Visible'
+    if ($ui.AiLine) {
+        $n = [int]$Ai.agentsFound
+        $parts = @(@{ Text = "$n AI tool$(if ($n -ne 1) { 's' }) found, " })
+        if ($Ai.contained) { $parts += @{ Text = 'contained'; Colour = '#006D6E'; Weight = 'SemiBold' } }
+        else { $parts += @{ Text = "$dev running with elevated rights"; Colour = '#C23F2C'; Weight = 'SemiBold' } }
+        Set-UiRichText -Block $ui.AiLineText -Parts $parts
+        $ui.AiLine.Visibility = 'Visible'
     }
 }
 
@@ -1176,6 +1346,10 @@ function Set-CEFrameworkBars {
         }
         else {
             $pct = [int]$x.metPct; $frac = "$($x.met) / $($x.applicable)"; $dev = [int]$x.attention + [int]$x.confirm
+            if ([int]$x.applicable -eq 0) {
+                [void]$Panel.Children.Add((New-CEFrameworkBar -Label ([string]$x.label) -Fraction '-' -Percent 0 -Deviation 0 -NotRun))
+                continue
+            }
         }
         [void]$Panel.Children.Add((New-CEFrameworkBar -Label ([string]$x.label) -Fraction $frac -Percent $pct -Deviation $dev))
     }
@@ -1192,21 +1366,37 @@ function Show-Results {
     $roll = Get-CEFrameworkRollup -CheckMap $checkMap -Summary $summary
     $attn = @($checkMap.Keys | Where-Object { @('Fail', 'Warn', 'Error') -contains [string]$checkMap[$_].status }).Count
     $confirm = @($checkMap.Keys | Where-Object { [string]$checkMap[$_].status -eq 'Manual' }).Count
-    $ui.VerdictBanner.BorderBrush = Get-Brush $(if ($attn -gt 0) { '#A9721A' } else { '#008687' })
     $ui.VerdictText.Foreground = Get-Brush '#0B0F0E'
+    $when = ConvertTo-UiText $Result.Context.AuditTime
+    $elevated = [bool]$Result.Context.IsElevated
+    $soft = if ($confirm) { "$confirm to confirm" } else { '' }
+    $sub = @(@{ Text = "Audited $when as $($Result.Context.RunningAs)" })
     if ($summary.PartialRun) {
-        $ui.VerdictText.Text = [string]$summary.Verdict
+        $m = [regex]::Match([string]$summary.Verdict, '(\d+) of (\d+)')
+        $ran = if ($m.Success) { $m.Groups[1].Value } else { '?' }
+        $all = if ($m.Success) { $m.Groups[2].Value } else { (Get-UiCheckIdsForMode -Mode 'All').Count }
+        Set-UiVerdict -Head 'Partial audit' -Soft "$ran of $all checks run" -Rail '#B8C4C0'
+        $sub += @{ Text = $(if ($elevated) { '. ' } else { '. Standard user, so admin-only checks were skipped. ' }) }
+        $sub += @{ Text = "Run all $all checks"; Link = { Invoke-UiSafe { $script:CheckSelection = [pscustomobject]@{ Mode = 'All'; Ids = (Get-UiCheckIdsForMode -Mode 'All') }; Save-UiCheckSelection $script:CheckSelection; Update-UiSelectionText; Start-Audit } } }
+    }
+    elseif ($attn) {
+        Set-UiVerdict -Head "$attn control$(if ($attn -ne 1) { 's' }) need attention" -Soft $soft -Rail '#A9721A'
     }
     else {
-        $msg = if ($attn) { "$attn control$(if ($attn -ne 1) { 's' }) need attention" } else { 'No controls failing' }
-        if ($confirm) { $msg += " - $confirm to confirm" }
-        $ui.VerdictText.Text = $msg
+        Set-UiVerdict -Head 'All controls met' -Soft $soft -Rail '#008687'
     }
-    $when = ConvertTo-UiText $Result.Context.AuditTime
-    $sub = "Audited $when as $($Result.Context.RunningAs)."
-    if (-not $Result.Context.IsElevated) { $sub += ' Not run as administrator, so some checks were skipped.' }
-    if ($summary.PartialRun) { $sub += ' Only the chosen checks were run. Use Choose checks... to run them all.' }
-    $ui.VerdictSub.Text = $sub
+    if (-not $summary.PartialRun) {
+        if ($elevated) { $sub += @{ Text = ', run as administrator.' } }
+        else {
+            $sub += @{ Text = '. Standard user, so admin-only checks were skipped. ' }
+            $sub += @{ Text = 'Restart as administrator'; Link = { Invoke-UiSafe { $ui.RestartAdminBtn.RaiseEvent((New-Object Windows.RoutedEventArgs ([Windows.Controls.Button]::ClickEvent))) } } }
+        }
+    }
+    Set-UiRichText -Block $ui.VerdictSub -Parts $sub
+    $ui.ActMeta.Text = "last audit $(ConvertTo-UiText $Result.Context.AuditTime -Format 'HH:mm') " + [char]0xB7 + " $(@($checkMap.Keys).Count) check$(if (@($checkMap.Keys).Count -ne 1) { 's' })"
+    $ui.OvEmpty.Visibility = 'Collapsed'
+    $ui.OvBody.Visibility = 'Visible'
+    Set-UiTabsEnabled $true
 
     Set-CEFrameworkBars -Panel $ui.FwBars -Rollup $roll
 
@@ -1251,14 +1441,14 @@ function Show-Results {
     }
     $ct.Add_ColumnChanged({ Update-SelectionCount })
     $ui.ChangesGrid.ItemsSource = $ct.DefaultView
-    $ui.ChangesTab.Header = "  Fixes ($(@($Result.Changeset.Items).Count))  "
+    Set-UiTabHeader -Tab $ui.ChangesTab -Label 'Fixes' -Count (@($Result.Changeset.Items).Count)
     Update-SelectionCount
 
     # Manual actions
     $mt = New-UiTable @('Status', 'AutoFail', 'Severity', 'Title', 'Actual', 'Recommendation') @{ AutoFail = [bool] }
     foreach ($m in @($Result.Changeset.ManualActions)) { [void]$mt.Rows.Add($m.Status, [bool]$m.AutoFail, $m.Severity, $m.Title, $m.Actual, $m.Recommendation) }
     $ui.ManualGrid.ItemsSource = $mt.DefaultView
-    $ui.ManualTab.Header = "  Manual actions ($(@($Result.Changeset.ManualActions).Count))  "
+    Set-UiTabHeader -Tab $ui.ManualTab -Label 'Manual actions' -Count (@($Result.Changeset.ManualActions).Count)
 
     $ui.OpenReportBtn.IsEnabled = [bool]($Result.Paths -and (Test-Path -LiteralPath $Result.Paths.Html))
     $ui.OpenFolderBtn.IsEnabled = [bool]($Result.Folder -and (Test-Path -LiteralPath $Result.Folder))
@@ -1305,7 +1495,7 @@ function Update-History {
     foreach ($l in $logs) { [void]$ht.Rows.Add($l.AppliedAt.ToString('yyyy-MM-dd HH:mm:ss'), $l.AppliedBy, $l.Items, $l.Summary, $l.Path) }
     $ui.HistoryGrid.ItemsSource = $ht.DefaultView
     if ($ui.HistEmpty) { $ui.HistEmpty.Visibility = if ($logs.Count -eq 0) { 'Visible' } else { 'Collapsed' } }
-    $ui.HistoryTab.Header = "  History ($($logs.Count))  "
+    Set-UiTabHeader -Tab $ui.HistoryTab -Label 'History' -Count $logs.Count
 }
 
 function Import-SavedResults {
@@ -1348,6 +1538,14 @@ function Save-Selections {
 function Start-Audit {
     $ctx = Get-CEDeviceContext
     $folder = Join-Path $script:OutputRoot ("{0}-{1}" -f $ctx.ComputerName, (Get-Date -Format 'yyyyMMdd-HHmmss'))
+    Set-UiVerdict -Head 'Auditing' -Soft 'starting' -Rail '#3D6AA0'
+    $ui.VerdictSub.Text = 'Reading settings only. You can keep using the device.'
+    $ui.AiLine.Visibility = 'Collapsed'
+    $ui.OvEmptyTitle.Text = 'Results appear as the audit finishes'
+    $ui.OvEmptyText.Text = 'About a minute on a typical laptop; longer when winget has to refresh its sources.'
+    $ui.OvBody.Visibility = 'Collapsed'; $ui.OvEmpty.Visibility = 'Visible'
+    $ui.Tabs.SelectedIndex = 0
+    Set-UiTabsEnabled $false
     Start-UiJob -Label 'Audit' -Script $auditScript -Arguments @{
         ModulePath = $script:ModulePath; OutputPath = $folder; Mode = $script:CheckSelection.Mode; CheckIds = @($script:CheckSelection.Ids); Sync = $script:Sync
     } -OnComplete {
@@ -1391,7 +1589,7 @@ function Start-Apply {
         param($r)
         if ($r.WhatIf) {
             $ui.StatusText.Text = 'Preview complete: nothing was changed'
-            $ui.LogExpander.IsExpanded = $true
+            Set-UiLogOpen $true
             return
         }
         $logFile = Join-Path $script:Current.Folder ("apply-{0}.log" -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
@@ -1469,7 +1667,10 @@ $ui.ChangesGrid.Add_SelectionChanged({
     $ui.ChangeNotes.Text = $bits -join "`n"
 })
 
+foreach ($tab in $ui.Tabs.Items) { if ($tab.Header -is [string]) { Set-UiTabHeader -Tab $tab -Label $tab.Header } }
 $ui.RunBtn.Add_Click({ Invoke-UiSafe { Start-Audit } })
+$ui.ActBar.Add_MouseLeftButtonUp({ Set-UiLogOpen ($ui.LogBox.Visibility -ne 'Visible') })
+$ui.AiTabLink.Add_Click({ $ui.Tabs.SelectedIndex = 1 })
 $ui.ChooseChecksBtn.Add_Click({
     Invoke-UiSafe {
         $choice = Show-CheckChooser
@@ -1562,7 +1763,7 @@ if (Test-Path $script:OutputRoot) {
 if ($latest) {
     Invoke-UiSafe {
         Show-Results (Import-SavedResults $latest)
-        $ui.VerdictSub.Text = "Showing your last audit. Run the audit again to refresh. " + $ui.VerdictSub.Text
+        [void]$ui.VerdictSub.Inlines.InsertBefore($ui.VerdictSub.Inlines.FirstInline, (New-Object Windows.Documents.Run 'Last audit shown. '))
         Write-UiLog "Loaded last results: $latest"
     }
 }

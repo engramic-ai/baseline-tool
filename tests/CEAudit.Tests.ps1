@@ -837,7 +837,6 @@ Describe 'Desktop app result rendering' {
         }
         $ui.Tiles = [pscustomobject]@{ Children = (New-Object System.Collections.ArrayList) }
         $ui.FwBars = [pscustomobject]@{ Children = (New-Object System.Collections.ArrayList) }
-        $ui.FwBarsDetail = [pscustomobject]@{ Children = (New-Object System.Collections.ArrayList) }
         $ui.AiSummary = [pscustomobject]@{ Text = ''; Foreground = $null }
         $ui.AiAgents = [pscustomobject]@{ Children = (New-Object System.Collections.ArrayList) }
         $ui.AiEnvs = [pscustomobject]@{ Children = (New-Object System.Collections.ArrayList) }
@@ -857,7 +856,6 @@ Describe 'Desktop app result rendering' {
         $ui.SelCount.Text | Should -Match 'ticked'
         $ui.AiOverview.Visibility | Should -Be 'Visible'
         $ui.FwBars.Children.Count | Should -Be 3
-        $ui.FwBarsDetail.Children.Count | Should -Be 3
         $ui.AiSummary.Text | Should -Match 'AI tool'
         $ui.AiAgents.Children.Count | Should -BeGreaterThan 0
         @($ui.AiControls.ItemsSource).Count | Should -BeGreaterThan 0

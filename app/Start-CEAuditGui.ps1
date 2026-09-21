@@ -336,8 +336,6 @@ $script:OutputRoot = $OutputRoot
         <TabItem Header="  Frameworks  ">
           <ScrollViewer VerticalScrollBarVisibility="Auto">
             <StackPanel Margin="0,4,8,8">
-              <TextBlock Text="Frameworks" Style="{StaticResource H2}"/>
-              <StackPanel x:Name="FwBarsDetail" Margin="0,2,0,12"/>
               <TextBlock Text="Cyber Essentials Plus readiness (device tests)" Style="{StaticResource H2}"/>
               <DataGrid x:Name="TcGrid">
                 <DataGrid.Columns>
@@ -490,6 +488,9 @@ $script:OutputRoot = $OutputRoot
                 <DataGridTextColumn Header="SUMMARY" Binding="{Binding Summary}" Width="*" ElementStyle="{StaticResource Wrap}"/>
               </DataGrid.Columns>
             </DataGrid>
+            <TextBlock x:Name="HistEmpty" Grid.Row="2" Margin="2,14,0,0" VerticalAlignment="Top" Foreground="{StaticResource Muted}"
+                       Visibility="Collapsed" TextWrapping="Wrap"
+                       Text="No fixes have been applied on this device yet. When you apply fixes from the Fixes tab, each run is logged here so you can roll it back."/>
           </Grid>
         </TabItem>
       </TabControl>
@@ -1098,7 +1099,7 @@ function New-CEFrameworkBar {
     $c1 = New-Object Windows.Controls.ColumnDefinition; $c1.Width = New-Object Windows.GridLength([double]$p, ([Windows.GridUnitType]::Star))
     $c2 = New-Object Windows.Controls.ColumnDefinition; $c2.Width = New-Object Windows.GridLength([double](100 - $p), ([Windows.GridUnitType]::Star))
     $inner.ColumnDefinitions.Add($c1); $inner.ColumnDefinitions.Add($c2)
-    $fill = New-Object Windows.Controls.Border; $fill.Background = Get-Brush '#0B0F0E'
+    $fill = New-Object Windows.Controls.Border; $fill.Background = Get-Brush ((Get-CEBucketStyle 'met').Light)
     [Windows.Controls.Grid]::SetColumn($fill, 0); [void]$inner.Children.Add($fill)
     $track.Child = $inner
     [Windows.Controls.Grid]::SetColumn($track, 2); [void]$grid.Children.Add($track)
@@ -1208,7 +1209,6 @@ function Show-Results {
     $ui.VerdictSub.Text = $sub
 
     Set-CEFrameworkBars -Panel $ui.FwBars -Rollup $roll
-    Set-CEFrameworkBars -Panel $ui.FwBarsDetail -Rollup $roll
 
     # AI tab: use the posture computed in the audit runspace; recompute live for saved results.
     $ai = if ($Result.PSObject.Properties['AiPosture'] -and $Result.AiPosture) { $Result.AiPosture } else { Get-CEAiPosture }
@@ -1304,6 +1304,7 @@ function Update-History {
     $ht = New-UiTable @('AppliedAt', 'AppliedBy', 'Items', 'Summary', 'Path') @{ Items = [int] }
     foreach ($l in $logs) { [void]$ht.Rows.Add($l.AppliedAt.ToString('yyyy-MM-dd HH:mm:ss'), $l.AppliedBy, $l.Items, $l.Summary, $l.Path) }
     $ui.HistoryGrid.ItemsSource = $ht.DefaultView
+    if ($ui.HistEmpty) { $ui.HistEmpty.Visibility = if ($logs.Count -eq 0) { 'Visible' } else { 'Collapsed' } }
     $ui.HistoryTab.Header = "  History ($($logs.Count))  "
 }
 

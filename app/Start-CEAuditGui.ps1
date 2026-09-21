@@ -184,14 +184,14 @@ $script:OutputRoot = $OutputRoot
         <TextBlock x:Name="StateText" Text="{Binding Status}" FontSize="11.5" FontWeight="SemiBold" Foreground="#566360"/>
       </StackPanel>
       <DataTemplate.Triggers>
-        <DataTrigger Binding="{Binding Status}" Value="Pass"><Setter TargetName="StateText" Property="Text" Value="Met"/><Setter TargetName="StateText" Property="Foreground" Value="#006D6E"/><Setter TargetName="Mark" Property="Text" Value="&#10003;"/><Setter TargetName="Mark" Property="Foreground" Value="#006D6E"/></DataTrigger>
-        <DataTrigger Binding="{Binding Status}" Value="Fail"><Setter TargetName="StateText" Property="Text" Value="Not met"/><Setter TargetName="StateText" Property="Foreground" Value="#C23F2C"/><Setter TargetName="Mark" Property="Text" Value="&#9660;"/><Setter TargetName="Mark" Property="Foreground" Value="#C23F2C"/></DataTrigger>
-        <DataTrigger Binding="{Binding Status}" Value="Warn"><Setter TargetName="StateText" Property="Text" Value="Attention"/><Setter TargetName="StateText" Property="Foreground" Value="#C23F2C"/><Setter TargetName="Mark" Property="Text" Value="&#9660;"/><Setter TargetName="Mark" Property="Foreground" Value="#C23F2C"/></DataTrigger>
-        <DataTrigger Binding="{Binding Status}" Value="Error"><Setter TargetName="StateText" Property="Text" Value="Error"/><Setter TargetName="StateText" Property="Foreground" Value="#C23F2C"/><Setter TargetName="Mark" Property="Text" Value="&#9660;"/><Setter TargetName="Mark" Property="Foreground" Value="#C23F2C"/></DataTrigger>
-        <DataTrigger Binding="{Binding Status}" Value="Manual"><Setter TargetName="StateText" Property="Text" Value="To confirm"/></DataTrigger>
-        <DataTrigger Binding="{Binding Status}" Value="Skipped"><Setter TargetName="StateText" Property="Text" Value="Skipped"/><Setter TargetName="StateText" Property="Foreground" Value="#8A9591"/></DataTrigger>
-        <DataTrigger Binding="{Binding Status}" Value="NotApplicable"><Setter TargetName="StateText" Property="Text" Value="N/A"/><Setter TargetName="StateText" Property="Foreground" Value="#8A9591"/></DataTrigger>
-        <DataTrigger Binding="{Binding Status}" Value="Info"><Setter TargetName="StateText" Property="Text" Value="Info"/><Setter TargetName="StateText" Property="Foreground" Value="#8A9591"/></DataTrigger>
+        <DataTrigger Binding="{Binding Status}" Value="Pass"><Setter TargetName="StateText" Property="Text" Value="Pass"/><Setter TargetName="StateText" Property="Foreground" Value="#008687"/><Setter TargetName="Mark" Property="Text" Value="&#10003;"/><Setter TargetName="Mark" Property="Foreground" Value="#008687"/></DataTrigger>
+        <DataTrigger Binding="{Binding Status}" Value="Fail"><Setter TargetName="StateText" Property="Text" Value="Fail"/><Setter TargetName="StateText" Property="Foreground" Value="#C23F2C"/><Setter TargetName="Mark" Property="Text" Value="&#10005;"/><Setter TargetName="Mark" Property="Foreground" Value="#C23F2C"/></DataTrigger>
+        <DataTrigger Binding="{Binding Status}" Value="Warn"><Setter TargetName="StateText" Property="Text" Value="Warn"/><Setter TargetName="StateText" Property="Foreground" Value="#A9721A"/><Setter TargetName="Mark" Property="Text" Value="&#9650;"/><Setter TargetName="Mark" Property="Foreground" Value="#A9721A"/></DataTrigger>
+        <DataTrigger Binding="{Binding Status}" Value="Error"><Setter TargetName="StateText" Property="Text" Value="Error"/><Setter TargetName="StateText" Property="Foreground" Value="#C23F2C"/><Setter TargetName="Mark" Property="Text" Value="&#9888;"/><Setter TargetName="Mark" Property="Foreground" Value="#C23F2C"/></DataTrigger>
+        <DataTrigger Binding="{Binding Status}" Value="Manual"><Setter TargetName="StateText" Property="Text" Value="Manual"/><Setter TargetName="StateText" Property="Foreground" Value="#3D6AA0"/><Setter TargetName="Mark" Property="Text" Value="&#9675;"/><Setter TargetName="Mark" Property="Foreground" Value="#3D6AA0"/></DataTrigger>
+        <DataTrigger Binding="{Binding Status}" Value="Skipped"><Setter TargetName="StateText" Property="Text" Value="Skipped"/><Setter TargetName="StateText" Property="Foreground" Value="#7D8783"/><Setter TargetName="Mark" Property="Text" Value="&#8250;"/><Setter TargetName="Mark" Property="Foreground" Value="#7D8783"/></DataTrigger>
+        <DataTrigger Binding="{Binding Status}" Value="NotApplicable"><Setter TargetName="StateText" Property="Text" Value="Not applicable"/><Setter TargetName="StateText" Property="Foreground" Value="#7D8783"/><Setter TargetName="Mark" Property="Text" Value="&#8211;"/><Setter TargetName="Mark" Property="Foreground" Value="#7D8783"/></DataTrigger>
+        <DataTrigger Binding="{Binding Status}" Value="Info"><Setter TargetName="StateText" Property="Text" Value="Info"/><Setter TargetName="StateText" Property="Foreground" Value="#3D6AA0"/><Setter TargetName="Mark" Property="Text" Value="&#8505;"/><Setter TargetName="Mark" Property="Foreground" Value="#3D6AA0"/></DataTrigger>
       </DataTemplate.Triggers>
     </DataTemplate>
     <DataTemplate x:Key="AutoFailFlag">
@@ -203,6 +203,15 @@ $script:OutputRoot = $OutputRoot
         </DataTrigger>
       </DataTemplate.Triggers>
     </DataTemplate>
+    <Style x:Key="SevText" TargetType="TextBlock">
+      <Setter Property="FontWeight" Value="SemiBold"/>
+      <Style.Triggers>
+        <DataTrigger Binding="{Binding Severity}" Value="Critical"><Setter Property="Foreground" Value="#C23F2C"/></DataTrigger>
+        <DataTrigger Binding="{Binding Severity}" Value="High"><Setter Property="Foreground" Value="#D9662B"/></DataTrigger>
+        <DataTrigger Binding="{Binding Severity}" Value="Medium"><Setter Property="Foreground" Value="#A9721A"/></DataTrigger>
+        <DataTrigger Binding="{Binding Severity}" Value="Low"><Setter Property="Foreground" Value="#566360"/></DataTrigger>
+      </Style.Triggers>
+    </Style>
   </Window.Resources>
 
   <DockPanel>
@@ -375,7 +384,7 @@ $script:OutputRoot = $OutputRoot
                 <DataGridTextColumn Header="ID" Binding="{Binding CheckId}" Width="70"/>
                 <DataGridTemplateColumn Header="STATE" CellTemplate="{StaticResource StatePill}" Width="110" SortMemberPath="Status"/>
                 <DataGridTemplateColumn Header="" CellTemplate="{StaticResource AutoFailFlag}" Width="80" SortMemberPath="AutoFail"/>
-                <DataGridTextColumn Header="SEVERITY" Binding="{Binding Severity}" Width="80"/>
+                <DataGridTextColumn Header="SEVERITY" Binding="{Binding Severity}" Width="80" ElementStyle="{StaticResource SevText}"/>
                 <DataGridTextColumn Header="CHECK" Binding="{Binding Title}" Width="2*" ElementStyle="{StaticResource Wrap}"/>
                 <DataGridTextColumn Header="RESULT" Binding="{Binding Actual}" Width="3*" ElementStyle="{StaticResource Wrap}"/>
                 <DataGridTextColumn Header="FRAMEWORKS" Binding="{Binding Frameworks}" Width="130" ElementStyle="{StaticResource Wrap}"/>
@@ -430,7 +439,7 @@ $script:OutputRoot = $OutputRoot
                 <DataGridTextColumn Header="ITEM" Binding="{Binding ItemId}" Width="60" IsReadOnly="True"/>
                 <DataGridTextColumn Header="FIX" Binding="{Binding Title}" Width="3*" IsReadOnly="True" ElementStyle="{StaticResource Wrap}"/>
                 <DataGridTemplateColumn Header="" CellTemplate="{StaticResource AutoFailFlag}" Width="80" SortMemberPath="AutoFail"/>
-                <DataGridTextColumn Header="SEVERITY" Binding="{Binding Severity}" Width="80" IsReadOnly="True"/>
+                <DataGridTextColumn Header="SEVERITY" Binding="{Binding Severity}" Width="80" ElementStyle="{StaticResource SevText}" IsReadOnly="True"/>
                 <DataGridTextColumn Header="RISK" Binding="{Binding Risk}" Width="70" IsReadOnly="True"/>
                 <DataGridTextColumn Header="RESTART" Binding="{Binding Reboot}" Width="70" IsReadOnly="True"/>
                 <DataGridTextColumn Header="ADMIN" Binding="{Binding Admin}" Width="60" IsReadOnly="True"/>
@@ -453,7 +462,7 @@ $script:OutputRoot = $OutputRoot
               <DataGrid.Columns>
                 <DataGridTemplateColumn Header="STATUS" CellTemplate="{StaticResource StatusPill}" Width="90" SortMemberPath="Status"/>
                 <DataGridTemplateColumn Header="" CellTemplate="{StaticResource AutoFailFlag}" Width="80" SortMemberPath="AutoFail"/>
-                <DataGridTextColumn Header="SEVERITY" Binding="{Binding Severity}" Width="80"/>
+                <DataGridTextColumn Header="SEVERITY" Binding="{Binding Severity}" Width="80" ElementStyle="{StaticResource SevText}"/>
                 <DataGridTextColumn Header="ACTION" Binding="{Binding Title}" Width="2*" ElementStyle="{StaticResource Wrap}"/>
                 <DataGridTextColumn Header="FOUND" Binding="{Binding Actual}" Width="2*" ElementStyle="{StaticResource Wrap}"/>
                 <DataGridTextColumn Header="WHAT TO DO" Binding="{Binding Recommendation}" Width="3*" ElementStyle="{StaticResource Wrap}"/>
@@ -1032,10 +1041,11 @@ function Set-CEStatusStack {
     $attention = [int]$by.Fail + [int]$by.Warn + [int]$by.Error
     $confirm = [int]$by.Manual
     $na = [int]$by.Skipped + [int]$by.NotApplicable + [int]$by.Info
+    $bs = Get-CEBucketStyle
     $segs = @(
-        [pscustomobject]@{ N = $met; C = '#0B0F0E'; T = "$met met"; Fg = '#FFFFFF' }
-        [pscustomobject]@{ N = $attention; C = '#C23F2C'; T = "$attention"; Fg = '#FFFFFF' }
-        [pscustomobject]@{ N = $confirm; C = '#566360'; T = "$confirm confirm"; Fg = '#FFFFFF' }
+        [pscustomobject]@{ N = $met; C = $bs['met'].Light; T = "$met met"; Fg = '#FFFFFF' }
+        [pscustomobject]@{ N = $attention; C = $bs['attention'].Light; T = "$attention"; Fg = '#FFFFFF' }
+        [pscustomobject]@{ N = $confirm; C = $bs['confirm'].Light; T = "$confirm confirm"; Fg = '#FFFFFF' }
         [pscustomobject]@{ N = $na; C = '#E2E8E6'; T = "$na"; Fg = '#566360' }
     )
     $grid = New-Object Windows.Controls.Grid
@@ -1056,9 +1066,9 @@ function Set-CEStatusStack {
     }
     $ui.StatusStack.Child = $grid
     $ui.StatusLegend.Children.Clear()
-    [void]$ui.StatusLegend.Children.Add((New-CELegendItem -Colour '#0B0F0E' -Text "Met $met"))
-    [void]$ui.StatusLegend.Children.Add((New-CELegendItem -Colour '#C23F2C' -Text "Not met / attention $attention"))
-    [void]$ui.StatusLegend.Children.Add((New-CELegendItem -Colour '#566360' -Text "To confirm $confirm"))
+    [void]$ui.StatusLegend.Children.Add((New-CELegendItem -Colour $bs['met'].Light -Text "Met $met"))
+    [void]$ui.StatusLegend.Children.Add((New-CELegendItem -Colour $bs['attention'].Light -Text "Attention $attention"))
+    [void]$ui.StatusLegend.Children.Add((New-CELegendItem -Colour $bs['confirm'].Light -Text "To confirm $confirm"))
     [void]$ui.StatusLegend.Children.Add((New-CELegendItem -Colour '#E2E8E6' -Text "Skipped / n/a $na"))
 }
 
@@ -1181,7 +1191,7 @@ function Show-Results {
     $roll = Get-CEFrameworkRollup -CheckMap $checkMap -Summary $summary
     $attn = @($checkMap.Keys | Where-Object { @('Fail', 'Warn', 'Error') -contains [string]$checkMap[$_].status }).Count
     $confirm = @($checkMap.Keys | Where-Object { [string]$checkMap[$_].status -eq 'Manual' }).Count
-    $ui.VerdictBanner.BorderBrush = Get-Brush '#008687'
+    $ui.VerdictBanner.BorderBrush = Get-Brush $(if ($attn -gt 0) { '#A9721A' } else { '#008687' })
     $ui.VerdictText.Foreground = Get-Brush '#0B0F0E'
     if ($summary.PartialRun) {
         $ui.VerdictText.Text = [string]$summary.Verdict

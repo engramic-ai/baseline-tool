@@ -159,6 +159,14 @@ $script:OutputRoot = $OutputRoot
     <Style x:Key="Wrap" TargetType="TextBlock">
       <Setter Property="TextWrapping" Value="Wrap"/>
     </Style>
+    <Style x:Key="FlagText" TargetType="TextBlock">
+      <Style.Triggers>
+        <DataTrigger Binding="{Binding Flag}" Value="True">
+          <Setter Property="Foreground" Value="#C23F2C"/>
+          <Setter Property="FontWeight" Value="SemiBold"/>
+        </DataTrigger>
+      </Style.Triggers>
+    </Style>
 
     <!-- Tabs are a flat underline rail. The stock templates draw their own boxes and
          backgrounds whatever properties are set, so both templates are replaced. -->
@@ -347,7 +355,7 @@ $script:OutputRoot = $OutputRoot
           <Grid.ColumnDefinitions>
             <ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/>
           </Grid.ColumnDefinitions>
-          <TextBlock x:Name="ActChevron" Text="&#8964;" FontSize="14" Foreground="{StaticResource Muted}" VerticalAlignment="Center" Margin="0,0,8,0"/>
+          <TextBlock x:Name="ActChevron" Text="&#8963;" FontSize="14" Foreground="{StaticResource Muted}" VerticalAlignment="Center" Margin="0,0,8,0"/>
           <TextBlock Grid.Column="1" Text="ACTIVITY" FontSize="11" FontWeight="SemiBold" Foreground="{StaticResource Ink}" VerticalAlignment="Center" Margin="0,0,12,0"/>
           <TextBlock x:Name="StatusText" Grid.Column="2" Text="Ready" FontSize="12" Foreground="{StaticResource Ink}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
           <TextBlock x:Name="ActMeta" Grid.Column="3" FontSize="11.5" Foreground="{StaticResource Muted}" VerticalAlignment="Center" Margin="12,0,12,0"/>
@@ -390,6 +398,18 @@ $script:OutputRoot = $OutputRoot
               <TextBlock Text="Frameworks" Style="{StaticResource H2}" Margin="0,4,0,8"/>
               <TextBlock Text="% of applicable controls met - target 100%" Foreground="{StaticResource Muted}" FontSize="11.5" Margin="0,0,0,2"/>
               <StackPanel x:Name="FwBars" Margin="0,2,0,10"/>
+              <TextBlock Text="Cyber Essentials Plus readiness" Style="{StaticResource H2}"/>
+              <TextBlock Text="What the assessor tests on this device, and the likely outcome from what was found" Foreground="{StaticResource Muted}" FontSize="11.5" Margin="0,0,0,6"/>
+              <DataGrid x:Name="TcGrid">
+                <DataGrid.Columns>
+                  <DataGridTextColumn Header="TEST" Binding="{Binding Test}" Width="60"/>
+                  <DataGridTextColumn Header="NAME" Binding="{Binding Name}" Width="230" ElementStyle="{StaticResource Wrap}"/>
+                  <DataGridTextColumn Header="WHAT IS TESTED" Binding="{Binding Scope}" Width="*" ElementStyle="{StaticResource Wrap}"/>
+                  <DataGridTextColumn Header="FAILING" Binding="{Binding Failing}" Width="150" ElementStyle="{StaticResource Wrap}"/>
+                  <DataGridTemplateColumn Header="ESTIMATE" CellTemplate="{StaticResource StatusPill}" Width="110"/>
+                </DataGrid.Columns>
+              </DataGrid>
+              <TextBlock Margin="0,6,0,0" FontSize="11.5" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Text="TC1 (external scan) is run by your assessor against your internet-facing IP addresses."/>
               <TextBlock Text="Controls by status" Style="{StaticResource H2}"/>
               <Border x:Name="StatusStack" Height="26" BorderBrush="{StaticResource Line}" BorderThickness="1" Margin="0,2,0,6"/>
               <WrapPanel x:Name="StatusLegend" Margin="0,0,0,6"/>
@@ -404,60 +424,39 @@ $script:OutputRoot = $OutputRoot
         <TabItem Header="AI">
           <ScrollViewer VerticalScrollBarVisibility="Auto">
             <StackPanel Margin="0,4,8,8">
-              <Border Background="White" BorderBrush="#008687" BorderThickness="3,1,1,1" CornerRadius="6" Padding="14,10" Margin="0,0,0,10">
-                <StackPanel>
-                  <TextBlock x:Name="AiSummary" FontSize="15" FontWeight="SemiBold" Text="Run an audit to see AI posture" TextWrapping="Wrap"/>
-                  <TextBlock Foreground="{StaticResource Muted}" Margin="0,3,0,0" TextWrapping="Wrap"
-                             Text="The agents, WSL distributions and MCP servers you use live in your session. This shows your posture; other users are audited in their own sessions, and SYSTEM never sees shadow AI."/>
-                </StackPanel>
-              </Border>
-              <TextBlock Text="Agents and tools" Style="{StaticResource H2}"/>
-              <StackPanel x:Name="AiAgents" Margin="0,2,0,8"/>
+              <TextBlock Text="Agents and tools" Style="{StaticResource H2}" Margin="0,4,0,6"/>
+              <DataGrid x:Name="AiAgentsGrid">
+                <DataGrid.Columns>
+                  <DataGridTextColumn Header="TOOL" Binding="{Binding Tool}" Width="220"/>
+                  <DataGridTextColumn Header="STATE" Binding="{Binding State}" Width="110"/>
+                  <DataGridTextColumn Header="RIGHTS" Binding="{Binding Rights}" Width="130" ElementStyle="{StaticResource FlagText}"/>
+                  <DataGridTextColumn Header="CAN ACT ON DEVICE" Binding="{Binding CanAct}" Width="150"/>
+                  <DataGridTextColumn Header="MCP SERVERS" Binding="{Binding Mcp}" Width="110"/>
+                  <DataGridTextColumn Header="" Binding="{Binding Spacer}" Width="*"/>
+                </DataGrid.Columns>
+              </DataGrid>
+              <TextBlock x:Name="AiAgentsEmpty" Foreground="{StaticResource Muted}" Margin="0,4,0,0" Visibility="Collapsed" Text="No recognised AI tools found in this session."/>
+              <TextBlock Text="MCP servers" Style="{StaticResource H2}"/>
+              <TextBlock x:Name="AiMcpMeta" Foreground="{StaticResource Muted}" FontSize="11.5" Margin="0,0,0,6"/>
+              <DataGrid x:Name="AiMcpGrid">
+                <DataGrid.Columns>
+                  <DataGridTextColumn Header="SERVER" Binding="{Binding Server}" Width="180"/>
+                  <DataGridTextColumn Header="TOOL" Binding="{Binding Tool}" Width="150"/>
+                  <DataGridTextColumn Header="TRANSPORT" Binding="{Binding Transport}" Width="90"/>
+                  <DataGridTextColumn Header="COMMAND / ENDPOINT" Binding="{Binding Target}" Width="*" ElementStyle="{StaticResource Wrap}"/>
+                  <DataGridTextColumn Header="CREDENTIALS" Binding="{Binding Creds}" Width="190" ElementStyle="{StaticResource FlagText}"/>
+                </DataGrid.Columns>
+              </DataGrid>
+              <TextBlock x:Name="AiMcpEmpty" Foreground="{StaticResource Muted}" Margin="0,4,0,0" Visibility="Collapsed" Text="No MCP server configuration found for the recognised AI tools."/>
               <TextBlock Text="Where AI runs" Style="{StaticResource H2}"/>
               <StackPanel x:Name="AiEnvs" Margin="0,2,0,8"/>
-              <TextBlock Text="AI-related controls" Style="{StaticResource H2}"/>
-              <DataGrid x:Name="AiControls">
-                <DataGrid.Columns>
-                  <DataGridTextColumn Header="ID" Binding="{Binding ID}" Width="70"/>
-                  <DataGridTemplateColumn Header="STATUS" CellTemplate="{StaticResource StatusPill}" Width="100" SortMemberPath="Status"/>
-                  <DataGridTextColumn Header="CONTROL" Binding="{Binding Check}" Width="*" ElementStyle="{StaticResource Wrap}"/>
-                </DataGrid.Columns>
-              </DataGrid>
+              <TextBlock Margin="0,14,0,0"><Hyperlink x:Name="AiControlsLink">AI-related controls in Controls &#8594;</Hyperlink></TextBlock>
+              <TextBlock Margin="0,18,0,0" FontSize="11.5" Foreground="{StaticResource Muted}" TextWrapping="Wrap"
+                         Text="The agents, WSL distributions and MCP servers you use live in your session. This is your posture; other users are audited in their own sessions, and SYSTEM never sees shadow AI. Credential values are never read or recorded, only where and how they are stored."/>
             </StackPanel>
           </ScrollViewer>
         </TabItem>
 
-        <!-- Frameworks -->
-        <TabItem Header="Frameworks">
-          <ScrollViewer VerticalScrollBarVisibility="Auto">
-            <StackPanel Margin="0,4,8,8">
-              <TextBlock Text="Cyber Essentials Plus readiness (device tests)" Style="{StaticResource H2}"/>
-              <DataGrid x:Name="TcGrid">
-                <DataGrid.Columns>
-                  <DataGridTextColumn Header="TEST" Binding="{Binding Test}" Width="70"/>
-                  <DataGridTextColumn Header="NAME" Binding="{Binding Name}" Width="260"/>
-                  <DataGridTextColumn Header="WHAT IS TESTED" Binding="{Binding Scope}" Width="*" ElementStyle="{StaticResource Wrap}"/>
-                  <DataGridTemplateColumn Header="ESTIMATE" CellTemplate="{StaticResource StatusPill}" Width="120"/>
-                </DataGrid.Columns>
-              </DataGrid>
-              <TextBlock Text="By control theme" Style="{StaticResource H2}"/>
-              <DataGrid x:Name="ThemeGrid">
-                <DataGrid.Columns>
-                  <DataGridTextColumn Header="THEME" Binding="{Binding Theme}" Width="*"/>
-                  <DataGridTextColumn Header="PASS" Binding="{Binding Pass}" Width="80"/>
-                  <DataGridTextColumn Header="FAIL" Binding="{Binding Fail}" Width="80"/>
-                  <DataGridTextColumn Header="WARN" Binding="{Binding Warn}" Width="80"/>
-                  <DataGridTextColumn Header="MANUAL" Binding="{Binding Manual}" Width="80"/>
-                  <DataGridTextColumn Header="OTHER" Binding="{Binding Other}" Width="80"/>
-                </DataGrid.Columns>
-              </DataGrid>
-              <TextBlock Margin="0,16,0,0" Foreground="{StaticResource Muted}" TextWrapping="Wrap"
-                         Text="TC1 (external scan) is run by your assessor against your internet-facing IP addresses."/>
-            </StackPanel>
-          </ScrollViewer>
-        </TabItem>
-
-        <!-- Controls -->
         <TabItem x:Name="FindingsTab" Header="Controls">
           <Grid Margin="0,4,0,0">
             <Grid.RowDefinitions>
@@ -510,7 +509,7 @@ $script:OutputRoot = $OutputRoot
           <Grid Margin="0,4,0,0">
             <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
             <TextBlock TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,0,0,10"
-                       Text="Tick the fixes to apply. Recommended low and medium risk fixes are pre-ticked; high-risk fixes never are. Preview shows what would change without changing anything. Every applied change is logged so it can be rolled back from the History tab."/>
+                       Text="Low and medium risk fixes are pre-ticked; high-risk never. Preview changes nothing. Every applied change is logged and can be rolled back from History."/>
             <WrapPanel Grid.Row="1" Margin="0,0,0,8">
               <Button x:Name="SelRecBtn" Content="Tick recommended"/>
               <Button x:Name="SelAutoBtn" Content="Tick auto-fail fixes only"/>
@@ -740,7 +739,7 @@ function Set-UiTabsEnabled {
 function Set-UiLogOpen {
     param([bool]$On)
     $ui.LogBox.Visibility = if ($On) { 'Visible' } else { 'Collapsed' }
-    $ui.ActChevron.Text = [string][char]$(if ($On) { 0x2303 } else { 0x2304 })
+    $ui.ActChevron.Text = [string][char]$(if ($On) { 0x2304 } else { 0x2303 })
 }
 
 function ConvertTo-UiText {
@@ -1200,13 +1199,14 @@ function New-CELegendItem {
 }
 
 function Set-CEStatusStack {
-    # Neutral IBCS-style stacked bar: met (ink) | attention (red) | confirm (grey) | n/a (light).
-    param($Summary)
-    $by = $Summary.ByStatus
-    $met = [int]$by.Pass
-    $attention = [int]$by.Fail + [int]$by.Warn + [int]$by.Error
-    $confirm = [int]$by.Manual
-    $na = [int]$by.Skipped + [int]$by.NotApplicable + [int]$by.Info
+    # Stacked bar of controls by bucket: met | attention | confirm | n/a. Counts controls (one status
+    # per check, worst finding wins) so it agrees with the banner and the framework bars.
+    param($CheckMap)
+    $st = @(foreach ($k in $CheckMap.Keys) { [string]$CheckMap[$k].status })
+    $met = @($st | Where-Object { $_ -eq 'Pass' }).Count
+    $attention = @($st | Where-Object { @('Fail', 'Warn', 'Error') -contains $_ }).Count
+    $confirm = @($st | Where-Object { $_ -eq 'Manual' }).Count
+    $na = @($st | Where-Object { @('Skipped', 'NotApplicable', 'Info') -contains $_ }).Count
     $bs = Get-CEBucketStyle
     $segs = @(
         [pscustomobject]@{ N = $met; C = $bs['met'].Light; T = "$met met"; Fg = '#FFFFFF' }
@@ -1292,42 +1292,84 @@ function New-CEAiLine {
     return $tb
 }
 
+function Get-UiField {
+    # Read a field from an AI posture record, which is an ordered dictionary when computed live and
+    # a PSObject when loaded from findings.json. Missing fields (older saves) return the default.
+    param($Object, [string]$Name, $Default = $null)
+    if ($null -eq $Object) { return $Default }
+    if ($Object -is [System.Collections.IDictionary]) { if ($Object.Contains($Name)) { return $Object[$Name] } return $Default }
+    $prop = $Object.PSObject.Properties[$Name]
+    if ($prop -and $null -ne $prop.Value) { return $prop.Value }
+    return $Default
+}
+
 function Set-CEAiTab {
     param($Ai, $Findings)
-    $dev = [int]$Ai.deviations
-    $ui.AiSummary.Text = "$($Ai.agentsFound) AI tool(s) found - " + $(if ($Ai.contained) { 'contained (none running as administrator, no root distribution)' } else { "$dev deviation(s)" })
-    $ui.AiSummary.Foreground = if ($Ai.contained) { Get-Brush '#006D6E' } else { Get-Brush '#C23F2C' }
+    $agents = @(Get-UiField $Ai 'agents' @())
+    $mcp = @(Get-UiField $Ai 'mcpServers' @())
 
-    $ui.AiAgents.Children.Clear()
-    foreach ($a in @($Ai.agents)) {
-        $bad = [bool]($a.elevated -or $a.asSystem)
-        $state = if ($bad) { 'running as administrator' } elseif ($a.running) { 'running, standard user' } else { 'present' }
-        [void]$ui.AiAgents.Children.Add((New-CEAiLine -Text "$($a.name) - $state" -Bad:$bad))
+    $at = New-UiTable @('Tool', 'State', 'Rights', 'CanAct', 'Mcp', 'Spacer', 'Flag') @{ Flag = [bool] }
+    foreach ($a in $agents) {
+        $running = [bool](Get-UiField $a 'running' $false)
+        $elevated = [bool](Get-UiField $a 'elevated' $false)
+        $asSystem = [bool](Get-UiField $a 'asSystem' $false)
+        $rights = if ($asSystem) { 'SYSTEM' } elseif ($elevated) { 'administrator' } elseif ($running) { 'standard user' } else { '' }
+        $id = [string](Get-UiField $a 'id' '')
+        $count = @($mcp | Where-Object { [string](Get-UiField $_ 'toolId' '') -eq $id }).Count
+        [void]$at.Rows.Add([string](Get-UiField $a 'name' ''), $(if ($running) { 'running' } else { 'present' }), $rights,
+            $(if ([bool](Get-UiField $a 'canActOnDevice' $false)) { 'yes' } else { 'no' }), $(if ($count) { [string]$count } else { '-' }), '', ($elevated -or $asSystem))
     }
-    if (@($Ai.agents).Count -eq 0) { [void]$ui.AiAgents.Children.Add((New-CEAiLine -Text 'No AI tools detected in this session.')) }
+    $ui.AiAgentsGrid.ItemsSource = $at.DefaultView
+    $ui.AiAgentsEmpty.Visibility = if ($agents.Count) { 'Collapsed' } else { 'Visible' }
+    $ui.AiAgentsGrid.Visibility = if ($agents.Count) { 'Visible' } else { 'Collapsed' }
+
+    $mt = New-UiTable @('Server', 'Tool', 'Transport', 'Target', 'Creds', 'Flag') @{ Flag = [bool] }
+    $byId = @{}
+    foreach ($a in $agents) { $byId[[string](Get-UiField $a 'id' '')] = [string](Get-UiField $a 'name' '') }
+    foreach ($m in $mcp) {
+        $creds = @(Get-UiField $m 'credentials' @())
+        $plain = @($creds | Where-Object { [string](Get-UiField $_ 'storage' '') -eq 'plaintext-config' }).Count
+        $credText = if ($creds.Count -eq 0) { 'none' }
+                    elseif ($plain) { "$($creds.Count) - $plain in plaintext" }
+                    else { "$($creds.Count) - environment reference" }
+        $transport = [string](Get-UiField $m 'transport' '')
+        $target = if ($transport -eq 'stdio' -or -not (Get-UiField $m 'endpoint' '')) { ([string](Get-UiField $m 'command' '') + ' ' + [string](Get-UiField $m 'argsSummary' '')).Trim() } else { [string](Get-UiField $m 'endpoint' '') }
+        $toolId = [string](Get-UiField $m 'toolId' '')
+        $toolName = if ($byId.ContainsKey($toolId)) { $byId[$toolId] } else { $toolId }
+        [void]$mt.Rows.Add([string](Get-UiField $m 'serverName' ''), $toolName, $transport, $target, $credText, ($plain -gt 0))
+    }
+    $ui.AiMcpGrid.ItemsSource = $mt.DefaultView
+    $ui.AiMcpEmpty.Visibility = if ($mcp.Count) { 'Collapsed' } else { 'Visible' }
+    $ui.AiMcpGrid.Visibility = if ($mcp.Count) { 'Visible' } else { 'Collapsed' }
+    $found = [int](Get-UiField $Ai 'mcpConfigsFound' 0); $parsed = [int](Get-UiField $Ai 'mcpConfigsParsed' 0)
+    $unreadable = @(Get-UiField $Ai 'mcpConfigsUnreadable' @()).Count
+    $dot = ' ' + [char]0xB7 + ' '
+    $meta = "$found config file$(if ($found -ne 1) { 's' }) found$dot$parsed parsed"
+    if ($unreadable) { $meta += "$dot$unreadable unreadable" }
+    $bounds = [string](Get-UiField $Ai 'scanBounds' '')
+    if ($bounds) { $meta += "$dot$bounds" }
+    $ui.AiMcpMeta.Text = $meta
 
     $ui.AiEnvs.Children.Clear()
-    foreach ($env in @($Ai.environments)) {
-        if ($env.type -eq 'wsl') {
-            $root = if ($env.defaultUidRoot) { 'defaults to root' } else { 'non-root' }
-            $extra = "$(if ($env.autoMount) { ', Windows drives mounted' })$(if ($env.networking) { ", networking: $($env.networking)" })"
-            [void]$ui.AiEnvs.Children.Add((New-CEAiLine -Text "WSL $($env.wslVersion): $($env.name) - $root$extra" -Bad:([bool]$env.defaultUidRoot)))
+    foreach ($env in @(Get-UiField $Ai 'environments' @())) {
+        if ((Get-UiField $env 'type' '') -eq 'wsl') {
+            $rootDefault = [bool](Get-UiField $env 'defaultUidRoot' $false)
+            $root = if ($rootDefault) { 'defaults to root' } else { 'non-root' }
+            $extra = "$(if (Get-UiField $env 'autoMount' $false) { ', Windows drives mounted' })$(if (Get-UiField $env 'networking' '') { ", networking: $(Get-UiField $env 'networking' '')" })"
+            [void]$ui.AiEnvs.Children.Add((New-CEAiLine -Text "WSL $(Get-UiField $env 'wslVersion' ''): $(Get-UiField $env 'name' '') - $root$extra" -Bad:$rootDefault))
         }
-        else { [void]$ui.AiEnvs.Children.Add((New-CEAiLine -Text "$($env.type): $($env.name)")) }
+        else { [void]$ui.AiEnvs.Children.Add((New-CEAiLine -Text "$(Get-UiField $env 'type' ''): $(Get-UiField $env 'name' '')")) }
     }
-    if (@($Ai.environments).Count -eq 0) { [void]$ui.AiEnvs.Children.Add((New-CEAiLine -Text 'No VMs, WSL distributions or containers found.')) }
+    if (@(Get-UiField $Ai 'environments' @()).Count -eq 0) { [void]$ui.AiEnvs.Children.Add((New-CEAiLine -Text 'No VMs, WSL distributions or containers found.')) }
 
-    $ct = New-UiTable @('ID', 'Status', 'Check')
-    foreach ($f in @($Findings | Where-Object { [string]$_.Scope -eq 'User' })) {
-        $title = if ($f.Subject) { "$($f.Title) ($($f.Subject))" } else { [string]$f.Title }
-        [void]$ct.Rows.Add([string]$f.CheckId, [string]$f.Status, $title)
-    }
-    $ui.AiControls.ItemsSource = $ct.DefaultView
+    $userChecks = @($Findings | Where-Object { [string](Get-UiField $_ 'Scope' 'Machine') -eq 'User' } | ForEach-Object { $_.CheckId } | Sort-Object -Unique).Count
+    Set-UiRichText -Block $ui.AiControlsLink -Parts @(@{ Text = "$userChecks AI-related control$(if ($userChecks -ne 1) { 's' }) in Controls " + [char]0x2192 })
 
     if ($ui.AiLine) {
-        $n = [int]$Ai.agentsFound
+        $n = [int](Get-UiField $Ai 'agentsFound' $agents.Count)
+        $dev = [int](Get-UiField $Ai 'deviations' 0)
         $parts = @(@{ Text = "$n AI tool$(if ($n -ne 1) { 's' }) found, " })
-        if ($Ai.contained) { $parts += @{ Text = 'contained'; Colour = '#006D6E'; Weight = 'SemiBold' } }
+        if ([bool](Get-UiField $Ai 'contained' ($dev -eq 0))) { $parts += @{ Text = 'contained'; Colour = '#006D6E'; Weight = 'SemiBold' } }
         else { $parts += @{ Text = "$dev running with elevated rights"; Colour = '#C23F2C'; Weight = 'SemiBold' } }
         Set-UiRichText -Block $ui.AiLineText -Parts $parts
         $ui.AiLine.Visibility = 'Visible'
@@ -1404,27 +1446,25 @@ function Show-Results {
     $ai = if ($Result.PSObject.Properties['AiPosture'] -and $Result.AiPosture) { $Result.AiPosture } else { Get-CEAiPosture }
     Set-CEAiTab -Ai $ai -Findings $findings
 
-    # Controls by status (neutral stacked bar)
-    Set-CEStatusStack -Summary $summary
+    # Controls by status (stacked bar, in controls)
+    Set-CEStatusStack -CheckMap $checkMap
 
-    # CE+ readiness
-    $tc = New-UiTable @('Test', 'Name', 'Scope', 'Status')
-    foreach ($t in @($summary.CEPlus)) { [void]$tc.Rows.Add($t.TestCase, $t.Name, $t.Scope, $(if ($t.State -eq 'Not assessed') { 'Skipped' } else { $t.State })) }
+    # CE+ readiness: which controls drag each test case down
+    $tc = New-UiTable @('Test', 'Name', 'Scope', 'Failing', 'Status')
+    foreach ($t in @($summary.CEPlus)) {
+        $failing = @(Get-UiField $t 'Failing' @() | ForEach-Object { ([string]$_ -split ':')[0] } | Sort-Object -Unique) -join ', '
+        [void]$tc.Rows.Add($t.TestCase, $t.Name, $t.Scope, $failing, $(if ($t.State -eq 'Not assessed') { 'Skipped' } else { $t.State }))
+    }
     $ui.TcGrid.ItemsSource = $tc.DefaultView
-
-    # Themes
-    $th = New-UiTable @('Theme', 'Pass', 'Fail', 'Warn', 'Manual', 'Other') @{ Pass = [int]; Fail = [int]; Warn = [int]; Manual = [int]; Other = [int] }
-    foreach ($c in @($summary.ByCategory)) { [void]$th.Rows.Add($themeLabels[[string]$c.Category], $c.Pass, $c.Fail, $c.Warn, $c.Manual, $c.Other) }
-    $ui.ThemeGrid.ItemsSource = $th.DefaultView
 
     # Findings
     $script:FindingIndex = @{}
-    $ft = New-UiTable @('FindingId', 'CheckId', 'Status', 'AutoFail', 'Severity', 'SeverityRank', 'Title', 'Actual', 'Frameworks', 'Category') @{ AutoFail = [bool]; SeverityRank = [int] }
+    $ft = New-UiTable @('FindingId', 'CheckId', 'Status', 'AutoFail', 'Severity', 'SeverityRank', 'Title', 'Actual', 'Frameworks', 'Category', 'Scope') @{ AutoFail = [bool]; SeverityRank = [int] }
     $rank = @{ Critical = 0; High = 1; Medium = 2; Low = 3; Info = 4 }
     $statusRank = @{ Fail = 0; Error = 1; Warn = 2; Manual = 3; Skipped = 4; Pass = 5; NotApplicable = 6; Info = 7 }
     foreach ($f in ($findings | Sort-Object @{ e = { $statusRank[[string]$_.Status] } }, @{ e = { $rank[[string]$_.Severity] } }, CheckId)) {
         $title = if ($f.Subject) { "$($f.Title) ($($f.Subject))" } else { $f.Title }
-        [void]$ft.Rows.Add($f.FindingId, $f.CheckId, $f.Status, [bool]$f.AutoFail, $f.Severity, $rank[[string]$f.Severity], $title, $f.Actual, (@($f.Frameworks) -join ', '), $f.Category)
+        [void]$ft.Rows.Add($f.FindingId, $f.CheckId, $f.Status, [bool]$f.AutoFail, $f.Severity, $rank[[string]$f.Severity], $title, $f.Actual, (@($f.Frameworks) -join ', '), $f.Category, [string](Get-UiField $f 'Scope' 'Machine'))
         $script:FindingIndex[[string]$f.FindingId] = $f
     }
     $ui.FindingsGrid.ItemsSource = $ft.DefaultView
@@ -1472,8 +1512,9 @@ function Update-FindingFilter {
         $like = ConvertTo-LikeLiteral $q
         $parts += "(Title LIKE '%$like%' OR Actual LIKE '%$like%' OR FindingId LIKE '%$like%' OR Frameworks LIKE '%$like%')"
     }
+    if ($script:FindingScope) { $parts += "Scope = '$($script:FindingScope)'" }
     $view.RowFilter = ($parts -join ' AND ')
-    $ui.FindingCount.Text = "$($view.Count) of $($view.Table.Rows.Count) shown"
+    $ui.FindingCount.Text = "$($view.Count) of $($view.Table.Rows.Count) shown" + $(if ($script:FindingScope) { ' - AI-related only' } else { '' })
 }
 
 function Update-SelectionCount {
@@ -1494,7 +1535,10 @@ function Update-History {
     $ht = New-UiTable @('AppliedAt', 'AppliedBy', 'Items', 'Summary', 'Path') @{ Items = [int] }
     foreach ($l in $logs) { [void]$ht.Rows.Add($l.AppliedAt.ToString('yyyy-MM-dd HH:mm:ss'), $l.AppliedBy, $l.Items, $l.Summary, $l.Path) }
     $ui.HistoryGrid.ItemsSource = $ht.DefaultView
-    if ($ui.HistEmpty) { $ui.HistEmpty.Visibility = if ($logs.Count -eq 0) { 'Visible' } else { 'Collapsed' } }
+    if ($ui.HistEmpty) {
+        $ui.HistEmpty.Visibility = if ($logs.Count -eq 0) { 'Visible' } else { 'Collapsed' }
+        $ui.HistoryGrid.Visibility = if ($logs.Count -eq 0) { 'Collapsed' } else { 'Visible' }
+    }
     Set-UiTabHeader -Tab $ui.HistoryTab -Label 'History' -Count $logs.Count
 }
 
@@ -1552,7 +1596,7 @@ function Start-Audit {
         param($r)
         if (-not $r) { throw 'The audit returned no results.' }
         Show-Results $r
-        $ui.StatusText.Text = "Audit complete: $(@($r.Findings).Count) results"
+        $ui.StatusText.Text = "Audit complete: $(@($r.Findings | ForEach-Object { $_.CheckId } | Sort-Object -Unique).Count) checks"
         Write-UiLog "Audit complete. Results saved to $($r.Folder)"
         $ui.Tabs.SelectedIndex = 0
     }
@@ -1634,8 +1678,8 @@ $ui.ThemeFilter.SelectedIndex = 0
 $ui.StatusFilter.ItemsSource = @('(all)', 'Needs action') + $statusOrder
 $ui.StatusFilter.SelectedIndex = 0
 
-$ui.ThemeFilter.Add_SelectionChanged({ Update-FindingFilter })
-$ui.StatusFilter.Add_SelectionChanged({ Update-FindingFilter })
+$ui.ThemeFilter.Add_SelectionChanged({ $script:FindingScope = $null; Update-FindingFilter })
+$ui.StatusFilter.Add_SelectionChanged({ $script:FindingScope = $null; Update-FindingFilter })
 $ui.SearchBox.Add_TextChanged({ Update-FindingFilter })
 
 $ui.FindingsGrid.Add_SelectionChanged({
@@ -1667,10 +1711,17 @@ $ui.ChangesGrid.Add_SelectionChanged({
     $ui.ChangeNotes.Text = $bits -join "`n"
 })
 
+$script:FindingScope = $null
 foreach ($tab in $ui.Tabs.Items) { if ($tab.Header -is [string]) { Set-UiTabHeader -Tab $tab -Label $tab.Header } }
 $ui.RunBtn.Add_Click({ Invoke-UiSafe { Start-Audit } })
 $ui.ActBar.Add_MouseLeftButtonUp({ Set-UiLogOpen ($ui.LogBox.Visibility -ne 'Visible') })
 $ui.AiTabLink.Add_Click({ $ui.Tabs.SelectedIndex = 1 })
+$ui.AiControlsLink.Add_Click({
+    $ui.ThemeFilter.SelectedIndex = 0; $ui.StatusFilter.SelectedIndex = 0; $ui.SearchBox.Text = ''
+    $script:FindingScope = 'User'
+    Update-FindingFilter
+    $ui.Tabs.SelectedItem = $ui.FindingsTab
+})
 $ui.ChooseChecksBtn.Add_Click({
     Invoke-UiSafe {
         $choice = Show-CheckChooser

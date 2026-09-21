@@ -824,7 +824,7 @@ Describe 'Desktop app result rendering' {
         function New-Tile { 'tile' }
         function New-CEFrameworkBar { param($Label, $Fraction, $Percent, $Deviation) 'bar' }
         function New-CEAiLine { param([string]$Text, [switch]$Bad) 'line' }
-        function Set-CEStatusStack { param($Summary) }
+        function Set-CEStatusStack { param($CheckMap) }
         function New-CELegendItem { param([string]$Colour, [string]$Text) 'legend' }
         function Set-UiRichText { param($Block, [object[]]$Parts) $Block.Text = (@($Parts | ForEach-Object { $_['Text'] }) -join '') }
         function Set-UiTabHeader { param($Tab, [string]$Label, $Count) $Tab.Header = "$Label $Count" }
@@ -834,16 +834,20 @@ Describe 'Desktop app result rendering' {
         Set-Variable -Name statusOrder -Value @('Pass', 'Fail', 'Warn', 'Manual', 'Skipped', 'NotApplicable', 'Error')
         Set-Variable -Name themeLabels -Value ([ordered]@{ Firewalls = 'Firewalls'; SecureConfiguration = 'Secure configuration'; SecurityUpdateManagement = 'Security update management'; UserAccessControl = 'User access control'; MalwareProtection = 'Malware protection'; NCSCHardening = 'NCSC hardening (beyond CE)' })
         $script:OutputRoot = $TestDrive
+        $script:FindingScope = $null
         $ui = @{}
         foreach ($n in 'VerdictBanner', 'VerdictText', 'VerdictSub', 'TcGrid', 'ThemeGrid', 'FindingsGrid', 'ChangesGrid', 'ManualGrid', 'HistoryGrid', 'ChangesTab', 'ManualTab', 'HistoryTab', 'OpenReportBtn', 'OpenFolderBtn', 'FindingCount', 'SelCount') {
             $ui[$n] = [pscustomobject]@{ BorderBrush = $null; Text = ''; Foreground = $null; ItemsSource = $null; Header = ''; IsEnabled = $false }
         }
         $ui.Tiles = [pscustomobject]@{ Children = (New-Object System.Collections.ArrayList) }
         $ui.FwBars = [pscustomobject]@{ Children = (New-Object System.Collections.ArrayList) }
-        $ui.AiSummary = [pscustomobject]@{ Text = ''; Foreground = $null }
-        $ui.AiAgents = [pscustomobject]@{ Children = (New-Object System.Collections.ArrayList) }
+        $ui.AiAgentsGrid = [pscustomobject]@{ ItemsSource = $null; Visibility = '' }
+        $ui.AiAgentsEmpty = [pscustomobject]@{ Visibility = '' }
+        $ui.AiMcpGrid = [pscustomobject]@{ ItemsSource = $null; Visibility = '' }
+        $ui.AiMcpEmpty = [pscustomobject]@{ Visibility = '' }
+        $ui.AiMcpMeta = [pscustomobject]@{ Text = '' }
         $ui.AiEnvs = [pscustomobject]@{ Children = (New-Object System.Collections.ArrayList) }
-        $ui.AiControls = [pscustomobject]@{ ItemsSource = $null }
+        $ui.AiControlsLink = [pscustomobject]@{ Text = '' }
         $ui.AiLine = [pscustomobject]@{ Visibility = '' }
         $ui.AiLineText = [pscustomobject]@{ Text = '' }
         $ui.ActMeta = [pscustomobject]@{ Text = '' }
@@ -865,9 +869,9 @@ Describe 'Desktop app result rendering' {
         $ui.VerdictText.Text | Should -Not -BeNullOrEmpty
         $ui.ChangesTab.Header | Should -Match '^Fixes \d+$'
         $ui.FwBars.Children.Count | Should -Be 3
-        $ui.AiSummary.Text | Should -Match 'AI tool'
-        $ui.AiAgents.Children.Count | Should -BeGreaterThan 0
-        @($ui.AiControls.ItemsSource).Count | Should -BeGreaterThan 0
+        @($ui.AiAgentsGrid.ItemsSource).Count | Should -BeGreaterThan 0
+        $ui.AiMcpEmpty.Visibility | Should -Be 'Visible'
+        $ui.AiControlsLink.Text | Should -Match 'AI-related control'
 
         Show-Results (Import-SavedResults (Join-Path $script:guiOut 'findings.json'))
         $ui.ChangesGrid.ItemsSource.Count | Should -Be @($script:guiResult.Changeset.Items).Count

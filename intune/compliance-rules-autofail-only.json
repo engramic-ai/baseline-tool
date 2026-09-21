@@ -1,0 +1,74 @@
+{
+  "Rules": [
+    {
+      "SettingName": "CECheckerInstalled",
+      "Operator": "IsEquals",
+      "DataType": "Boolean",
+      "Operand": true,
+      "MoreInfoUrl": "https://github.com/engramic-ai/baseline-tool#readme",
+      "RemediationStrings": [
+        {
+          "Language": "en_US",
+          "Title": "The Engramic Baseline isn't installed on this device.",
+          "Description": "IT needs to install the Engramic Baseline so this device can be checked. Contact IT."
+        }
+      ]
+    },
+    {
+      "SettingName": "CEAuditAgeHours",
+      "Operator": "LessEquals",
+      "DataType": "Int64",
+      "Operand": 72,
+      "MoreInfoUrl": "https://github.com/engramic-ai/baseline-tool#readme",
+      "RemediationStrings": [
+        {
+          "Language": "en_US",
+          "Title": "This device hasn't been checked for Cyber Essentials recently (last check {ActualValue} hours ago).",
+          "Description": "Leave the device switched on and connected for a while so the daily check can run. If this keeps happening, contact IT."
+        }
+      ]
+    },
+    {
+      "SettingName": "CEAutoFailCount",
+      "Operator": "IsEquals",
+      "DataType": "Int64",
+      "Operand": 0,
+      "MoreInfoUrl": "https://github.com/engramic-ai/baseline-tool#readme",
+      "RemediationStrings": [
+        {
+          "Language": "en_US",
+          "Title": "This device has {ActualValue} issue(s) that automatically fail Cyber Essentials.",
+          "Description": "These are usually missing security updates or out-of-date apps. Install all updates in Settings > Windows Update, update your apps, then restart. Open 'Engramic Baseline' from the Start menu to see what needs fixing, or contact IT."
+        }
+      ]
+    },
+    {
+      "SettingName": "CEOSSupported",
+      "Operator": "IsEquals",
+      "DataType": "Boolean",
+      "Operand": true,
+      "MoreInfoUrl": "https://github.com/engramic-ai/baseline-tool#readme",
+      "RemediationStrings": [
+        {
+          "Language": "en_US",
+          "Title": "This device's version of Windows is no longer supported.",
+          "Description": "Install the latest Windows 11 feature update from Settings > Windows Update, or contact IT."
+        }
+      ]
+    },
+    {
+      "SettingName": "CEAntimalwareOK",
+      "Operator": "IsEquals",
+      "DataType": "Boolean",
+      "Operand": true,
+      "MoreInfoUrl": "https://github.com/engramic-ai/baseline-tool#readme",
+      "RemediationStrings": [
+        {
+          "Language": "en_US",
+          "Title": "Virus protection on this device is off or out of date.",
+          "Description": "Open Windows Security > Virus & threat protection, make sure protection is on and check for protection updates. Open 'Engramic Baseline' from the Start menu to see what needs fixing, or contact IT."
+        }
+      ]
+    }
+  ]
+}

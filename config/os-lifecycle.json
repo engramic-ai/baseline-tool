@@ -1,0 +1,23 @@
+{
+  "lastReviewed": "2026-09-16",
+  "reviewWarningDays": 90,
+  "upcomingEndWarningDays": 60,
+  "source": "https://learn.microsoft.com/en-us/windows/release-health/windows11-release-information",
+  "notes": "Home/Pro get 24 months of servicing per feature update, Enterprise/Education 36 months. Windows 10 reached end of support on 2025-10-14; devices enrolled in Extended Security Updates (ESU) remain supported while enrolled and must be declared.",
+  "windows11": [
+    { "build": 22000, "version": "21H2", "homePro": "2023-10-10", "enterprise": "2024-10-08" },
+    { "build": 22621, "version": "22H2", "homePro": "2024-10-08", "enterprise": "2025-10-14" },
+    { "build": 22631, "version": "23H2", "homePro": "2025-11-11", "enterprise": "2026-11-10" },
+    { "build": 26100, "version": "24H2", "homePro": "2026-10-13", "enterprise": "2027-10-12" },
+    { "build": 26200, "version": "25H2", "homePro": "2027-10-12", "enterprise": "2028-10-10" },
+    { "build": 28000, "version": "26H1", "homePro": null, "enterprise": null, "notes": "Shipped only on new Arm devices; confirm end-of-servicing date on Microsoft release health and fill in" }
+  ],
+  "windowsServer": [
+    { "build": 14393, "version": "2016", "extendedEnd": "2027-01-12" },
+    { "build": 17763, "version": "2019", "extendedEnd": "2029-01-09" },
+    { "build": 20348, "version": "2022", "extendedEnd": "2031-10-14" },
+    { "build": 26100, "version": "2025", "extendedEnd": "2034-11-14" }
+  ],
+  "serverSource": "https://learn.microsoft.com/en-us/lifecycle/products/windows-server-2025",
+  "windows10": { "endOfSupport": "2025-10-14", "esuConsumerEnd": "2026-10-13", "esuCommercialYear3End": "2028-10-10" }
+}

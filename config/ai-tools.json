@@ -1,0 +1,515 @@
+{
+  "notes": "AI assistants and agents recognised on the device (UA-07, SC-09, UA-10). service: the cloud account to attest MFA for (null when it varies or is local). canActOnDevice: the tool can run commands, edit files or control apps, so it is treated like a remote access tool. enabled: false keeps an entry listed without detecting it (e.g. apps preinstalled with Windows). Signals: programs (Add/Remove Programs name and optional publisher), uninstallKeys, appx (Store package name), processes (image, optional path and command line patterns), paths (under the user profile) and vscodeExtensions (folder patterns under .vscode\\extensions). Names were checked against vendor documentation, winget-pkgs manifests and npm; see sources. Candidate for hosting on the catalog service.",
+  "lastReviewed": "2026-09-17",
+  "tools": [
+    {
+      "id": "claude-desktop",
+      "name": "Claude desktop app",
+      "vendor": "Anthropic",
+      "service": "Anthropic (Claude)",
+      "canActOnDevice": true,
+      "programs": [],
+      "uninstallKeys": [
+        "AnthropicClaude"
+      ],
+      "appx": [
+        "Claude"
+      ],
+      "processes": [
+        {
+          "image": "claude.exe",
+          "path": "*\\WindowsApps\\Claude_*"
+        },
+        {
+          "image": "claude.exe",
+          "path": "*\\AnthropicClaude\\*"
+        }
+      ],
+      "paths": [
+        "AppData\\Roaming\\Claude"
+      ],
+      "vscodeExtensions": [],
+      "notes": "Can run local MCP servers and includes Claude Code.",
+      "sources": [
+        "https://github.com/microsoft/winget-pkgs/tree/master/manifests/a/Anthropic/Claude",
+        "https://code.claude.com/docs/en/setup"
+      ]
+    },
+    {
+      "id": "claude-code",
+      "name": "Claude Code",
+      "vendor": "Anthropic",
+      "service": "Anthropic (Claude)",
+      "canActOnDevice": true,
+      "programs": [],
+      "uninstallKeys": [],
+      "appx": [],
+      "processes": [
+        {
+          "image": "claude.exe",
+          "path": "*\\.local\\bin\\claude.exe"
+        },
+        {
+          "image": "claude.exe",
+          "path": "*\\@anthropic-ai\\claude-code*"
+        },
+        {
+          "image": "node.exe",
+          "commandLine": "*@anthropic-ai/claude-code*"
+        }
+      ],
+      "paths": [
+        ".local\\bin\\claude.exe",
+        ".local\\share\\claude"
+      ],
+      "vscodeExtensions": [
+        "anthropic.claude-code-*"
+      ],
+      "notes": "Coding agent that runs commands and edits files. Claude Code inside WSL is not visible from Windows.",
+      "sources": [
+        "https://code.claude.com/docs/en/setup",
+        "https://registry.npmjs.org/@anthropic-ai/claude-code/latest"
+      ]
+    },
+    {
+      "id": "chatgpt-desktop",
+      "name": "ChatGPT desktop app (with Codex)",
+      "vendor": "OpenAI",
+      "service": "OpenAI (ChatGPT)",
+      "canActOnDevice": true,
+      "programs": [],
+      "uninstallKeys": [],
+      "appx": [
+        "OpenAI.Codex"
+      ],
+      "processes": [],
+      "paths": [],
+      "vscodeExtensions": [],
+      "notes": "Includes the Codex agent, which runs commands in PowerShell.",
+      "sources": [
+        "https://apps.microsoft.com/detail/9plm9xgg6vks",
+        "https://learn.chatgpt.com/docs/windows/windows-app"
+      ]
+    },
+    {
+      "id": "chatgpt-classic",
+      "name": "ChatGPT Classic desktop app",
+      "vendor": "OpenAI",
+      "service": "OpenAI (ChatGPT)",
+      "canActOnDevice": false,
+      "programs": [],
+      "uninstallKeys": [],
+      "appx": [
+        "OpenAI.ChatGPT-Desktop"
+      ],
+      "processes": [],
+      "paths": [],
+      "vscodeExtensions": [],
+      "notes": "Chat app; no local agent.",
+      "sources": [
+        "https://apps.microsoft.com/detail/9nt1r1c2hh7j"
+      ]
+    },
+    {
+      "id": "openai-codex-cli",
+      "name": "OpenAI Codex CLI",
+      "vendor": "OpenAI",
+      "service": "OpenAI (ChatGPT)",
+      "canActOnDevice": true,
+      "programs": [],
+      "uninstallKeys": [],
+      "appx": [],
+      "processes": [
+        {
+          "image": "codex.exe"
+        },
+        {
+          "image": "codex-x86_64-pc-windows-msvc.exe"
+        },
+        {
+          "image": "codex-aarch64-pc-windows-msvc.exe"
+        },
+        {
+          "image": "node.exe",
+          "commandLine": "*@openai/codex*"
+        }
+      ],
+      "paths": [
+        "AppData\\Local\\Programs\\OpenAI\\Codex"
+      ],
+      "vscodeExtensions": [
+        "openai.chatgpt-*"
+      ],
+      "notes": "Coding agent that runs commands and edits files. The .codex folder is shared with the ChatGPT app, so it isn't used as a signal.",
+      "sources": [
+        "https://github.com/openai/codex",
+        "https://registry.npmjs.org/@openai/codex/latest"
+      ]
+    },
+    {
+      "id": "github-copilot-vscode",
+      "name": "GitHub Copilot in VS Code",
+      "vendor": "GitHub",
+      "service": "GitHub",
+      "canActOnDevice": true,
+      "programs": [],
+      "uninstallKeys": [],
+      "appx": [],
+      "processes": [],
+      "paths": [],
+      "vscodeExtensions": [
+        "github.copilot-chat-*",
+        "github.copilot-[0-9]*"
+      ],
+      "notes": "Agent mode runs terminal commands and edits files.",
+      "sources": [
+        "https://marketplace.visualstudio.com/items?itemName=GitHub.copilot-chat",
+        "https://code.visualstudio.com/docs/copilot/chat/chat-agent-mode"
+      ]
+    },
+    {
+      "id": "github-copilot-cli",
+      "name": "GitHub Copilot CLI",
+      "vendor": "GitHub",
+      "service": "GitHub",
+      "canActOnDevice": true,
+      "programs": [],
+      "uninstallKeys": [],
+      "appx": [],
+      "processes": [
+        {
+          "image": "copilot.exe",
+          "path": "*GitHub.Copilot*"
+        },
+        {
+          "image": "copilot.exe",
+          "path": "*@github\\copilot*"
+        },
+        {
+          "image": "node.exe",
+          "commandLine": "*@github/copilot*"
+        }
+      ],
+      "paths": [
+        ".copilot"
+      ],
+      "vscodeExtensions": [],
+      "notes": "Terminal coding agent that runs commands and edits files.",
+      "sources": [
+        "https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli",
+        "https://registry.npmjs.org/@github/copilot/latest"
+      ]
+    },
+    {
+      "id": "microsoft-copilot",
+      "name": "Microsoft Copilot app",
+      "vendor": "Microsoft",
+      "service": "Microsoft account (Copilot)",
+      "canActOnDevice": false,
+      "enabled": false,
+      "programs": [
+        {
+          "name": "Copilot",
+          "publisher": "Microsoft Corporation"
+        }
+      ],
+      "uninstallKeys": [],
+      "appx": [
+        "Microsoft.Copilot"
+      ],
+      "processes": [
+        {
+          "image": "mscopilot.exe"
+        }
+      ],
+      "paths": [],
+      "vscodeExtensions": [],
+      "notes": "Preinstalled on Windows 11, so detecting it would flag almost every device; off by default. Copilot Actions (acting on apps and files) is off by default and still rolling out.",
+      "sources": [
+        "https://apps.microsoft.com/detail/9nht9rb2f4hd",
+        "https://blogs.windows.com/windows-insider/2025/11/17/copilot-on-windows-copilot-actions-begins-rolling-out-to-windows-insiders/"
+      ]
+    },
+    {
+      "id": "microsoft-365-copilot",
+      "name": "Microsoft 365 Copilot app",
+      "vendor": "Microsoft",
+      "service": "Microsoft 365 / Entra ID",
+      "canActOnDevice": false,
+      "enabled": false,
+      "programs": [],
+      "uninstallKeys": [],
+      "appx": [
+        "Microsoft.MicrosoftOfficeHub"
+      ],
+      "processes": [],
+      "paths": [],
+      "vscodeExtensions": [],
+      "notes": "Preinstalled on many devices (formerly the Office app); off by default. Microsoft 365 is already covered by UA-07.",
+      "sources": [
+        "https://apps.microsoft.com/detail/9wzdncrd29v9"
+      ]
+    },
+    {
+      "id": "cursor",
+      "name": "Cursor",
+      "vendor": "Anysphere",
+      "service": "Cursor",
+      "canActOnDevice": true,
+      "programs": [
+        {
+          "name": "Cursor*",
+          "publisher": "Anysphere*"
+        }
+      ],
+      "uninstallKeys": [],
+      "appx": [],
+      "processes": [
+        {
+          "image": "Cursor.exe"
+        }
+      ],
+      "paths": [
+        ".cursor"
+      ],
+      "vscodeExtensions": [],
+      "notes": "AI code editor whose agent runs terminal commands, edits files and uses MCP servers.",
+      "sources": [
+        "https://github.com/microsoft/winget-pkgs/tree/master/manifests/a/Anysphere/Cursor",
+        "https://cursor.com/docs/context/mcp"
+      ]
+    },
+    {
+      "id": "windsurf",
+      "name": "Windsurf",
+      "vendor": "Cognition",
+      "service": "Windsurf",
+      "canActOnDevice": true,
+      "programs": [
+        {
+          "name": "Windsurf*"
+        }
+      ],
+      "uninstallKeys": [],
+      "appx": [],
+      "processes": [
+        {
+          "image": "Windsurf.exe"
+        }
+      ],
+      "paths": [
+        ".codeium\\windsurf"
+      ],
+      "vscodeExtensions": [],
+      "notes": "AI code editor whose agents run terminal commands and edit files.",
+      "sources": [
+        "https://github.com/microsoft/winget-pkgs/tree/master/manifests/c/Codeium/Windsurf",
+        "https://docs.devin.ai/desktop/cascade/mcp"
+      ]
+    },
+    {
+      "id": "gemini-cli",
+      "name": "Google Gemini CLI",
+      "vendor": "Google",
+      "service": "Google (Gemini)",
+      "canActOnDevice": true,
+      "programs": [],
+      "uninstallKeys": [],
+      "appx": [],
+      "processes": [
+        {
+          "image": "node.exe",
+          "commandLine": "*@google/gemini-cli*"
+        }
+      ],
+      "paths": [
+        ".gemini"
+      ],
+      "vscodeExtensions": [],
+      "notes": "Terminal agent with built-in file and shell command tools.",
+      "sources": [
+        "https://github.com/google-gemini/gemini-cli",
+        "https://registry.npmjs.org/@google/gemini-cli/latest"
+      ]
+    },
+    {
+      "id": "perplexity-desktop",
+      "name": "Perplexity desktop app",
+      "vendor": "Perplexity AI",
+      "service": "Perplexity",
+      "canActOnDevice": false,
+      "programs": [
+        {
+          "name": "Perplexity*"
+        }
+      ],
+      "uninstallKeys": [],
+      "appx": [],
+      "processes": [],
+      "paths": [],
+      "vscodeExtensions": [],
+      "notes": "Local MCP support on Windows is only reported in news coverage so far, so it isn't treated as able to act on the device.",
+      "sources": [
+        "https://github.com/microsoft/winget-pkgs/tree/master/manifests/p/Perplexity/Perplexity"
+      ]
+    },
+    {
+      "id": "cline",
+      "name": "Cline",
+      "vendor": "Cline Bot Inc.",
+      "service": null,
+      "canActOnDevice": true,
+      "programs": [],
+      "uninstallKeys": [],
+      "appx": [],
+      "processes": [],
+      "paths": [],
+      "vscodeExtensions": [
+        "saoudrizwan.claude-dev-*"
+      ],
+      "notes": "VS Code agent that runs terminal commands, edits files and uses MCP. It signs in to Cline or uses API keys from any provider, so there is no single account to attest.",
+      "sources": [
+        "https://marketplace.visualstudio.com/items?itemName=saoudrizwan.claude-dev"
+      ]
+    },
+    {
+      "id": "roo-code",
+      "name": "Roo Code",
+      "vendor": "Roo Code",
+      "service": null,
+      "canActOnDevice": true,
+      "programs": [],
+      "uninstallKeys": [],
+      "appx": [],
+      "processes": [],
+      "paths": [],
+      "vscodeExtensions": [
+        "rooveterinaryinc.roo-cline-*"
+      ],
+      "notes": "VS Code agent (a Cline fork) that runs terminal commands and edits files. Accounts vary by provider.",
+      "sources": [
+        "https://marketplace.visualstudio.com/items?itemName=RooVeterinaryInc.roo-cline"
+      ]
+    },
+    {
+      "id": "continue",
+      "name": "Continue",
+      "vendor": "Continue Dev",
+      "service": null,
+      "canActOnDevice": true,
+      "programs": [],
+      "uninstallKeys": [],
+      "appx": [],
+      "processes": [],
+      "paths": [
+        ".continue"
+      ],
+      "vscodeExtensions": [
+        "continue.continue-*"
+      ],
+      "notes": "VS Code agent that runs terminal commands and edits files. Accounts vary; it can run fully local.",
+      "sources": [
+        "https://marketplace.visualstudio.com/items?itemName=Continue.continue",
+        "https://docs.continue.dev/reference"
+      ]
+    },
+    {
+      "id": "amazon-q-developer",
+      "name": "Amazon Q Developer",
+      "vendor": "Amazon Web Services",
+      "service": "AWS",
+      "canActOnDevice": true,
+      "programs": [],
+      "uninstallKeys": [],
+      "appx": [],
+      "processes": [],
+      "paths": [],
+      "vscodeExtensions": [
+        "amazonwebservices.amazon-q-vscode-*"
+      ],
+      "notes": "Agentic chat in the editor runs shell commands and edits files.",
+      "sources": [
+        "https://marketplace.visualstudio.com/items?itemName=AmazonWebServices.amazon-q-vscode"
+      ]
+    },
+    {
+      "id": "jetbrains-junie-cli",
+      "name": "JetBrains Junie CLI",
+      "vendor": "JetBrains",
+      "service": "JetBrains Account",
+      "canActOnDevice": true,
+      "programs": [],
+      "uninstallKeys": [],
+      "appx": [],
+      "processes": [
+        {
+          "image": "junie.exe"
+        },
+        {
+          "image": "node.exe",
+          "commandLine": "*@jetbrains/junie-cli*"
+        }
+      ],
+      "paths": [
+        ".local\\share\\junie"
+      ],
+      "vscodeExtensions": [],
+      "notes": "Coding agent that runs commands and edits files. The JetBrains IDE plugins aren't detected yet.",
+      "sources": [
+        "https://junie.jetbrains.com/install.ps1",
+        "https://registry.npmjs.org/@jetbrains/junie-cli/latest"
+      ]
+    },
+    {
+      "id": "ollama",
+      "name": "Ollama",
+      "vendor": "Ollama",
+      "service": null,
+      "canActOnDevice": false,
+      "programs": [
+        {
+          "name": "Ollama*",
+          "publisher": "Ollama"
+        }
+      ],
+      "uninstallKeys": [],
+      "appx": [],
+      "processes": [
+        {
+          "image": "ollama.exe"
+        }
+      ],
+      "paths": [
+        ".ollama"
+      ],
+      "vscodeExtensions": [],
+      "notes": "Runs models locally; no built-in tools that act on the device, and no cloud account unless signed in for cloud models.",
+      "sources": [
+        "https://github.com/microsoft/winget-pkgs/tree/master/manifests/o/Ollama/Ollama"
+      ]
+    },
+    {
+      "id": "lm-studio",
+      "name": "LM Studio",
+      "vendor": "Element Labs",
+      "service": null,
+      "canActOnDevice": false,
+      "programs": [
+        {
+          "name": "LM Studio*"
+        }
+      ],
+      "uninstallKeys": [],
+      "appx": [],
+      "processes": [],
+      "paths": [
+        ".lmstudio"
+      ],
+      "vscodeExtensions": [],
+      "notes": "Runs models locally. It can use MCP servers once configured, which isn't checked here.",
+      "sources": [
+        "https://lmstudio.ai/docs/app/mcp"
+      ]
+    }
+  ]
+}

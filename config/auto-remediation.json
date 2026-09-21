@@ -1,0 +1,21 @@
+{
+  "notes": "Used only by intune/Remediate-CECompliance.ps1 (Intune Remediations). When enabled, fixes whose remediation id is listed here are applied automatically as SYSTEM after each audit. High-risk remediations are always skipped. 'suggested' lists low-impact fixes that are reasonable starting points; copy the ones you want into remediationIds. Every change is written to an undo log under %ProgramData%\\EngramicBaseline\\reports.",
+  "enabled": false,
+  "remediationIds": [],
+  "suggested": [
+    "Defender-UpdateSignatures",
+    "Defender-EnableRealtime",
+    "Defender-CloudProtection",
+    "Defender-PUA",
+    "FW-EnableProfiles",
+    "FW-BlockInboundDefault",
+    "RDP-RequireNLA",
+    "Autorun-Disable",
+    "WindowsUpdate-Resume",
+    "WindowsUpdate-EnableAuto",
+    "AppUpdate-Unblock",
+    "AccountLockout-Set",
+    "HelloPin-MinLength",
+    "LocalUser-DisableBySidSuffix"
+  ]
+}

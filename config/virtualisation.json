@@ -1,0 +1,16 @@
+{
+  "notes": "Used by SC-12 and FW-07. toolingDistributions: WSL distributions created by container tools, listed but not warned about. portProcesses: processes that publish ports for virtual machines and containers; a listening socket they own on a non-loopback address is reported as a published port.",
+  "toolingDistributions": [ "docker-desktop*", "rancher-desktop*", "podman-machine*" ],
+  "portProcesses": [
+    { "process": "com.docker.backend", "product": "Docker Desktop" },
+    { "process": "com.docker.proxy", "product": "Docker Desktop" },
+    { "process": "vpnkit", "product": "Docker Desktop" },
+    { "process": "wslrelay", "product": "WSL" },
+    { "process": "gvproxy", "product": "Podman" },
+    { "process": "win-sshproxy", "product": "Podman" },
+    { "process": "VirtualBoxVM", "product": "VirtualBox" },
+    { "process": "VBoxHeadless", "product": "VirtualBox" },
+    { "process": "vmnat", "product": "VMware NAT" },
+    { "process": "vmware-authd", "product": "VMware" }
+  ]
+}

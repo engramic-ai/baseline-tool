@@ -1,0 +1,21 @@
+{
+  "notes": "Secure Boot 2023 certificate rollout, used by NC-08. The 2011 Microsoft CAs expire in 2026. A device that has not moved to the 2023 CAs keeps booting, but stops receiving boot manager, DB and DBX security updates. Missing certificates are a Warn until the matching 2011 CA expires, then a Fail.",
+  "source": "https://support.microsoft.com/en-us/topic/secure-boot-certificate-updates-guidance-for-it-professionals-and-organizations-e2b43f9f-b424-42df-bc6a-8476db65ab2f",
+  "lastReviewed": "2026-09-16",
+  "certificates": [
+    { "variable": "KEK", "name": "Microsoft Corporation KEK 2K CA 2023", "replaces": "Microsoft Corporation KEK CA 2011", "replacesExpires": "2026-06-24", "required": true },
+    { "variable": "db", "name": "Windows UEFI CA 2023", "replaces": "Microsoft Windows Production PCA 2011", "replacesExpires": "2026-10-19", "required": true },
+    { "variable": "db", "name": "Microsoft UEFI CA 2023", "replaces": "Microsoft Corporation UEFI CA 2011", "replacesExpires": "2026-06-27", "required": false },
+    { "variable": "db", "name": "Microsoft Option ROM UEFI CA 2023", "replaces": "Microsoft Corporation UEFI CA 2011", "replacesExpires": "2026-06-27", "required": false }
+  ],
+  "eventLookbackDays": 30,
+  "events": {
+    "success": [ 1036, 1043, 1044, 1045, 1799, 1808 ],
+    "rebootRequired": [ 1800 ],
+    "notApplied": [ 1801 ],
+    "firmwareError": [ 1795, 1796 ],
+    "firmwareBlocked": [ 1802 ],
+    "missingOemKek": [ 1803 ],
+    "bitLockerBlocked": [ 1032 ]
+  }
+}

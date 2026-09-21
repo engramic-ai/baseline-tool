@@ -1,0 +1,4 @@
+{
+  "notes": "Options for the unattended audit (scheduled task / Intune). excludeCheckIds skips checks entirely; they will not appear in status.json or reports. Prefer leaving everything on.",
+  "excludeCheckIds": []
+}

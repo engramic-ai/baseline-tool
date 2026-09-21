@@ -1,0 +1,30 @@
+{
+  "notes": "Cyber Essentials v3.3: cloud services cannot be excluded from scope and MFA must be enabled wherever it is available (auto-fail). This cannot be verified from the device, so record an attestation for each cloud service used by this device's users. Set mfaEnforced to true only after confirming MFA is enforced for BOTH user and administrator accounts. 'verifiedOn' older than 'maxAttestationAgeDays' is treated as stale.",
+  "maxAttestationAgeDays": 365,
+  "services": [
+    { "name": "Microsoft 365 / Entra ID", "mfaEnforced": null, "adminMfaEnforced": null, "verifiedOn": null, "verifiedBy": null },
+    { "name": "Google Workspace", "mfaEnforced": null, "adminMfaEnforced": null, "verifiedOn": null, "verifiedBy": null }
+  ],
+  "detectionHints": [
+    { "pattern": "Microsoft OneDrive*", "service": "Microsoft 365 / Entra ID" },
+    { "pattern": "Microsoft Teams*", "service": "Microsoft 365 / Entra ID" },
+    { "pattern": "Microsoft 365*", "service": "Microsoft 365 / Entra ID" },
+    { "pattern": "Google Drive*", "service": "Google Workspace" },
+    { "pattern": "Dropbox*", "service": "Dropbox" },
+    { "pattern": "Proton Drive*", "service": "Proton" },
+    { "pattern": "Proton Mail*", "service": "Proton" },
+    { "pattern": "Slack*", "service": "Slack" },
+    { "pattern": "Zoom*", "service": "Zoom" },
+    { "pattern": "Box*", "service": "Box" },
+    { "pattern": "1Password*", "service": "1Password" },
+    { "pattern": "Bitwarden*", "service": "Bitwarden" },
+    { "pattern": "LastPass*", "service": "LastPass" },
+    { "pattern": "GitHub Desktop*", "service": "GitHub" },
+    { "pattern": "Docker Desktop*", "service": "Docker Hub" },
+    { "pattern": "Xero*", "service": "Xero" },
+    { "pattern": "QuickBooks*", "service": "QuickBooks Online" },
+    { "pattern": "AWS*", "service": "AWS" },
+    { "pattern": "Google Cloud SDK*", "service": "Google Cloud" },
+    { "pattern": "Microsoft Azure CLI*", "service": "Microsoft Azure" }
+  ]
+}

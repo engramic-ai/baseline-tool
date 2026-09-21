@@ -1,0 +1,31 @@
+{
+  "lastReviewed": "2026-09-16",
+  "notes": "Software that is out of vendor support must be removed (CE v3.3 Security update management). 'endOfSupport' in the future raises a warning within the warning window. Patterns are PowerShell -like wildcards matched against the installed program DisplayName. Extend this list for your estate.",
+  "upcomingEndWarningDays": 90,
+  "products": [
+    { "pattern": "Adobe Flash Player*", "endOfSupport": "2020-12-31" },
+    { "pattern": "Microsoft Silverlight*", "endOfSupport": "2021-10-12" },
+    { "pattern": "QuickTime*", "endOfSupport": "2016-01-01" },
+    { "pattern": "Adobe Shockwave Player*", "endOfSupport": "2019-04-09" },
+    { "pattern": "Java 7 Update*", "endOfSupport": "2015-04-30" },
+    { "pattern": "Java(TM) 7*", "endOfSupport": "2015-04-30" },
+    { "pattern": "Python 2.*", "endOfSupport": "2020-01-01" },
+    { "pattern": "Python 3.7.*", "endOfSupport": "2023-06-27" },
+    { "pattern": "Python 3.8.*", "endOfSupport": "2024-10-07" },
+    { "pattern": "Python 3.9.*", "endOfSupport": "2025-10-31" },
+    { "pattern": "Microsoft Office 2010*", "endOfSupport": "2020-10-13" },
+    { "pattern": "Microsoft Office*2013*", "endOfSupport": "2023-04-11" },
+    { "pattern": "Microsoft Office*2016*", "endOfSupport": "2025-10-14" },
+    { "pattern": "Microsoft Office*2019*", "endOfSupport": "2025-10-14" },
+    { "pattern": "Microsoft Office*2021*", "endOfSupport": "2026-10-13" },
+    { "pattern": "Adobe Acrobat Reader DC 2017*", "endOfSupport": "2022-06-06" },
+    { "pattern": "Adobe Acrobat 2020*", "endOfSupport": "2025-06-30" },
+    { "pattern": "Node.js*", "versionPattern": "^(1[0-9]|20)\\.", "endOfSupport": "2026-04-30", "notes": "Node.js 20 and earlier are end of life" },
+    { "pattern": "PHP*", "versionPattern": "^(5|7|8\\.0|8\\.1)\\.", "endOfSupport": "2025-12-31" },
+    { "pattern": "Windows Live Essentials*", "endOfSupport": "2017-01-10" },
+    { "pattern": "Skype for Business*2016*", "endOfSupport": "2025-10-14" },
+    { "pattern": "TeamViewer 1[0-4]*", "endOfSupport": "2023-12-31" },
+    { "pattern": "VMware Player*", "endOfSupport": "2024-05-01" },
+    { "pattern": "WinRAR*", "versionPattern": "^[1-6]\\.", "endOfSupport": "2024-01-01", "notes": "Old WinRAR versions have exploited vulnerabilities; update or replace" }
+  ]
+}

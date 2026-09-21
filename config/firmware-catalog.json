@@ -1,0 +1,7 @@
+{
+  "notes": "Hosted firmware catalog service. SU-08 compares the installed BIOS with the latest release for this model. The request sends only the vendor and 4-character model id (e.g. dell/0CF1): no serial number, device name or user details. Set baseUrl to \"\" to turn it off; SU-08 then uses the BIOS release date only. Plain http is only accepted for localhost. Records older than maxRecordAgeDays are not trusted; cacheHours controls how often the service is asked again.",
+  "baseUrl": "https://baseline.engramic.ai",
+  "timeoutSeconds": 20,
+  "cacheHours": 12,
+  "maxRecordAgeDays": 7
+}

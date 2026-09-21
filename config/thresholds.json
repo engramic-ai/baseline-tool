@@ -1,0 +1,13 @@
+{
+  "patchWindowDays": 14,
+  "maxLockoutThreshold": 10,
+  "minPasswordLength": 12,
+  "minDeviceUnlockPinLength": 6,
+  "maxInactivityLockSeconds": 900,
+  "maxDefenderSignatureAgeHours": 24,
+  "failDefenderSignatureAgeHours": 72,
+  "staleLocalAccountDays": 90,
+  "maxLocalAdmins": 2,
+  "minSecurityLogSizeBytes": 1073741824,
+  "firmwareAgeWarnDays": 730
+}

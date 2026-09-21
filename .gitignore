@@ -1,0 +1,10 @@
+# Audit results contain device details: keep them out of git
+output/
+*.log
+TestResults/
+build/
+build-tools/
+
+# Locally installed feature packs (paid packs live in their own private repos)
+/packs/
+app/_drv.ps1

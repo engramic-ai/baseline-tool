@@ -1,0 +1,74 @@
+{
+  "Rules": [
+    {
+      "SettingName": "CECheckerInstalled",
+      "Operator": "IsEquals",
+      "DataType": "Boolean",
+      "Operand": true,
+      "MoreInfoUrl": "https://github.com/engramic-ai/baseline-tool#readme",
+      "RemediationStrings": [
+        {
+          "Language": "en_US",
+          "Title": "The Engramic Baseline isn't installed on this device.",
+          "Description": "IT needs to install the Engramic Baseline so this device can be checked. Contact IT."
+        }
+      ]
+    },
+    {
+      "SettingName": "CEAuditAgeHours",
+      "Operator": "LessEquals",
+      "DataType": "Int64",
+      "Operand": 72,
+      "MoreInfoUrl": "https://github.com/engramic-ai/baseline-tool#readme",
+      "RemediationStrings": [
+        {
+          "Language": "en_US",
+          "Title": "This device hasn't been checked recently (last check {ActualValue} hours ago).",
+          "Description": "Leave the device switched on and connected for a while so the daily check can run. If this keeps happening, contact IT."
+        }
+      ]
+    },
+    {
+      "SettingName": "CEAutoFailCount",
+      "Operator": "IsEquals",
+      "DataType": "Int64",
+      "Operand": 0,
+      "MoreInfoUrl": "https://github.com/engramic-ai/baseline-tool#readme",
+      "RemediationStrings": [
+        {
+          "Language": "en_US",
+          "Title": "This device has {ActualValue} control(s) that automatically fail Cyber Essentials.",
+          "Description": "These are usually missing security updates or out-of-date apps. Install all updates in Settings > Windows Update, update your apps, then restart. Open 'Engramic Baseline' from the Start menu to see what needs fixing, or contact IT."
+        }
+      ]
+    },
+    {
+      "SettingName": "CEFailCount",
+      "Operator": "IsEquals",
+      "DataType": "Int64",
+      "Operand": 0,
+      "MoreInfoUrl": "https://github.com/engramic-ai/baseline-tool#readme",
+      "RemediationStrings": [
+        {
+          "Language": "en_US",
+          "Title": "This device has {ActualValue} failing Cyber Essentials control(s).",
+          "Description": "Open 'Engramic Baseline' from the Start menu to see which controls are failing and apply the suggested fixes, or contact IT."
+        }
+      ]
+    },
+    {
+      "SettingName": "CEv33MetPct",
+      "Operator": "GreaterEquals",
+      "DataType": "Int64",
+      "Operand": 80,
+      "MoreInfoUrl": "https://github.com/engramic-ai/baseline-tool#readme",
+      "RemediationStrings": [
+        {
+          "Language": "en_US",
+          "Title": "This device meets {ActualValue}% of the applicable Cyber Essentials v3.3 controls (needs at least 80%).",
+          "Description": "Some controls still need attention or attestation. Open 'Engramic Baseline' from the Start menu, work through the items marked 'attention' and 'to confirm', then re-run the audit. Contact IT if you need help."
+        }
+      ]
+    }
+  ]
+}

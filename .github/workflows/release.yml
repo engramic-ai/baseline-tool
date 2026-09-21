@@ -1,0 +1,37 @@
+name: Release
+
+# Push a tag like v0.2.0 to publish a release with the ready-to-upload Intune package.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Check tag matches module version
+        shell: powershell
+        run: |
+          $v = (Import-PowerShellDataFile ./src/CEAudit/CEAudit.psd1).ModuleVersion
+          if ("v$v" -ne $env:GITHUB_REF_NAME) { throw "Tag $env:GITHUB_REF_NAME does not match module version $v" }
+
+      - name: Build
+        shell: powershell
+        run: |
+          ./intune/Build-IntunePackage.ps1 -DownloadTool
+          Compress-Archive -Path build/upload/* -DestinationPath build/intune-upload-files.zip
+
+      - name: Publish release
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
+        with:
+          body_path: build/INTUNE-SETTINGS.md
+          files: |
+            build/*.intunewin
+            build/EngramicBaseline.zip
+            build/intune-upload-files.zip
+            build/INTUNE-SETTINGS.md

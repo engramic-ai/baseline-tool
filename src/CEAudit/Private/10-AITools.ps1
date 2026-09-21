@@ -1,0 +1,236 @@
+# ---------------------------------------------------------------------------
+# AI assistants and agents on the device (config/ai-tools.json), used by
+# UA-07 (MFA on their accounts), SC-09 (agents as remote access) and UA-10
+# (agents running with administrator rights). Read-only: installed programs,
+# the user's Store packages, profile folders, VS Code extensions and processes.
+# ---------------------------------------------------------------------------
+
+function Get-CEStorePackageName {
+    <# Store (MSIX) package names installed for the signed-in user, from their registry hive. #>
+    $root = Get-CEUserRegistryRoot
+    if (-not $root) { return ,@() }
+    $key = "$root\Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\Repository\Packages"
+    $names = @(Get-ChildItem -Path $key -ErrorAction SilentlyContinue | ForEach-Object { ($_.PSChildName -split '_')[0] } | Sort-Object -Unique)
+    return ,$names
+}
+
+function Get-CEProcessList {
+    <# Running processes with path and command line (blank when they can't be read, e.g. elevated processes in a non-elevated audit). #>
+    try {
+        $list = @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop | ForEach-Object {
+            [pscustomobject]@{
+                Name        = [string]$_.Name
+                ProcessId   = [int]$_.ProcessId
+                Path        = [string](Get-CEObjectValue $_ 'ExecutablePath' '')
+                CommandLine = [string](Get-CEObjectValue $_ 'CommandLine' '')
+                Cim         = $_
+            }
+        })
+        return ,$list
+    }
+    catch { return ,@() }
+}
+
+function Get-CEProcessOwner {
+    param($Process)
+    try {
+        $o = Invoke-CimMethod -InputObject $Process.Cim -MethodName GetOwner -ErrorAction Stop
+        if ($o.User) { return "$($o.Domain)\$($o.User)" }
+    }
+    catch { Write-Verbose "Owner of $($Process.ProcessId) not readable: $_" }
+    return ''
+}
+
+function Get-CEProcessElevation {
+    <#
+        1 when the process token is elevated, 0 when it isn't, -1 when it can't be read.
+        Reads the token with query-only access (PROCESS_QUERY_LIMITED_INFORMATION, TOKEN_QUERY).
+    #>
+    param([Parameter(Mandatory)][int]$ProcessId)
+    if (-not (Test-CEIsWindows)) { return -1 }
+    try {
+        if (-not ('CEAudit.TokenElevation' -as [type])) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+namespace CEAudit {
+    public static class TokenElevation {
+        [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr OpenProcess(uint access, bool inherit, int processId);
+        [DllImport("advapi32.dll", SetLastError = true)] static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+        [DllImport("advapi32.dll", SetLastError = true)] static extern bool GetTokenInformation(IntPtr token, int infoClass, out int info, int length, out int returned);
+        [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+        public static int IsElevated(int processId) {
+            IntPtr process = OpenProcess(0x1000, false, processId);
+            if (process == IntPtr.Zero) { return -1; }
+            try {
+                IntPtr token;
+                if (!OpenProcessToken(process, 0x0008, out token)) { return -1; }
+                try {
+                    int elevated; int returned;
+                    if (!GetTokenInformation(token, 20, out elevated, 4, out returned)) { return -1; }
+                    return elevated != 0 ? 1 : 0;
+                }
+                finally { CloseHandle(token); }
+            }
+            finally { CloseHandle(process); }
+        }
+    }
+}
+'@ -ErrorAction Stop
+        }
+        return [CEAudit.TokenElevation]::IsElevated($ProcessId)
+    }
+    catch {
+        Write-Verbose "Could not check elevation of $ProcessId : $_"
+        return -1
+    }
+}
+
+function Get-CEAIToolState {
+    <# AI tools found on this device, gathered once per audit. #>
+    param($Context)
+    $cacheKey = "$($Context.ComputerName)|$($Context.AuditTime.Ticks)|$($Context.IsElevated)"
+    if ($script:CEAIToolCache -and $script:CEAIToolCache.Key -eq $cacheKey) { return $script:CEAIToolCache.State }
+    $state = Get-CEAIToolStateUncached -Context $Context
+    $script:CEAIToolCache = @{ Key = $cacheKey; State = $state }
+    return $state
+}
+
+function Get-CEAIToolStateUncached {
+    param($Context)
+    $catalog = @(Get-CEObjectValue (Get-CEConfig).'ai-tools' 'tools' @() | Where-Object { (Get-CEObjectValue $_ 'enabled' $true) -ne $false })
+    $software = @(Get-CEInstalledSoftware)
+    $store = Get-CEStorePackageName
+    $profilePath = Get-CEUserProfilePath -Context $Context
+    $extensions = @()
+    if ($profilePath) {
+        foreach ($folder in '.vscode\extensions', '.vscode-insiders\extensions') {
+            $extensions += @(Get-ChildItem -LiteralPath (Join-Path $profilePath $folder) -Directory -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
+        }
+    }
+    $processes = Get-CEProcessList
+    $like = { param($value, $pattern) (-not $pattern) -or ("$value" -like $pattern) }
+    $programText = { param($sw) if ($sw.Version -and $sw.Name -notlike "*$($sw.Version)*") { "Installed program: $($sw.Name) $($sw.Version)" } else { "Installed program: $($sw.Name)" } }
+
+    $tools = New-Object System.Collections.ArrayList
+    $claimed = @{}
+    foreach ($t in $catalog) {
+        $signals = @()
+        foreach ($p in @(Get-CEObjectValue $t 'programs' @())) {
+            $signals += @($software | Where-Object { $_.Name -like [string]$p.name -and (& $like $_.Publisher ([string](Get-CEObjectValue $p 'publisher' ''))) } |
+                ForEach-Object { & $programText $_ })
+        }
+        $keys = @(Get-CEObjectValue $t 'uninstallKeys' @())
+        if ($keys.Count) { $signals += @($software | Where-Object { $keys -contains $_.KeyName } | ForEach-Object { & $programText $_ }) }
+        foreach ($a in @(Get-CEObjectValue $t 'appx' @())) { if ($store -contains $a) { $signals += "Store app: $a" } }
+        if ($profilePath) {
+            foreach ($rel in @(Get-CEObjectValue $t 'paths' @())) {
+                if (Test-Path -LiteralPath (Join-Path $profilePath $rel)) { $signals += "Found %USERPROFILE%\$rel" }
+            }
+        }
+        foreach ($pattern in @(Get-CEObjectValue $t 'vscodeExtensions' @())) {
+            $signals += @($extensions | Where-Object { $_ -like $pattern } | ForEach-Object { "VS Code extension: $_" })
+        }
+        $running = @()
+        foreach ($spec in @(Get-CEObjectValue $t 'processes' @())) {
+            $pathPattern = [string](Get-CEObjectValue $spec 'path' '')
+            $cmdPattern = [string](Get-CEObjectValue $spec 'commandLine' '')
+            $image = [string](Get-CEObjectValue $spec 'image' '')
+            if (-not $image) { continue }
+            foreach ($proc in @($processes | Where-Object { $_.Name -eq $image })) {
+                if ($claimed.ContainsKey($proc.ProcessId)) { continue }
+                if ($pathPattern -and -not ($proc.Path -and $proc.Path -like $pathPattern)) { continue }
+                if ($cmdPattern -and -not ($proc.CommandLine -and $proc.CommandLine -like $cmdPattern)) { continue }
+                $claimed[$proc.ProcessId] = $true
+                $running += $proc
+            }
+        }
+        $signals = @($signals | Select-Object -Unique)
+        if ($signals.Count -eq 0 -and $running.Count -eq 0) { continue }
+        $canAct = [bool](Get-CEObjectValue $t 'canActOnDevice' $false)
+        $procInfo = @($running | ForEach-Object {
+            # Owner and token are only needed for agents that can act on the device (UA-10), and are the slow part.
+            $owner = if ($canAct) { Get-CEProcessOwner -Process $_ } else { '' }
+            $elevation = if ($canAct) { Get-CEProcessElevation -ProcessId $_.ProcessId } else { -1 }
+            [pscustomobject]@{
+                ProcessId = $_.ProcessId
+                Image     = $_.Name
+                Path      = $_.Path
+                Owner     = $owner
+                AsSystem  = ($owner -match '^NT AUTHORITY\\SYSTEM$')
+                Elevated  = $(switch ($elevation) { 1 { $true } 0 { $false } default { $null } })
+            }
+        })
+        if ($procInfo.Count) { $signals += "Running: $((@($procInfo | ForEach-Object { "$($_.Image) (pid $($_.ProcessId))" })) -join ', ')" }
+        [void]$tools.Add([pscustomobject]@{
+            Id             = [string](Get-CEObjectValue $t 'id' '')
+            Name           = [string](Get-CEObjectValue $t 'name' '')
+            Service        = [string](Get-CEObjectValue $t 'service' '')
+            CanActOnDevice = $canAct
+            Notes          = [string](Get-CEObjectValue $t 'notes' '')
+            Signals        = $signals
+            Processes      = $procInfo
+        })
+    }
+
+    # Agent images whose path and command line couldn't be read: they may belong to a tool running
+    # elevated or as another user. node.exe is too common to report this way.
+    $agentImages = @($catalog | ForEach-Object { @(Get-CEObjectValue $_ 'processes' @()) | Where-Object { (Get-CEObjectValue $_ 'path' '') -or (Get-CEObjectValue $_ 'commandLine' '') } | ForEach-Object { [string]$_.image } } |
+        Where-Object { $_ -and $_ -ne 'node.exe' } | Sort-Object -Unique)
+    $hidden = @($processes | Where-Object { $agentImages -contains $_.Name -and -not $_.Path -and -not $_.CommandLine -and -not $claimed.ContainsKey($_.ProcessId) } |
+        ForEach-Object { "$($_.Name) (pid $($_.ProcessId))" })
+    return [pscustomobject]@{ Tools = $tools.ToArray(); UninspectedProcesses = $hidden }
+}
+
+function Get-CEAiPosture {
+    <#
+        Per-user AI inventory for user-status.json: which agents are present and
+        whether they are contained, and where they run (WSL, containers). A
+        deviation is an agent running as administrator/SYSTEM or a distribution
+        that logs in as root. Read-only; only meaningful in the user's own
+        session (Invoke-CEUserProbe.ps1).
+    #>
+    [CmdletBinding()]
+    param($Context)
+    if (-not $Context) { $Context = Get-CEDeviceContext }
+    $ai = Get-CEAIToolState -Context $Context
+    $virt = Get-CEVirtualisationState -Context $Context
+
+    $agents = @(foreach ($t in @($ai.Tools)) {
+        $procs = @(Get-CEObjectValue $t 'Processes' @())
+        [ordered]@{
+            id             = [string]$t.Id
+            name           = [string]$t.Name
+            canActOnDevice = [bool]$t.CanActOnDevice
+            running        = ($procs.Count -gt 0)
+            elevated       = [bool](@($procs | Where-Object { $_.Elevated -eq $true }).Count)
+            asSystem       = [bool](@($procs | Where-Object { $_.AsSystem }).Count)
+        }
+    })
+
+    $wslEnvs = @(foreach ($d in @($virt.Wsl)) {
+        [ordered]@{
+            type           = 'wsl'
+            name           = [string]$d.Name
+            wslVersion     = [int]$d.Version
+            running        = $(if ($null -eq $d.Running) { $null } else { [bool]$d.Running })
+            autoMount      = $(if ($null -eq $d.Automount) { $null } else { [bool]$d.Automount })
+            defaultUidRoot = ([int](Get-CEObjectValue $d 'DefaultUid' 1000) -eq 0)
+            networking     = [string]$virt.WslNetworking
+        }
+    })
+    $containerEnvs = @(foreach ($c in @($virt.Containers)) {
+        [ordered]@{ type = 'container'; name = [string]$c.Name; image = [string]$c.Image }
+    })
+    $environments = @($wslEnvs) + @($containerEnvs)
+
+    $deviations = @($agents | Where-Object { $_.elevated -or $_.asSystem }).Count + @($wslEnvs | Where-Object { $_.defaultUidRoot }).Count
+
+    return [ordered]@{
+        agentsFound  = @($agents).Count
+        contained    = ([int]$deviations -eq 0)
+        deviations   = [int]$deviations
+        agents       = $agents
+        environments = $environments
+    }
+}

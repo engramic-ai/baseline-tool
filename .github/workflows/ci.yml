@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Tests (${{ matrix.shell }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shell: [powershell, pwsh]
+    # matrix can't be used in a step's shell:, only in the job's defaults.
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install Pester and PSScriptAnalyzer
+        run: |
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+          Install-Module Pester -MinimumVersion 5.5.0 -Scope CurrentUser -Force -SkipPublisherCheck
+          Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
+
+      - name: Lint
+        run: |
+          $issues = Invoke-ScriptAnalyzer -Path . -Recurse -Settings ./.github/PSScriptAnalyzerSettings.psd1
+          $issues | Format-Table -AutoSize
+          if ($issues) { throw "$($issues.Count) analyzer issue(s)" }
+
+      - name: Unit tests
+        run: |
+          Import-Module Pester -MinimumVersion 5.5.0
+          $c = New-PesterConfiguration
+          $c.Run.Path = './tests'
+          $c.Run.Exit = $true
+          $c.Output.Verbosity = 'Detailed'
+          Invoke-Pester -Configuration $c
+
+      - name: Load the desktop app layout
+        run: |
+          Add-Type -AssemblyName PresentationFramework
+          $src = Get-Content ./app/Start-CEAuditGui.ps1 -Raw
+          $start = $src.IndexOf("[xml]`$xaml = @'") + 15
+          $end = $src.IndexOf("'@", $start)
+          [xml]$x = $src.Substring($start, $end - $start).Trim()
+          $null = [Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader $x))
+          $start = $src.IndexOf("`$chooserXaml = @'") + 17
+          $end = $src.IndexOf("'@", $start)
+          [xml]$x = $src.Substring($start, $end - $start).Trim()
+          $null = [Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader $x))
+          'XAML loaded OK (main window and check chooser)'
+
+  intune-rehearsal:
+    name: Intune deployment rehearsal
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Skip the online Windows Update search (slow on hosted runners)
+        shell: powershell
+        run: |
+          $dir = Join-Path $env:ProgramData 'EngramicBaseline\config'
+          New-Item -ItemType Directory -Path $dir -Force | Out-Null
+          '{ "excludeCheckIds": ["SU-03"] }' | Set-Content (Join-Path $dir 'scheduled-audit.json')
+
+      - name: Install, audit as SYSTEM, run discovery in 32/64-bit hosts, evaluate rules, uninstall
+        shell: powershell
+        run: ./intune/Test-IntuneDeployment.ps1 -TimeoutMinutes 20
+
+      - name: Build the Intune package
+        shell: powershell
+        run: ./intune/Build-IntunePackage.ps1 -DownloadTool
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: intune-package
+          path: build

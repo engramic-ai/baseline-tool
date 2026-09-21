@@ -1,0 +1,482 @@
+{
+  "notes": "Security products recognised by MP-01 (config/av-products.json). Service and driver names are the short names (Get-Service Name, driver registry key or minifilter name); * wildcards allowed. kind: antivirus = blocks malware on access; edr = detection and response that relies on another product to block. A product counts as running when one of its services is running (drivers when it lists no services). Any loaded minifilter at altitude 320000-329999 that no entry claims is reported as unrecognised. Names were checked against vendor documentation, Microsoft's allocated filter altitudes, SigmaHQ and Splunk security_content; see sources. Candidate for hosting on the catalog service.",
+  "lastReviewed": "2026-09-16",
+  "products": [
+    {
+      "id": "microsoft-defender",
+      "name": "Microsoft Defender Antivirus",
+      "vendor": "Microsoft",
+      "kind": "antivirus",
+      "isDefender": true,
+      "services": [
+        "WinDefend"
+      ],
+      "drivers": [
+        "WdFilter"
+      ],
+      "notes": "Built in. Its state comes from Get-MpComputerStatus (AMRunningMode); this entry lets MP-01 recognise its minifilter.",
+      "sources": [
+        "https://learn.microsoft.com/en-us/defender-endpoint/microsoft-defender-antivirus-compatibility",
+        "https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/allocated-altitudes"
+      ]
+    },
+    {
+      "id": "crowdstrike-falcon",
+      "name": "CrowdStrike Falcon",
+      "vendor": "CrowdStrike",
+      "kind": "antivirus",
+      "services": [
+        "CSFalconService"
+      ],
+      "drivers": [
+        "CSAgent"
+      ],
+      "notes": "Blocking needs a Falcon Prevent licence and a prevention policy; Falcon Insight on its own (or Falcon for Defender) only detects.",
+      "sources": [
+        "https://github.com/CrowdStrike/falcon-windows-repair/blob/main/Get-FalconServiceStatus.ps1",
+        "https://www.crowdstrike.com/wp-content/uploads/2024/07/Repairing-Falcon-Windows-Sensors-1.pdf",
+        "https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/allocated-altitudes",
+        "https://github.com/splunk/security_content/blob/develop/lookups/csv/security_services_lookup.csv"
+      ]
+    },
+    {
+      "id": "sentinelone",
+      "name": "SentinelOne",
+      "vendor": "SentinelOne",
+      "kind": "antivirus",
+      "services": [
+        "SentinelAgent",
+        "SentinelHelperService",
+        "SentinelStaticEngine",
+        "LogProcessorService"
+      ],
+      "drivers": [
+        "SentinelMonitor"
+      ],
+      "notes": "The policy must be set to Protect; Detect mode only alerts.",
+      "sources": [
+        "https://github.com/splunk/security_content/blob/develop/lookups/csv/security_services_lookup.csv",
+        "https://github.com/SigmaHQ/sigma/blob/master/rules/windows/process_creation/proc_creation_win_susp_service_tamper.yml",
+        "https://www.automox.com/worklets/start-sentinelone-agent-service-windows",
+        "https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/allocated-altitudes"
+      ]
+    },
+    {
+      "id": "sophos-endpoint",
+      "name": "Sophos Intercept X / Server Protection",
+      "vendor": "Sophos",
+      "kind": "antivirus",
+      "services": [
+        "Sophos File Scanner Service",
+        "Sophos Endpoint Defense Service",
+        "SAVService"
+      ],
+      "drivers": [
+        "Sophos Endpoint Defense",
+        "SophosED"
+      ],
+      "notes": "A Sophos XDR sensor-only install relies on another antivirus.",
+      "sources": [
+        "https://github.com/splunk/security_content/blob/develop/lookups/csv/security_services_lookup.csv",
+        "https://martinsblog.dk/sophos-endpoint-defense-how-to-recover-a-tamper-protected-system/",
+        "https://www.avanet.com/en/kb/sophos-endpoint-windows-logs-dienste/",
+        "https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/allocated-altitudes"
+      ]
+    },
+    {
+      "id": "trend-micro-apex-one",
+      "name": "Trend Micro Apex One",
+      "vendor": "Trend Micro",
+      "kind": "antivirus",
+      "services": [
+        "ntrtscan",
+        "tmlisten",
+        "TMBMServer",
+        "TmCCSF"
+      ],
+      "drivers": [],
+      "notes": "ntrtscan is the real-time scan service.",
+      "sources": [
+        "https://docs.trendmicro.com/en-us/documentation/article/trend-micro-apex-one-patch-5-online-help-trend_client_program_016",
+        "https://github.com/SigmaHQ/sigma/blob/master/rules/windows/process_creation/proc_creation_win_susp_service_tamper.yml",
+        "https://github.com/splunk/security_content/blob/develop/lookups/csv/security_services_lookup.csv"
+      ]
+    },
+    {
+      "id": "trend-micro-deep-security-antimalware",
+      "name": "Trend Micro Deep Security / Server & Workload Protection (Anti-Malware)",
+      "vendor": "Trend Micro",
+      "kind": "antivirus",
+      "services": [
+        "Amsp"
+      ],
+      "drivers": [],
+      "notes": "Amsp only runs when the Anti-Malware module is on.",
+      "sources": [
+        "https://success.trendmicro.com/en-US/solution/KA-0009114",
+        "https://success.trendmicro.com/en-US/solution/KA-0003359"
+      ]
+    },
+    {
+      "id": "trend-micro-deep-security-agent",
+      "name": "Trend Micro Deep Security / Server & Workload Protection agent",
+      "vendor": "Trend Micro",
+      "kind": "edr",
+      "services": [
+        "ds_agent",
+        "ds_monitor",
+        "ds_notifier"
+      ],
+      "drivers": [
+        "tbimdsa",
+        "tmactmon",
+        "tmevtmgr",
+        "tmcomm",
+        "tmumh",
+        "tmeyes"
+      ],
+      "notes": "The base agent is present whatever modules are enabled; without the Anti-Malware module (Amsp) it does not block malware.",
+      "sources": [
+        "https://success.trendmicro.com/en-US/solution/KA-0003359",
+        "https://success.trendmicro.com/en-US/solution/KA-0009114",
+        "https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/allocated-altitudes"
+      ]
+    },
+    {
+      "id": "eset",
+      "name": "ESET Endpoint Security / Server Security",
+      "vendor": "ESET",
+      "kind": "antivirus",
+      "services": [
+        "ekrn"
+      ],
+      "drivers": [
+        "eamonm",
+        "ehdrv",
+        "edevmon"
+      ],
+      "notes": "",
+      "sources": [
+        "https://support.eset.com/en/kb8829-resolve-increased-cpu-utilization-or-ekrnexe-process-crashing-in-eset-server-security-for-microsoft-windows-server",
+        "https://github.com/SigmaHQ/sigma/blob/master/rules/windows/process_creation/proc_creation_win_susp_service_tamper.yml",
+        "https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/allocated-altitudes"
+      ]
+    },
+    {
+      "id": "bitdefender-gravityzone",
+      "name": "Bitdefender GravityZone",
+      "vendor": "Bitdefender",
+      "kind": "antivirus",
+      "services": [
+        "EPSecurityService",
+        "EPProtectedService",
+        "EPIntegrationService",
+        "EPUpdateService"
+      ],
+      "drivers": [
+        "vlflt",
+        "gzflt",
+        "trufos",
+        "avckf"
+      ],
+      "notes": "The agent can be installed as an EDR sensor only, next to another antivirus; confirm the Antimalware module is installed. N-able AV Defender uses the same names.",
+      "sources": [
+        "https://www.bitdefender.com/business/support/en/77212-87466-troubleshooting.html",
+        "https://github.com/splunk/security_content/blob/develop/lookups/csv/security_services_lookup.csv",
+        "https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/allocated-altitudes"
+      ]
+    },
+    {
+      "id": "trellix-ens",
+      "name": "Trellix (McAfee) Endpoint Security",
+      "vendor": "Trellix",
+      "kind": "antivirus",
+      "services": [
+        "mfetp",
+        "mfemms"
+      ],
+      "drivers": [
+        "mfehidk"
+      ],
+      "notes": "Less certain: mfemms and mfehidk are shared with other Trellix products; mfetp (Threat Prevention) is the antivirus.",
+      "sources": [
+        "https://github.com/splunk/security_content/blob/develop/lookups/csv/security_services_lookup.csv",
+        "https://github.com/SigmaHQ/sigma/blob/master/rules/windows/process_creation/proc_creation_win_susp_service_tamper.yml",
+        "https://communitym.trellix.com/t5/Endpoint-Security-ENS/Query-on-mfetp-exe/m-p/615489"
+      ]
+    },
+    {
+      "id": "symantec-endpoint",
+      "name": "Symantec Endpoint Protection / Endpoint Security",
+      "vendor": "Broadcom",
+      "kind": "antivirus",
+      "services": [
+        "SepMasterService"
+      ],
+      "drivers": [
+        "SRTSP",
+        "SRTSP64",
+        "SymEFASI"
+      ],
+      "notes": "",
+      "sources": [
+        "https://knowledge.broadcom.com/external/article/210673/endpoint-security-processes-and-services.html",
+        "https://github.com/splunk/security_content/blob/develop/lookups/csv/security_services_lookup.csv",
+        "https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/allocated-altitudes"
+      ]
+    },
+    {
+      "id": "kaspersky-endpoint",
+      "name": "Kaspersky Endpoint Security / Security for Windows Server",
+      "vendor": "Kaspersky",
+      "kind": "antivirus",
+      "services": [
+        "AVP.KES.*",
+        "KAVFS"
+      ],
+      "drivers": [
+        "klif"
+      ],
+      "notes": "",
+      "sources": [
+        "https://support.kaspersky.com/help/KESWin/12.6/en-US/133798.htm",
+        "https://github.com/splunk/security_content/blob/develop/lookups/csv/security_services_lookup.csv",
+        "https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/allocated-altitudes"
+      ]
+    },
+    {
+      "id": "cortex-xdr",
+      "name": "Palo Alto Networks Cortex XDR",
+      "vendor": "Palo Alto Networks",
+      "kind": "antivirus",
+      "services": [
+        "cyserver",
+        "CyveraService"
+      ],
+      "drivers": [
+        "cyverak",
+        "cyvrmtgn",
+        "cyvrfsfd",
+        "tedrdrv"
+      ],
+      "notes": "The security profile can be set to report only.",
+      "sources": [
+        "https://cortex-docs.paloaltonetworks.com/cortex-xdr-agent/8.9/cortex-xdr-agent-for-windows/troubleshooting-resources-for-windows/cytool-for-windows",
+        "https://github.com/splunk/security_content/blob/develop/lookups/csv/security_services_lookup.csv",
+        "https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/allocated-altitudes"
+      ]
+    },
+    {
+      "id": "carbon-black-cloud",
+      "name": "Carbon Black Cloud",
+      "vendor": "Broadcom",
+      "kind": "antivirus",
+      "services": [
+        "CbDefense"
+      ],
+      "drivers": [],
+      "notes": "Blocking needs Endpoint Standard; an Enterprise EDR-only licence uses the same sensor and does not block.",
+      "sources": [
+        "https://knowledge.broadcom.com/external/article/291738/stop-and-start-the-carbon-black-cloud-se.html",
+        "https://github.com/SigmaHQ/sigma/blob/master/rules/windows/process_creation/proc_creation_win_reg_disable_sec_services.yml"
+      ]
+    },
+    {
+      "id": "cisco-secure-endpoint",
+      "name": "Cisco Secure Endpoint",
+      "vendor": "Cisco",
+      "kind": "antivirus",
+      "services": [
+        "CiscoAMP*"
+      ],
+      "drivers": [
+        "ImmunetProtect",
+        "ImmunetSelfProtect",
+        "CiscoAMPHeurDriver"
+      ],
+      "notes": "Blocking depends on the policy.",
+      "sources": [
+        "https://www.cisco.com/c/en/us/support/docs/security/amp-endpoints/217139-important-changes-in-amp-for-endpoints-w.html",
+        "https://github.com/splunk/security_content/blob/develop/lookups/csv/security_services_lookup.csv",
+        "https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/allocated-altitudes"
+      ]
+    },
+    {
+      "id": "withsecure-elements",
+      "name": "WithSecure Elements Endpoint Protection",
+      "vendor": "WithSecure",
+      "kind": "antivirus",
+      "services": [
+        "fsulprothoster",
+        "fshoster",
+        "fsdevcon"
+      ],
+      "drivers": [
+        "F-Secure Gatekeeper"
+      ],
+      "notes": "Less certain. An Elements EDR-only subscription may use the same agent without endpoint protection.",
+      "sources": [
+        "https://community.withsecure.com/en/kb/articles/32466-f-secure-hoster-and-f-secure-hoster-restricted-service-no-longer-found-after-upgrading-to-elements-agent-version-22-7",
+        "https://github.com/splunk/security_content/blob/develop/lookups/csv/security_services_lookup.csv",
+        "https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/allocated-altitudes"
+      ]
+    },
+    {
+      "id": "webroot",
+      "name": "Webroot SecureAnywhere",
+      "vendor": "OpenText",
+      "kind": "antivirus",
+      "services": [
+        "WRSVC",
+        "WRCoreService"
+      ],
+      "drivers": [
+        "WRkrn"
+      ],
+      "notes": "",
+      "sources": [
+        "https://github.com/splunk/security_content/blob/develop/lookups/csv/security_services_lookup.csv",
+        "https://github.com/SigmaHQ/sigma/blob/master/rules/windows/process_creation/proc_creation_win_susp_service_tamper.yml",
+        "https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/allocated-altitudes"
+      ]
+    },
+    {
+      "id": "malwarebytes-threatdown",
+      "name": "Malwarebytes / ThreatDown",
+      "vendor": "Malwarebytes",
+      "kind": "antivirus",
+      "services": [
+        "MBAMService"
+      ],
+      "drivers": [],
+      "notes": "",
+      "sources": [
+        "https://support.threatdown.com/hc/en-us/articles/4413802488723-Endpoint-Agent-not-starting-on-Windows",
+        "https://github.com/SigmaHQ/sigma/blob/master/rules/windows/process_creation/proc_creation_win_susp_service_tamper.yml"
+      ]
+    },
+    {
+      "id": "elastic-defend",
+      "name": "Elastic Defend",
+      "vendor": "Elastic",
+      "kind": "antivirus",
+      "services": [
+        "ElasticEndpoint"
+      ],
+      "drivers": [],
+      "notes": "Blocking needs a preset with malware prevention on; the Data collection preset and detect-only mode do not block.",
+      "sources": [
+        "https://github.com/elastic/detection-rules/blob/main/rules/cross-platform/defense_evasion_elastic_agent_service_terminated.toml",
+        "https://www.elastic.co/docs/reference/security/endpoint-command-reference"
+      ]
+    },
+    {
+      "id": "cylance-protect",
+      "name": "CylancePROTECT",
+      "vendor": "Arctic Wolf",
+      "kind": "antivirus",
+      "services": [
+        "CylanceSvc"
+      ],
+      "drivers": [],
+      "notes": "Blocking needs a policy with auto-quarantine; alert-only policies do not block.",
+      "sources": [
+        "https://github.com/splunk/security_content/blob/develop/lookups/csv/security_services_lookup.csv",
+        "https://www.sonicwall.com/support/knowledge-base/cylance-uninstalling-agent/kA1VN0000000Ens0AE"
+      ]
+    },
+    {
+      "id": "watchguard-endpoint",
+      "name": "WatchGuard (Panda) Endpoint Security",
+      "vendor": "WatchGuard",
+      "kind": "antivirus",
+      "services": [
+        "PSUAService",
+        "NanoServiceMain"
+      ],
+      "drivers": [
+        "PSINFile",
+        "PSINProc"
+      ],
+      "notes": "Less certain. WatchGuard EDR and Adaptive Defense on their own rely on another antivirus.",
+      "sources": [
+        "https://github.com/splunk/security_content/blob/develop/lookups/csv/security_services_lookup.csv",
+        "https://github.com/SigmaHQ/sigma/blob/master/rules/windows/process_creation/proc_creation_win_susp_service_tamper.yml",
+        "https://www.watchguard.com/help/docs/help-center/en-US/Content/en-US/Endpoint-Security/troubleshooting/av-prot-errors.html"
+      ]
+    },
+    {
+      "id": "avast-avg",
+      "name": "Avast / AVG Antivirus",
+      "vendor": "Gen Digital",
+      "kind": "antivirus",
+      "services": [
+        "avast! Antivirus",
+        "AVG Antivirus"
+      ],
+      "drivers": [
+        "aswSP"
+      ],
+      "notes": "",
+      "sources": [
+        "https://github.com/SigmaHQ/sigma/blob/master/rules/windows/process_creation/proc_creation_win_susp_service_tamper.yml",
+        "https://github.com/splunk/security_content/blob/develop/lookups/csv/security_services_lookup.csv",
+        "https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/allocated-altitudes"
+      ]
+    },
+    {
+      "id": "microsoft-defender-for-endpoint",
+      "name": "Microsoft Defender for Endpoint (EDR sensor)",
+      "vendor": "Microsoft",
+      "kind": "edr",
+      "services": [
+        "Sense"
+      ],
+      "drivers": [
+        "MsSecFlt"
+      ],
+      "notes": "Detection and response only: blocking comes from Microsoft Defender Antivirus, which must be running normally rather than in passive mode.",
+      "sources": [
+        "https://learn.microsoft.com/en-us/defender-endpoint/troubleshoot-onboarding",
+        "https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/allocated-altitudes"
+      ]
+    },
+    {
+      "id": "microsoft-scep",
+      "name": "System Center Endpoint Protection (legacy)",
+      "vendor": "Microsoft",
+      "kind": "antivirus",
+      "services": [
+        "MsMpSvc"
+      ],
+      "drivers": [
+        "MpFilter"
+      ],
+      "notes": "End of life; only on Windows Server 2012 R2 and older.",
+      "sources": [
+        "https://github.com/SigmaHQ/sigma/blob/master/rules/windows/process_creation/proc_creation_win_reg_disable_sec_services.yml",
+        "https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/allocated-altitudes"
+      ]
+    },
+    {
+      "id": "huntress",
+      "name": "Huntress",
+      "vendor": "Huntress",
+      "kind": "edr",
+      "services": [
+        "HuntressAgent",
+        "HuntressRio",
+        "HuntressUpdater"
+      ],
+      "drivers": [
+        "HuntMon"
+      ],
+      "notes": "Detection and response only. Huntress Managed AV manages Microsoft Defender Antivirus, which must be running normally.",
+      "sources": [
+        "https://github.com/huntresslabs/deployment-scripts/blob/main/Powershell/InstallHuntress.powershellv2.ps1",
+        "https://support.huntress.io/hc/en-us/articles/4404012589203-Basic-Agent-Troubleshooting-Checking-Agent-Status",
+        "https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/allocated-altitudes"
+      ]
+    }
+  ]
+}

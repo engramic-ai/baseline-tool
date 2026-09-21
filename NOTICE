@@ -1,0 +1,14 @@
+Engramic Baseline
+Copyright 2026 Engramic Ltd
+
+This product is developed by Engramic Ltd and is licensed under the Apache
+License, Version 2.0 (see LICENSE). "Engramic" and "Engramic Baseline" are
+trademarks of Engramic Ltd; the licence grants no rights to use them.
+
+Third-party components distributed with this product:
+
+  Geist and Geist Mono fonts
+    Files: app/fonts/Geist.ttf, app/fonts/GeistMono.ttf
+    Copyright (c) 2023 Vercel, Inc. (https://vercel.com)
+    Licensed under the SIL Open Font License, Version 1.1.
+    Full licence text: app/fonts/OFL.txt

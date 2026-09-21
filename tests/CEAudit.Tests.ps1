@@ -260,6 +260,7 @@ BeforeAll {
         }
         # No AI tools unless a test sets them up (keeps this machine's real apps out of the results).
         Mock -ModuleName CEAudit Get-CEAIToolState { [pscustomobject]@{ Tools = @(); UninspectedProcesses = @() } }
+        Mock -ModuleName CEAudit Get-CEMcpInventory { [ordered]@{ mcpConfigsFound = 0; mcpConfigsParsed = 0; mcpConfigsUnreadable = @(); mcpServers = @(); credentialsFound = 0; credentialsPlaintext = 0; scanBounds = 'test' } }
         Mock -ModuleName CEAudit Get-MpThreat { @() }
         Mock -ModuleName CEAudit Get-MpThreatDetection { @() }
         Mock -ModuleName CEAudit Get-MpPreference {
@@ -301,9 +302,9 @@ BeforeAll {
 }
 
 Describe 'Module structure' {
-    It 'loads 56 checks with unique ids' {
+    It 'loads 57 checks with unique ids' {
         $checks = Get-CECheck
-        $checks.Count | Should -Be 56
+        $checks.Count | Should -Be 57
         ($checks.Id | Sort-Object -Unique).Count | Should -Be $checks.Count
     }
 
@@ -576,7 +577,7 @@ Describe 'Audit of an insecure device' {
             $r.Summary.Verdict | Should -Match '^FAIL'
             $fw = @($script:findings | Where-Object Category -eq 'Firewalls')
             $p = Export-CEReport -Findings $fw -Context (New-TestContext) -OutputPath (Join-Path $TestDrive 'out-partial') -PartialRun
-            $p.Summary.Verdict | Should -Match '^PARTIAL: \d+ of 56 checks run$' -Because 'a partial run gives no FAIL/READY verdict even with failures'
+            $p.Summary.Verdict | Should -Match '^PARTIAL: \d+ of 57 checks run$' -Because 'a partial run gives no FAIL/READY verdict even with failures'
             (Get-Content $r.Paths.Html -Raw) | Should -Match 'Cyber Essentials Plus readiness'
             (Get-Content $r.Paths.Markdown -Raw) | Should -Match 'Automatic-fail items'
             ($r.Summary.CEPlus | Where-Object TestCase -eq 'TC2').State | Should -Be 'Likely fail'
@@ -607,19 +608,19 @@ Describe 'Audit of a hardened device' {
     It 'does not claim READY for a partial run' {
         $f = @(Invoke-CEAuditCore -Id 'NC-08')
         $summary = InModuleScope CEAudit -Parameters @{ F = $f } { param($F) Get-CESummary -Findings $F -PartialRun }
-        $summary.Verdict | Should -Be 'PARTIAL: 1 of 56 checks run'
+        $summary.Verdict | Should -Be 'PARTIAL: 1 of 57 checks run'
         $summary.PartialRun | Should -BeTrue
         $out = Join-Path $TestDrive 'partial'
         $r = Export-CEReport -Findings $f -Context (New-TestContext) -OutputPath $out -PartialRun
-        $r.Summary.Verdict | Should -Be 'PARTIAL: 1 of 56 checks run'
-        (Get-Content $r.Paths.Html -Raw) | Should -Match ([regex]::Escape("<div class='msg'>PARTIAL: 1 of 56 checks run</div>"))
-        (Get-Content $r.Paths.Markdown -Raw) | Should -Match ([regex]::Escape('## PARTIAL: 1 of 56 checks run'))
+        $r.Summary.Verdict | Should -Be 'PARTIAL: 1 of 57 checks run'
+        (Get-Content $r.Paths.Html -Raw) | Should -Match ([regex]::Escape("<div class='msg'>PARTIAL: 1 of 57 checks run</div>"))
+        (Get-Content $r.Paths.Markdown -Raw) | Should -Match ([regex]::Escape('## PARTIAL: 1 of 57 checks run'))
         # A check can run without leaving a finding, so the engine's count wins over the findings.
         $progress = @{}
         $f = @(Invoke-CEAuditCore -Id 'NC-08', 'NC-07' -ProgressState $progress)
         $progress.Done | Should -Be 2
         $r = Export-CEReport -Findings @($f | Where-Object CheckId -eq 'NC-08') -Context (New-TestContext) -OutputPath $out -PartialRun -ChecksRun $progress.Done
-        $r.Summary.Verdict | Should -Be 'PARTIAL: 2 of 56 checks run'
+        $r.Summary.Verdict | Should -Be 'PARTIAL: 2 of 57 checks run'
     }
 
     It 'still asks for manual attestation (MFA, software review, backups)' {
@@ -2762,7 +2763,7 @@ throw 'boom'
         $script:packs['config-clash'].Reason | Should -Match 'Config file name already used: thresholds\.json'
         $script:packs['good-again'].Reason | Should -Match "Pack 'good-pack' is already loaded"
         @(Get-CEPack | Where-Object Status -eq 'Loaded').Count | Should -Be 1
-        @(Get-CECheck | Where-Object { -not $_.Pack }).Count | Should -Be 56
+        @(Get-CECheck | Where-Object { -not $_.Pack }).Count | Should -Be 57
     }
 
     It 'rolls back everything a pack registered when it fails part way' {
@@ -2957,5 +2958,64 @@ Describe 'MCP inventory (11-McpInventory)' {
             $res.Creds | Should -Be 0
             $res.Json | Should -Not -Match ([regex]::Escape($script:secret))
         }
+    }
+}
+
+Describe 'SC-13 AI agent plaintext credentials' {
+    function global:New-TestMcp {
+        param([object[]]$Servers = @(), [int]$Plaintext = 0)
+        [ordered]@{
+            mcpConfigsFound = @($Servers).Count; mcpConfigsParsed = @($Servers).Count
+            mcpConfigsUnreadable = @(); mcpServers = @($Servers)
+            credentialsFound = @(@($Servers) | ForEach-Object { @($_.credentials) }).Count
+            credentialsPlaintext = $Plaintext; scanBounds = 'test'
+        }
+    }
+    function global:New-TestMcpServer {
+        param([string]$Acl = '', [object[]]$Creds = @(), [string]$Transport = 'stdio')
+        [ordered]@{ toolId = 'claude-code'; configPath = '.claude.json'; serverName = 'github'; transport = $Transport
+            command = 'npx'; argsSummary = '@x'; endpoint = ''; credentialCount = @($Creds).Count
+            credentials = @($Creds); configAclIssue = $Acl }
+    }
+    BeforeEach { Set-TestDevice 'Insecure' }
+
+    It 'is NotApplicable when no MCP servers are configured' {
+        Mock -ModuleName CEAudit Get-CEMcpInventory { New-TestMcp }
+        (@(Invoke-CEAuditCore -Id 'SC-13')[0]).Status | Should -Be 'NotApplicable'
+    }
+    It 'Fails when a plaintext credential sits in a config others can modify' {
+        $cred = [ordered]@{ key = 'GITHUB_TOKEN'; provider = 'github'; type = 'pat-classic'; storage = 'plaintext-config' }
+        Mock -ModuleName CEAudit Get-CEMcpInventory { New-TestMcp -Plaintext 1 -Servers @(New-TestMcpServer -Acl '.claude.json is writable by S-1-5-32-545' -Creds @($cred)) }
+        (@(Invoke-CEAuditCore -Id 'SC-13')[0]).Status | Should -Be 'Fail'
+    }
+    It 'Warns when a plaintext credential is in a locked-down config' {
+        $cred = [ordered]@{ key = 'GITHUB_TOKEN'; provider = 'github'; type = 'pat-classic'; storage = 'plaintext-config' }
+        Mock -ModuleName CEAudit Get-CEMcpInventory { New-TestMcp -Plaintext 1 -Servers @(New-TestMcpServer -Acl '' -Creds @($cred)) }
+        (@(Invoke-CEAuditCore -Id 'SC-13')[0]).Status | Should -Be 'Warn'
+    }
+    It 'Passes when every credential is a reference' {
+        $cred = [ordered]@{ key = 'GITHUB_TOKEN'; provider = 'github'; type = 'unknown'; storage = 'env-var-reference' }
+        Mock -ModuleName CEAudit Get-CEMcpInventory { New-TestMcp -Plaintext 0 -Servers @(New-TestMcpServer -Creds @($cred)) }
+        (@(Invoke-CEAuditCore -Id 'SC-13')[0]).Status | Should -Be 'Pass'
+    }
+    It 'is Manual in a machine context where contents were not read' {
+        Mock -ModuleName CEAudit Get-CEMcpInventory { New-TestMcp -Servers @(New-TestMcpServer -Transport 'not-read') }
+        (@(Invoke-CEAuditCore -Id 'SC-13')[0]).Status | Should -Be 'Manual'
+    }
+}
+
+Describe 'Get-CEAiPosture MCP folding' {
+    It 'folds plaintext credentials into deviations and exposes the count and servers' {
+        Set-TestDevice 'Insecure'
+        Mock -ModuleName CEAudit Get-CEMcpInventory {
+            [ordered]@{ mcpConfigsFound = 1; mcpConfigsParsed = 1; mcpConfigsUnreadable = @()
+                mcpServers = @([ordered]@{ toolId = 'claude-code'; configPath = '.claude.json'; serverName = 'github'; transport = 'stdio'; command = 'npx'; argsSummary = '@x'; endpoint = ''; credentialCount = 1; credentials = @([ordered]@{ key = 'GITHUB_TOKEN'; provider = 'github'; type = 'pat-classic'; storage = 'plaintext-config' }); configAclIssue = '' })
+                credentialsFound = 1; credentialsPlaintext = 1; scanBounds = 'test' }
+        }
+        $ai = InModuleScope CEAudit { Get-CEAiPosture -Context (Get-CEDeviceContext) }
+        $ai.credentialsPlaintext | Should -Be 1
+        $ai.deviations | Should -BeGreaterOrEqual 1
+        $ai.contained | Should -BeFalse
+        @($ai.mcpServers).Count | Should -Be 1
     }
 }

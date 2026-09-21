@@ -310,3 +310,45 @@ Register-CECheck -Id 'SC-12' -Category 'SecureConfiguration' -Severity 'Medium' 
                 -Recommendation 'Anything running inside WSL can read and change your Windows files through /mnt/c. If you do not need that, add "[automount]" and "enabled = false" to /etc/wsl.conf in the distribution, then run "wsl --shutdown". If you do need it, record why.'
         }
     }
+
+Register-CECheck -Id 'SC-13' -Category 'SecureConfiguration' -Severity 'High' -Scope 'User' `
+    -Title 'AI agent credentials are not stored in plaintext configuration' `
+    -Frameworks @('NCSC') `
+    -Reference 'NCSC device security guidance (secure configuration): secrets such as API tokens should not be held in plaintext in user-writable configuration. A credential stored in clear text in an AI agent config is a secure-configuration weakness, more so when the file can be modified by other users.' `
+    -Test {
+        param($ctx)
+        $mcp = Get-CEMcpInventory -Context $ctx
+        $servers = @($mcp.mcpServers)
+        if (-not $servers.Count) {
+            return New-CEResult -Status 'NotApplicable' -Actual 'No MCP server configuration found for the recognised AI tools'
+        }
+        $expected = 'AI agent credentials referenced via an environment variable or credential manager, not stored in plaintext config'
+        if (@($servers | Where-Object { $_.transport -eq 'not-read' }).Count -eq $servers.Count) {
+            return New-CEResult -Status 'Manual' -Expected $expected `
+                -Actual 'MCP configuration is present, but shadow AI is collected per user; run as the signed-in user to check for plaintext credentials'
+        }
+        $plain = @()
+        $plainAcl = @()
+        foreach ($s in $servers) {
+            $acl = [string]$s.configAclIssue
+            foreach ($c in @($s.credentials)) {
+                if ($c.storage -ne 'plaintext-config') { continue }
+                $where = "$($s.serverName) in $($s.configPath): $($c.provider) $($c.type)"
+                if ($acl) { $plainAcl += "$where (config $acl)" } else { $plain += $where }
+            }
+        }
+        if ($plainAcl.Count) {
+            return New-CEResult -Status 'Fail' -Expected $expected `
+                -Actual "Plaintext credential(s) in a config other users can modify: $($plainAcl -join '; ')" `
+                -Recommendation 'Move the value into a user environment variable and reference it (e.g. "${env:NAME}"), and restrict the config file so only its owner can write to it.' `
+                -Evidence $plainAcl
+        }
+        if ($plain.Count) {
+            return New-CEResult -Status 'Warn' -Expected $expected `
+                -Actual "Credential(s) held in plaintext config: $($plain -join '; ')" `
+                -Recommendation 'Move the value to a user environment variable and reference it as "${env:NAME}" so the secret is not stored in the config file.' `
+                -Evidence $plain
+        }
+        return New-CEResult -Status 'Pass' -Expected $expected `
+            -Actual "$($servers.Count) MCP server(s) configured; no plaintext credentials found"
+    }

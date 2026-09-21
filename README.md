@@ -57,7 +57,7 @@ The per-user probe detects recognised AI assistants and agents, identifies their
 
 ### In 30 seconds
 
-**One device:** download the repo, then double-click **`app\Start-EB.cmd`** and press **Run audit**.
+**One device:** download the repo, then double-click **`app\Start-EB.cmd`** and press **Run audit**. No desktop (Windows Server Core, or SSH/RDP-only)? Use the [command line](#command-line) instead.
 
 **A fleet:** in an elevated prompt, run `.\intune\Test-IntuneDeployment.ps1` to rehearse the deployment, then `.\intune\Build-IntunePackage.ps1 -DownloadTool` to build the package, and follow [docs/INTUNE.md](docs/INTUNE.md). Or download a ready-made package from [Releases](https://github.com/engramic-ai/baseline-tool/releases).
 
@@ -65,7 +65,7 @@ The per-user probe detects recognised AI assistants and agents, identifies their
 
 ## Quick start
 
-1. Download or clone the repo.
+1. Download or clone the repo: `git clone https://github.com/engramic-ai/baseline-tool`
 2. If you downloaded a zip, unblock the files first: `Get-ChildItem -Recurse | Unblock-File`
 3. Double-click **`app\Start-EB.cmd`** and press **Run audit**.
 
@@ -99,7 +99,7 @@ powershell -ExecutionPolicy Bypass -File .\app\Invoke-CEAudit.ps1
 .\app\Apply-CEChangeset.ps1 -Path ...\changeset.json -ItemId C003,C007 -IncludeHighRisk
 
 # Roll back
-.\Restore-CEChangeset.ps1 -Path .\output\PC01-20260916-101500\undo-20260916-102233.json
+.\app\Restore-CEChangeset.ps1 -Path .\output\PC01-20260916-101500\undo-20260916-102233.json
 ```
 
 **Run it twice.** An un-elevated run as the everyday user is what tests account separation (CE+ TC5), per-user app updates (winget) and per-user Office macro settings. An elevated run covers the machine settings.

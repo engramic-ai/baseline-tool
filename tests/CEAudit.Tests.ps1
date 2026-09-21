@@ -2866,3 +2866,96 @@ Describe 'Undo command safety (Test-CEUndoCommandAllowed)' {
         }
     }
 }
+
+Describe 'MCP inventory (11-McpInventory)' {
+    Context 'JSONC parsing' {
+        It 'parses strict JSON' {
+            InModuleScope CEAudit { (ConvertFrom-CEJsonc -Text '{"a":1}').a | Should -Be 1 }
+        }
+        It 'tolerates line and block comments and trailing commas' {
+            InModuleScope CEAudit {
+                $t = "{`n // c`n `"servers`": { `"x`": { `"command`": `"npx`", }, /* b */ },`n}"
+                (ConvertFrom-CEJsonc -Text $t).servers.x.command | Should -Be 'npx'
+            }
+        }
+        It 'does not strip // or commas inside strings' {
+            InModuleScope CEAudit {
+                $r = ConvertFrom-CEJsonc -Text '{"url":"https://x/y","note":"a, b"}'
+                $r.url | Should -Be 'https://x/y'
+                $r.note | Should -Be 'a, b'
+            }
+        }
+        It 'throws on genuinely malformed input' {
+            InModuleScope CEAudit { { ConvertFrom-CEJsonc -Text '{ not json' } | Should -Throw }
+        }
+    }
+    Context 'credential classification' {
+        It 'classifies by prefix and marks plaintext' {
+            InModuleScope CEAudit {
+                $p = Get-CECredentialPatterns
+                $c = Get-CECredentialClass -Key 'GITHUB_PERSONAL_ACCESS_TOKEN' -Value 'ghp_abcdEFGH1234567890' -Patterns $p
+                $c.provider | Should -Be 'github'; $c.type | Should -Be 'pat-classic'; $c.storage | Should -Be 'plaintext-config'
+            }
+        }
+        It 'treats a reference as env-var-reference, not plaintext' {
+            InModuleScope CEAudit {
+                $p = Get-CECredentialPatterns
+                (Get-CECredentialClass -Key 'API_KEY' -Value '${env:MY_KEY}' -Patterns $p).storage | Should -Be 'env-var-reference'
+            }
+        }
+        It 'returns null for a non-credential key/value' {
+            InModuleScope CEAudit {
+                $p = Get-CECredentialPatterns
+                Get-CECredentialClass -Key 'command' -Value 'npx' -Patterns $p | Should -BeNullOrEmpty
+            }
+        }
+        It 'returns unknown provider rather than guessing' {
+            InModuleScope CEAudit {
+                $p = Get-CECredentialPatterns
+                (Get-CECredentialClass -Key 'SOME_TOKEN' -Value 'literalsecretvalue' -Patterns $p).provider | Should -Be 'unknown'
+            }
+        }
+    }
+    Context 'inventory end to end' {
+        BeforeAll {
+            $script:mcpTmp = Join-Path ([IO.Path]::GetTempPath()) ('eb-mcp-' + [guid]::NewGuid().ToString('N'))
+            New-Item -ItemType Directory -Path $script:mcpTmp -Force | Out-Null
+            $script:secret = 'ghp_SUPERsecretVALUE0123456789abcd'
+            $fixture = '{ "mcpServers": { "github": { "command": "npx", "args": ["-y","@modelcontextprotocol/server-github"], "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "' + $script:secret + '" } }, "safe": { "command": "npx", "args": ["-y","@x/server"], "env": { "OPENAI_API_KEY": "${env:MY_KEY}" } } } }'
+            $fixture | Set-Content -LiteralPath (Join-Path $script:mcpTmp '.claude.json') -Encoding ascii
+        }
+        AfterAll { Remove-Item -LiteralPath $script:mcpTmp -Recurse -Force -ErrorAction SilentlyContinue }
+        It 'inventories servers and classifies credentials in the user session' {
+            $inv = InModuleScope CEAudit -Parameters @{ Tmp = $script:mcpTmp } {
+                param($Tmp)
+                Mock Get-CEUserProfilePath { $Tmp }
+                Get-CEMcpInventory -Context ([pscustomobject]@{ ComputerName = 'T'; AuditTime = (Get-Date); IsElevated = $false; IsSystem = $false; ConsoleUserSid = $null })
+            }
+            $inv.mcpConfigsFound | Should -Be 1
+            $inv.mcpConfigsParsed | Should -Be 1
+            @($inv.mcpServers).Count | Should -Be 2
+            $inv.credentialsFound | Should -Be 2
+            $inv.credentialsPlaintext | Should -Be 1
+        }
+        It 'never lets a credential value reach the output' {
+            $json = InModuleScope CEAudit -Parameters @{ Tmp = $script:mcpTmp } {
+                param($Tmp)
+                Mock Get-CEUserProfilePath { $Tmp }
+                (Get-CEMcpInventory -Context ([pscustomobject]@{ ComputerName = 'T2'; AuditTime = (Get-Date); IsElevated = $false; IsSystem = $false; ConsoleUserSid = $null })) | ConvertTo-Json -Depth 12
+            }
+            $json | Should -Not -Match ([regex]::Escape($script:secret))
+        }
+        It 'machine (SYSTEM) context records presence only, never reads contents' {
+            $res = InModuleScope CEAudit -Parameters @{ Tmp = $script:mcpTmp } {
+                param($Tmp)
+                Mock Get-CEUserProfilePath { $Tmp }
+                $i = Get-CEMcpInventory -Context ([pscustomobject]@{ ComputerName = 'T3'; AuditTime = (Get-Date); IsElevated = $true; IsSystem = $true; ConsoleUserSid = 'S-1-5-21-1-1-1-1001' })
+                [pscustomobject]@{ Found = $i.mcpConfigsFound; Parsed = $i.mcpConfigsParsed; Creds = $i.credentialsFound; Json = ($i | ConvertTo-Json -Depth 12) }
+            }
+            $res.Found | Should -Be 1
+            $res.Parsed | Should -Be 0
+            $res.Creds | Should -Be 0
+            $res.Json | Should -Not -Match ([regex]::Escape($script:secret))
+        }
+    }
+}

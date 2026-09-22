@@ -5,6 +5,48 @@
 # the user's Store packages, profile folders, VS Code extensions and processes.
 # ---------------------------------------------------------------------------
 
+function Get-CEVsCodeBuiltInExtensionDir {
+    <#
+        Folders holding the extensions VS Code ships with (Copilot Chat since 1.13x). The user
+        installer puts them under the profile; the machine installer, which winget picks when
+        elevated, under Program Files. Only folders that exist are returned. Tests mock this.
+    #>
+    param([string]$ProfilePath)
+    $installs = @()
+    if ($ProfilePath) { $installs += @('Microsoft VS Code', 'Microsoft VS Code Insiders' | ForEach-Object { Join-Path $ProfilePath "AppData\Local\Programs\$_" }) }
+    foreach ($root in @($env:ProgramFiles, ${env:ProgramFiles(x86)} | Where-Object { $_ })) {
+        $installs += @('Microsoft VS Code', 'Microsoft VS Code Insiders' | ForEach-Object { Join-Path $root $_ })
+    }
+    $dirs = @()
+    foreach ($install in ($installs | Where-Object { Test-Path -LiteralPath $_ })) {
+        # Older layouts: <install>\resources\app\extensions. Since 1.13x the app lives in a
+        # commit-hash subfolder: <install>\<hash>\resources\app\extensions.
+        $candidates = @((Join-Path $install 'resources\app\extensions'))
+        $candidates += @(Get-ChildItem -LiteralPath $install -Directory -ErrorAction SilentlyContinue | ForEach-Object { Join-Path $_.FullName 'resources\app\extensions' })
+        $dirs += @($candidates | Where-Object { Test-Path -LiteralPath $_ })
+    }
+    return , @($dirs)
+}
+
+function Get-CEVsCodeBuiltInExtensionId {
+    <#
+        Identity of a built-in extension folder: publisher.name from its package.json (the folder
+        itself is just "copilot" for GitHub Copilot Chat), falling back to the folder name.
+    #>
+    param([Parameter(Mandatory)][string]$Folder)
+    $pkg = Join-Path $Folder 'package.json'
+    if (Test-Path -LiteralPath $pkg) {
+        try {
+            $j = Get-Content -LiteralPath $pkg -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+            $publisher = [string](Get-CEObjectValue $j 'publisher' '')
+            $name = [string](Get-CEObjectValue $j 'name' '')
+            if ($publisher -and $name) { return "$publisher.$name".ToLowerInvariant() }
+        }
+        catch { Write-Verbose "Could not read $pkg`: $($_.Exception.Message)" }
+    }
+    return (Split-Path -Leaf $Folder).ToLowerInvariant()
+}
+
 function Get-CEStorePackageName {
     <# Store (MSIX) package names installed for the signed-in user, from their registry hive. #>
     $root = Get-CEUserRegistryRoot
@@ -103,10 +145,17 @@ function Get-CEAIToolStateUncached {
     $store = Get-CEStorePackageName
     $profilePath = Get-CEUserProfilePath -Context $Context
     $extensions = @()
+    $builtIn = @()
     if ($profilePath) {
         foreach ($folder in '.vscode\extensions', '.vscode-insiders\extensions') {
             $extensions += @(Get-ChildItem -LiteralPath (Join-Path $profilePath $folder) -Directory -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
         }
+    }
+    # Extensions VS Code ships with (Copilot Chat since 1.13x) live under the install, not the user's
+    # extensions folder, in unversioned directories such as github.copilot-chat.
+    $builtInDirs = Get-CEVsCodeBuiltInExtensionDir -ProfilePath $profilePath   # assign first: it returns ,array and @(...) would nest it
+    foreach ($folder in $builtInDirs) {
+        $builtIn += @(Get-ChildItem -LiteralPath $folder -Directory -ErrorAction SilentlyContinue | ForEach-Object { Get-CEVsCodeBuiltInExtensionId -Folder $_.FullName })
     }
     $processes = Get-CEProcessList
     $like = { param($value, $pattern) (-not $pattern) -or ("$value" -like $pattern) }
@@ -130,6 +179,9 @@ function Get-CEAIToolStateUncached {
         }
         foreach ($pattern in @(Get-CEObjectValue $t 'vscodeExtensions' @())) {
             $signals += @($extensions | Where-Object { $_ -like $pattern } | ForEach-Object { "VS Code extension: $_" })
+            # Built-in folders carry no version suffix; match them as if they had one so patterns like
+            # "github.copilot-chat-*" cover both.
+            $signals += @($builtIn | Where-Object { $_ -like $pattern -or "$_-builtin" -like $pattern } | ForEach-Object { "VS Code built-in extension: $_" })
         }
         $running = @()
         foreach ($spec in @(Get-CEObjectValue $t 'processes' @())) {

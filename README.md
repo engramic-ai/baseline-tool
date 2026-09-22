@@ -224,10 +224,13 @@ On managed devices, a file with the same name in `%ProgramData%\EngramicBaseline
 Install-Module Pester -MinimumVersion 5.5 -Scope CurrentUser
 Install-Module PSScriptAnalyzer -Scope CurrentUser
 
+.\tools\Invoke-PreFlight.ps1             # before every push: lint, tests on 5.1 and pwsh 7, app layout - as CI judges them
 Invoke-Pester -Path .\tests -Output Detailed
 Invoke-ScriptAnalyzer -Path . -Recurse -Settings .\.github\PSScriptAnalyzerSettings.psd1
 .\tools\Export-ControlMapping.ps1      # regenerate docs/CONTROL-MAPPING.md
 ```
+
+`Invoke-PreFlight.ps1` runs the *Tests* jobs of `.github/workflows/ci.yml` on every PowerShell installed here and judges the unit tests by Pester's `Result`, not by counts (a discovery error is a failed container with zero failed tests). For the whole workflow, including the Intune rehearsal that installs and runs as SYSTEM, use the `ci` sandbox environment below, so a green on GitHub is a confirmation rather than the first run.
 
 The tests mock Windows, simulating an insecure and a hardened device, so they also run on Linux. They also cover the status file, the compliance discovery script evaluated against both rules files, the Remediations detection script, and a real headless run of the scheduled audit.
 
@@ -242,7 +245,26 @@ Because every write is mocked, the suite cannot tell you that a fix really takes
 .\tools\sandbox\New-SandboxRun.ps1 -PesterPath C:\modules  # also run the whole suite elevated inside the sandbox
 ```
 
-The repository is mapped read-only and networking is off, so nothing leaves the sandbox and nothing on the host changes. Results (three audits, the undo log, `summary.md` with a before/after/restored table per finding, and a transcript) land in `build\sandbox\results\<timestamp>\`. Closing the sandbox window destroys it.
+The repository is mapped read-only and networking is off, so nothing leaves the sandbox and nothing on the host changes. Results (three audits, the undo log, `summary.md` with a before/after/restored table per finding, and a transcript) land in `build\sandbox\results\apply-rollback\<timestamp>\`. Closing the sandbox window destroys it.
+
+### Running CI locally
+
+```powershell
+.\tools\sandbox\New-SandboxRun.ps1 -Environment ci -PesterPath C:\modules
+```
+
+Mirrors `ci.yml` job for job on a disposable Windows: lint and the unit tests on Windows PowerShell 5.1 and pwsh 7 (installed inside), the desktop app layout, then the Intune rehearsal and package build. `ci-summary.md` shows the same three results the pull-request checks would. The sandbox image is not the GitHub runner image, so a pass is strong evidence, not proof; keep `Invoke-SandboxCI.ps1` in step with `ci.yml`.
+
+### Proving AI-tool detection against real installs
+
+`config/ai-tools.json` says where each AI tool leaves its traces. The lab installs the real thing and checks the rules against it, one tool at a time, in a sandbox with network access:
+
+```powershell
+.\tools\sandbox\New-SandboxRun.ps1 -Environment ai-lab -PesterPath C:\modules                       # the default seven
+.\tools\sandbox\New-SandboxRun.ps1 -Environment ai-lab -PesterPath C:\modules -Tools cursor,ollama   # a subset
+```
+
+For each tool it asserts: a clean image detects nothing; the tool is detected after install and which rule fired; nothing else lit up; the running process is seen and UA-10 reports it (the sandbox user is an administrator); a seeded MCP config at the tool's documented path is found, parsed and its plaintext credential classified. `lab-summary.md` is a table with one row per tool. The install catalogue lives in `sandbox\tools.json`; the sandbox tooling itself (`sandbox\`) has no dependency on Baseline and is described in `sandbox\README.md`. The lab is deliberately not part of CI: a run downloads a few gigabytes and needs Windows Sandbox.
 
 CI (`.github/workflows/ci.yml`) does two things:
 

@@ -271,6 +271,8 @@ BeforeAll {
             if (-not $global:CETestSecure) { $pkgs = @([pscustomobject]@{ Name = '7-Zip'; Id = '7zip.7zip'; Version = '23.01'; Available = '25.01'; Source = 'winget' }) }
             [pscustomobject]@{ Available = $true; Packages = $pkgs }
         }
+        # The machine-wide VS Code folder is real on CI runners; keep built-in extension scanning out of device mocks.
+        Mock -ModuleName CEAudit Get-CEVsCodeBuiltInExtensionDir { , @() }
         Mock -ModuleName CEAudit Get-CEInstalledSoftware {
             $s = @([pscustomobject]@{ Name = 'Microsoft OneDrive'; Version = '25.1'; Publisher = 'Microsoft'; InstallDate = '' })
             if (-not $global:CETestSecure) {
@@ -2573,6 +2575,26 @@ Describe 'AI tools (UA-07, SC-09, UA-10)' {
         }
     }
 
+    It 'the sandbox install catalogue is an overlay of the shipped tool list (same ids, no duplicated identity)' {
+        # config/ai-tools.json is the one place a tool is defined. sandbox/tools.json only says how the lab
+        # installs it. Ids must agree both ways so a rule cannot exist without a way to test it, and the
+        # overlay must not restate identity that could drift from the rules.
+        $rules = @((Get-Content (Join-Path $script:RepoRoot 'config\ai-tools.json') -Raw | ConvertFrom-Json).tools)
+        $lab = @((Get-Content (Join-Path $script:RepoRoot 'sandbox\tools.json') -Raw | ConvertFrom-Json).tools)
+        $isHelper = { param($t) [bool]($t.PSObject.Properties['helper'] -and $t.helper) }
+        $labIds = @($lab | Where-Object { -not (& $isHelper $_) } | ForEach-Object id | Sort-Object)
+        $ruleIds = @($rules | ForEach-Object id | Sort-Object)
+        @($ruleIds | Where-Object { $labIds -notcontains $_ }) -join ', ' | Should -BeNullOrEmpty -Because 'every detection rule needs a lab entry (a recipe, or manual: true with a reason)'
+        @($labIds | Where-Object { $ruleIds -notcontains $_ }) -join ', ' | Should -BeNullOrEmpty -Because 'the lab cannot install a tool the rules do not know'
+        foreach ($t in $lab) {
+            if (& $isHelper $t) { continue }
+            $t.PSObject.Properties['name'] | Should -BeNullOrEmpty -Because "$($t.id): identity belongs in config/ai-tools.json"
+            $manual = [bool]($t.PSObject.Properties['manual'] -and $t.manual)
+            if ($manual) { [string]$t.reason | Should -Not -BeNullOrEmpty -Because "$($t.id) is manual and must say why" }
+            else { [string]$t.install.type | Should -BeIn @('winget', 'script', 'npm', 'vscode') -Because $t.id }
+        }
+    }
+
     It 'the shipped tool list is well formed' {
         $list = Get-Content (Join-Path (Join-Path $script:RepoRoot 'config') 'ai-tools.json') -Raw | ConvertFrom-Json
         $list.lastReviewed | Should -Match '^\d{4}-\d{2}-\d{2}$'
@@ -2581,7 +2603,7 @@ Describe 'AI tools (UA-07, SC-09, UA-10)' {
         foreach ($t in @($list.tools)) {
             $signals = @($t.programs).Count + @($t.uninstallKeys).Count + @($t.appx).Count + @($t.processes).Count + @($t.paths).Count + @($t.vscodeExtensions).Count
             $signals | Should -BeGreaterThan 0 -Because $t.id
-            foreach ($proc in @($t.processes)) { $proc.image | Should -Match '^[\w.-]+\.exe$' -Because $t.id }
+            foreach ($proc in @($t.processes)) { $proc.image | Should -Match '^[\w. -]+\.exe$' -Because $t.id }
             foreach ($prog in @($t.programs)) { ($prog.name -replace '[*?]', '').Length | Should -BeGreaterOrEqual 4 -Because "$($t.id) program pattern must not be too broad" }
             @($t.sources).Count | Should -BeGreaterThan 0 -Because $t.id
             foreach ($u in @($t.sources)) { $u | Should -Match '^https://' -Because $t.id }
@@ -2590,7 +2612,14 @@ Describe 'AI tools (UA-07, SC-09, UA-10)' {
 
     It 'detects tools from programs, Store apps, profile folders, extensions and processes' {
         $profileDir = Join-Path $TestDrive 'ai-profile'
-        New-Item -ItemType Directory -Force -Path (Join-Path $profileDir '.gemini'), (Join-Path $profileDir '.vscode\extensions\github.copilot-chat-0.30.0'), (Join-Path $profileDir '.vscode\extensions\github.copilot-1.350.0') | Out-Null
+        New-Item -ItemType Directory -Force -Path (Join-Path $profileDir '.gemini'), (Join-Path $profileDir '.vscode\extensions\github.copilot-chat-0.30.0'), (Join-Path $profileDir '.vscode\extensions\github.copilot-1.350.0'),
+            (Join-Path $profileDir 'AppData\Local\Programs\Microsoft VS Code\0123abcd00\resources\app\extensions\copilot') | Out-Null
+        # VS Code 1.13x: the app sits in a commit-hash folder (any name; it changes every release and the
+        # module enumerates whatever is there) and ships Copilot Chat as a built-in whose folder is just
+        # "copilot"; its package.json carries the real identity.
+        Set-Content -LiteralPath (Join-Path $profileDir 'AppData\Local\Programs\Microsoft VS Code\0123abcd00\resources\app\extensions\copilot\package.json') -Value '{ "name": "copilot-chat", "publisher": "GitHub", "version": "0.66.0" }' -Encoding ASCII
+        $builtInDir = Join-Path $profileDir 'AppData\Local\Programs\Microsoft VS Code\0123abcd00\resources\app\extensions'
+        Mock -ModuleName CEAudit Get-CEVsCodeBuiltInExtensionDir { , @($builtInDir) }.GetNewClosure()
         InModuleScope CEAudit -Parameters @{ P = $profileDir } {
             param($P)
             $script:aiProfile = $P
@@ -2621,7 +2650,7 @@ Describe 'AI tools (UA-07, SC-09, UA-10)' {
             $byId['cursor'].Signals | Should -Contain 'Installed program: Cursor (User) 1.6'
             $byId['ollama'].Signals | Should -Contain 'Installed program: Ollama version 0.34.1'
             @($byId['ollama'].Processes).Count | Should -Be 0
-            $byId['github-copilot-vscode'].Signals | Should -Be @('VS Code extension: github.copilot-chat-0.30.0', 'VS Code extension: github.copilot-1.350.0')
+            $byId['github-copilot-vscode'].Signals | Should -Be @('VS Code extension: github.copilot-chat-0.30.0', 'VS Code built-in extension: github.copilot-chat', 'VS Code extension: github.copilot-1.350.0')
             $byId['gemini-cli'].Signals | Should -Contain 'Found %USERPROFILE%\.gemini'
             $st.UninspectedProcesses | Should -Be @('claude.exe (pid 30)') -Because 'node.exe and unrelated copilot.exe are not reported'
             Should -Invoke Get-CEProcessOwner -Times 0 -ParameterFilter { $Process.ProcessId -eq 60 }

@@ -27,7 +27,8 @@ if ($env:USERNAME -ne 'WDAGUtilityAccount' -or -not (Test-Path 'C:\baseline-tool
 }
 
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-$run = Join-Path 'C:\results' $stamp
+# Started by sandbox\Invoke-SandboxBootstrap.ps1, which provides a per-run results folder.
+$run = if ($env:SANDBOX_RESULTS) { $env:SANDBOX_RESULTS } else { Join-Path 'C:\results' $stamp }
 New-Item -ItemType Directory -Path $run -Force | Out-Null
 Start-Transcript -Path (Join-Path $run 'transcript.txt') | Out-Null
 
@@ -41,9 +42,8 @@ function Get-Statuses {
 }
 
 try {
-    $config = @{ networking = $false }
-    if (Test-Path 'C:\results\run.json') { $config = Get-Content 'C:\results\run.json' -Raw | ConvertFrom-Json }
-    $networking = [bool]$config.networking
+    $networking = $false
+    if (Test-Path 'C:\results\env.json') { $networking = [bool](Get-Content 'C:\results\env.json' -Raw | ConvertFrom-Json).networking }
 
     Step 'Copying the repository (the mapped folder is read-only)'
     $work = 'C:\work\baseline-tool'
@@ -144,6 +144,7 @@ try {
         $c.Run.Path = Join-Path $work 'tests'
         $c.Run.PassThru = $true
         $c.Output.Verbosity = 'Normal'
+        $c.Output.RenderMode = 'Plaintext'
         $c.TestResult.Enabled = $true
         $c.TestResult.OutputPath = Join-Path $run 'pester.xml'
         $t = Invoke-Pester -Configuration $c
@@ -152,7 +153,7 @@ try {
     }
 
     Write-Host ''
-    Write-Host "Results are on the host under build\sandbox\results\$stamp. Close this window to destroy the sandbox." -ForegroundColor Cyan
+    Write-Host "Results are on the host under build\sandbox\results\apply-rollback\$(Split-Path -Leaf $run). Close this window to destroy the sandbox." -ForegroundColor Cyan
 }
 catch {
     Write-Host ''

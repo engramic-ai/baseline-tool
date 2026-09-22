@@ -7,6 +7,15 @@
 #>
 
 BeforeAll {
+    # The suite mocks every Windows write it knows about, but a forgotten mock must not be able to
+    # change this machine. Refuse to run elevated outside CI (set CE_TESTS_ALLOW_ELEVATED=1 to override).
+    if ($env:OS -eq 'Windows_NT' -and -not $env:CI -and -not $env:CE_TESTS_ALLOW_ELEVATED) {
+        $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+        if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+            throw 'Refusing to run the test suite elevated: run it as a standard user, or set CE_TESTS_ALLOW_ELEVATED=1 in a disposable VM or Windows Sandbox.'
+        }
+    }
+
     $script:RepoRoot = Split-Path -Parent $PSScriptRoot
     $modulePath = Join-Path (Join-Path (Join-Path $script:RepoRoot 'src') 'CEAudit') 'CEAudit.psd1'
 
@@ -37,6 +46,33 @@ BeforeAll {
     }
 
     Import-Module $modulePath -Force
+
+    # Tripwires: every command that can change the device throws unless a test mocks it deliberately.
+    # A narrower mock (in a Describe, It or InModuleScope) takes precedence, so existing tests keep working;
+    # a test that forgets to mock a write fails loudly instead of touching the host.
+    $script:MutatingCommands = @(
+        'Set-ItemProperty', 'New-ItemProperty', 'Remove-ItemProperty', 'Set-Service', 'Stop-Service', 'Restart-Service',
+        'Set-NetFirewallProfile', 'Set-NetFirewallRule', 'Enable-NetFirewallRule', 'Disable-NetFirewallRule',
+        'Enable-LocalUser', 'Disable-LocalUser', 'Add-MpPreference', 'Remove-MpPreference', 'Set-MpPreference', 'Update-MpSignature',
+        'Enable-WindowsOptionalFeature', 'Disable-WindowsOptionalFeature', 'Suspend-BitLocker', 'Start-ScheduledTask',
+        'Start-Process', 'Invoke-Expression', 'New-EventLog', 'Write-EventLog',
+        'Set-CESecurityPolicyValue', 'Invoke-CENative'
+    )
+    function global:Set-TestTripwires {
+        # Re-run after any Import-Module -Force: a fresh module instance has no mocks.
+        foreach ($cmd in $script:MutatingCommands) {
+            # Resolve inside the module so private helpers (Invoke-CENative, Set-CESecurityPolicyValue) are covered too.
+            $known = & (Get-Module CEAudit) { param($n) [bool](Get-Command $n -ErrorAction SilentlyContinue) } $cmd
+            if ($known) { Mock -ModuleName CEAudit $cmd { throw "Tripwire: a test reached $cmd without mocking it" }.GetNewClosure() }
+        }
+        # New-Item creates report folders legitimately; only registry keys are off limits. One default mock
+        # that decides in the body: Pester 6 has no fallback when a -ParameterFilter does not match.
+        Mock -ModuleName CEAudit New-Item {
+            if ("$Path$LiteralPath" -match '^(HK(LM|CU|CR|U|CC):|Registry::)') { throw 'Tripwire: a test reached New-Item on a registry path without mocking it' }
+            Microsoft.PowerShell.Management\New-Item @PesterBoundParameters
+        }
+    }
+    Set-TestTripwires
 
     function global:New-TestHardware {
         <# A recent laptop with patched TPM firmware; -Insecure gives old BIOS and ROCA-affected TPM firmware. #>
@@ -339,6 +375,84 @@ Describe 'Module structure' {
             $bytes = [IO.File]::ReadAllBytes($f.FullName)
             @($bytes | Where-Object { $_ -gt 127 }).Count | Should -Be 0 -Because $f.Name
         }
+    }
+}
+
+Describe 'Static invariants' {
+    BeforeAll {
+        $script:srcDir = Join-Path (Join-Path $script:RepoRoot 'src') 'CEAudit'
+        function global:Get-CommandNames {
+            # Names of commands invoked in a file (CommandAst only, so names inside strings do not count).
+            param([string]$Path)
+            $ast = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$null, [ref]$null)
+            @($ast.FindAll({ $args[0] -is [System.Management.Automation.Language.CommandAst] }, $true) |
+                ForEach-Object { $_.GetCommandName() } | Where-Object { $_ } | Sort-Object -Unique)
+        }
+    }
+
+    It 'tripwires fire when module code reaches a mutating command without a mock' {
+        # Exercised the way real code hits them: a module function writing the registry, and a native call.
+        InModuleScope CEAudit {
+            $caught = ''
+            try { Set-CERegistryValueTracked -Path 'HKCU:\Software\CETestNoWrite' -Name 'x' -Value 1 -Undo ([System.Collections.ArrayList]@()) } catch { $caught = $_.Exception.Message }
+            $caught | Should -Match 'Tripwire.*New-Item'
+            $caught = ''
+            try { Invoke-CENative -FilePath 'net.exe' -ArgumentList @('accounts') } catch { $caught = $_.Exception.Message }
+            $caught | Should -Match 'Tripwire.*Invoke-CENative'
+        }
+        Test-Path 'HKCU:\Software\CETestNoWrite' | Should -BeFalse
+    }
+
+    It 'checks only read: no check file invokes a command that changes the device' {
+        # "Read first. Change nothing." - enforced on the AST, not by review.
+        $deny = @($script:MutatingCommands | Where-Object { $_ -ne 'Invoke-CENative' }) + @(
+            'Remove-Item', 'New-Item', 'Set-Content', 'Add-Content', 'Out-File', 'Copy-Item', 'Move-Item', 'Rename-Item',
+            'Register-ScheduledTask', 'Unregister-ScheduledTask', 'Set-ScheduledTask', 'Set-CERegistryValueTracked', 'Add-CEUndoCommand',
+            'net', 'net.exe', 'auditpol', 'auditpol.exe', 'wevtutil', 'wevtutil.exe', 'secedit', 'secedit.exe', 'reg', 'reg.exe', 'sc', 'sc.exe')
+        $problems = foreach ($file in Get-ChildItem (Join-Path $script:srcDir 'Checks') -Filter *.ps1) {
+            foreach ($name in (Get-CommandNames $file.FullName)) {
+                if ($deny -contains $name) { "$($file.Name) calls $name" }
+            }
+        }
+        @($problems) -join "`n" | Should -BeNullOrEmpty
+    }
+
+    It 'checks run native tools only to read' {
+        # Invoke-CENative is the one way a check reaches outside PowerShell; every use must be a known query.
+        $allowed = @('whoami.exe /groups', 'fltmc.exe filters', 'winget upgrade')
+        $problems = foreach ($file in Get-ChildItem (Join-Path $script:srcDir 'Checks') -Filter *.ps1) {
+            $ast = [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$null, [ref]$null)
+            $calls = $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.CommandAst] -and $args[0].GetCommandName() -eq 'Invoke-CENative' }, $true)
+            foreach ($call in $calls) {
+                $text = $call.Extent.Text -replace '\s+', ' '
+                $exe = [regex]::Match($text, '-FilePath (?:''([^'']+)''|\$(\w+))').Groups
+                $first = [regex]::Match($text, '-ArgumentList @\(''([^'']+)''').Groups[1].Value
+                $key = "$(if ($exe[1].Value) { $exe[1].Value } else { $exe[2].Value }) $first"
+                if ($allowed -notcontains $key) { "$($file.Name): $key" }
+            }
+        }
+        @($problems) -join "`n" | Should -BeNullOrEmpty
+    }
+
+    It 'front-end scripts only call functions the module exports' {
+        # The app runs outside the module: a private function resolves at authoring time (and in this
+        # suite, which dot-sources the app) but not at runtime. Everything it calls must be its own,
+        # exported from CEAudit.psd1, or a real command.
+        $manifest = Import-PowerShellDataFile (Join-Path $script:srcDir 'CEAudit.psd1')
+        $exported = @($manifest.FunctionsToExport)
+        $modulePrivate = @(Get-ChildItem (Join-Path $script:srcDir 'Private') -Filter *.ps1 | ForEach-Object {
+            $ast = [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$null)
+            $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) | ForEach-Object Name
+        })
+        $problems = foreach ($file in Get-ChildItem (Join-Path $script:RepoRoot 'app') -Filter *.ps1) {
+            $ast = [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$null, [ref]$null)
+            $own = @($ast.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) | ForEach-Object Name)
+            foreach ($name in (Get-CommandNames $file.FullName)) {
+                if ($own -contains $name -or $exported -contains $name) { continue }
+                if ($modulePrivate -contains $name) { "$($file.Name) calls private module function $name"; continue }
+            }
+        }
+        @($problems) -join "`n" | Should -BeNullOrEmpty
     }
 }
 
@@ -2739,6 +2853,7 @@ throw 'boom'
         $env:CE_CHECKER_PACKS = $rootA + [IO.Path]::PathSeparator + $rootB
         # 3>&1: warnings raised while the module loads aren't caught by -WarningVariable.
         $script:packWarnings = @(Import-Module $script:modulePath -Force 3>&1)
+        Set-TestTripwires
         $script:packs = @{}
         foreach ($p in @(Get-CEPack)) { $script:packs[(Split-Path -Leaf $p.Path)] = $p }
     }
@@ -2746,6 +2861,7 @@ throw 'boom'
         $env:CE_CHECKER_PACKS = $script:savedPacksEnv
         Remove-Item Env:\CE_CHECKER_DATA -ErrorAction SilentlyContinue
         Import-Module $script:modulePath -Force
+        Set-TestTripwires
     }
 
     It 'loads a valid pack: category, check, remediation, helper functions and config' {

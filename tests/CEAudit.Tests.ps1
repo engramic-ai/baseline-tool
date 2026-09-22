@@ -2613,11 +2613,12 @@ Describe 'AI tools (UA-07, SC-09, UA-10)' {
     It 'detects tools from programs, Store apps, profile folders, extensions and processes' {
         $profileDir = Join-Path $TestDrive 'ai-profile'
         New-Item -ItemType Directory -Force -Path (Join-Path $profileDir '.gemini'), (Join-Path $profileDir '.vscode\extensions\github.copilot-chat-0.30.0'), (Join-Path $profileDir '.vscode\extensions\github.copilot-1.350.0'),
-            (Join-Path $profileDir 'AppData\Local\Programs\Microsoft VS Code\7debcd0e2a\resources\app\extensions\copilot') | Out-Null
-        # VS Code 1.13x: the app sits in a commit-hash folder and ships Copilot Chat as a built-in whose
-        # folder is just "copilot"; its package.json carries the real identity.
-        Set-Content -LiteralPath (Join-Path $profileDir 'AppData\Local\Programs\Microsoft VS Code\7debcd0e2a\resources\app\extensions\copilot\package.json') -Value '{ "name": "copilot-chat", "publisher": "GitHub", "version": "0.66.0" }' -Encoding ASCII
-        $builtInDir = Join-Path $profileDir 'AppData\Local\Programs\Microsoft VS Code\7debcd0e2a\resources\app\extensions'
+            (Join-Path $profileDir 'AppData\Local\Programs\Microsoft VS Code\0123abcd00\resources\app\extensions\copilot') | Out-Null
+        # VS Code 1.13x: the app sits in a commit-hash folder (any name; it changes every release and the
+        # module enumerates whatever is there) and ships Copilot Chat as a built-in whose folder is just
+        # "copilot"; its package.json carries the real identity.
+        Set-Content -LiteralPath (Join-Path $profileDir 'AppData\Local\Programs\Microsoft VS Code\0123abcd00\resources\app\extensions\copilot\package.json') -Value '{ "name": "copilot-chat", "publisher": "GitHub", "version": "0.66.0" }' -Encoding ASCII
+        $builtInDir = Join-Path $profileDir 'AppData\Local\Programs\Microsoft VS Code\0123abcd00\resources\app\extensions'
         Mock -ModuleName CEAudit Get-CEVsCodeBuiltInExtensionDir { , @($builtInDir) }.GetNewClosure()
         InModuleScope CEAudit -Parameters @{ P = $profileDir } {
             param($P)

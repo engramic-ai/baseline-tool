@@ -1,0 +1,9 @@
+{
+  "name": "ci",
+  "description": "The same jobs as .github/workflows/ci.yml on a disposable Windows: lint and tests on both shells, the desktop app layout, the Intune rehearsal",
+  "networking": true,
+  "mappedFolders": [ { "host": "{root}", "sandbox": "C:\\baseline-tool", "readOnly": true } ],
+  "tools": [ "pwsh" ],
+  "vars": {},
+  "run": { "script": "C:\\baseline-tool\\tools\\sandbox\\Invoke-SandboxCI.ps1", "args": [] }
+}

@@ -14,6 +14,8 @@
       "exe": "Code.exe", "cli": "code.cmd" },
     { "id": "node",    "name": "Node.js LTS", "helper": true,
       "install": { "type": "winget", "id": "OpenJS.NodeJS.LTS" }, "exe": "node.exe" },
+    { "id": "pwsh",    "name": "PowerShell 7", "helper": true,
+      "install": { "type": "winget", "id": "Microsoft.PowerShell" }, "exe": "pwsh.exe" },
 
     { "id": "claude-desktop",
       "install": { "type": "winget", "id": "Anthropic.Claude" }, "exe": "claude.exe" },

@@ -224,10 +224,13 @@ On managed devices, a file with the same name in `%ProgramData%\EngramicBaseline
 Install-Module Pester -MinimumVersion 5.5 -Scope CurrentUser
 Install-Module PSScriptAnalyzer -Scope CurrentUser
 
+.\tools\Invoke-PreFlight.ps1             # before every push: lint, tests on 5.1 and pwsh 7, app layout - as CI judges them
 Invoke-Pester -Path .\tests -Output Detailed
 Invoke-ScriptAnalyzer -Path . -Recurse -Settings .\.github\PSScriptAnalyzerSettings.psd1
 .\tools\Export-ControlMapping.ps1      # regenerate docs/CONTROL-MAPPING.md
 ```
+
+`Invoke-PreFlight.ps1` runs the *Tests* jobs of `.github/workflows/ci.yml` on every PowerShell installed here and judges the unit tests by Pester's `Result`, not by counts (a discovery error is a failed container with zero failed tests). For the whole workflow, including the Intune rehearsal that installs and runs as SYSTEM, use the `ci` sandbox environment below, so a green on GitHub is a confirmation rather than the first run.
 
 The tests mock Windows, simulating an insecure and a hardened device, so they also run on Linux. They also cover the status file, the compliance discovery script evaluated against both rules files, the Remediations detection script, and a real headless run of the scheduled audit.
 
@@ -243,6 +246,14 @@ Because every write is mocked, the suite cannot tell you that a fix really takes
 ```
 
 The repository is mapped read-only and networking is off, so nothing leaves the sandbox and nothing on the host changes. Results (three audits, the undo log, `summary.md` with a before/after/restored table per finding, and a transcript) land in `build\sandbox\results\apply-rollback\<timestamp>\`. Closing the sandbox window destroys it.
+
+### Running CI locally
+
+```powershell
+.\tools\sandbox\New-SandboxRun.ps1 -Environment ci -PesterPath C:\modules
+```
+
+Mirrors `ci.yml` job for job on a disposable Windows: lint and the unit tests on Windows PowerShell 5.1 and pwsh 7 (installed inside), the desktop app layout, then the Intune rehearsal and package build. `ci-summary.md` shows the same three results the pull-request checks would. The sandbox image is not the GitHub runner image, so a pass is strong evidence, not proof; keep `Invoke-SandboxCI.ps1` in step with `ci.yml`.
 
 ### Proving AI-tool detection against real installs
 

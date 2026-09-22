@@ -11,17 +11,21 @@
       ai-lab          install real AI tools one at a time and check Baseline detects each of them:
                       installed, running (and flagged elevated), and a seeded MCP config with a
                       plaintext credential. Networking on. Runs tests\lab\ as a Pester suite.
+      ci              the same jobs as .github/workflows/ci.yml on a throwaway Windows: lint and
+                      the unit tests on Windows PowerShell 5.1 and pwsh 7, the desktop app layout,
+                      and the Intune deployment rehearsal (install, audit as SYSTEM, uninstall).
+                      Networking on (pwsh and the Intune packaging tool are downloaded).
 
     Results land in build\sandbox\results\<environment>\<timestamp>\ on the host. The
     repository is mapped read-only; the sandbox is destroyed when its window closes.
 .PARAMETER Environment
-    apply-rollback (default) or ai-lab, or a path to your own environment JSON.
+    apply-rollback (default), ai-lab or ci, or a path to your own environment JSON.
 .PARAMETER Tools
     ai-lab only: which catalogue tools to install and test (ids from sandbox\tools.json).
     Default is the environment's own list.
 .PARAMETER PesterPath
-    A folder containing Pester (the parent of Pester\<version>). Recommended for ai-lab; for
-    apply-rollback it additionally runs the whole unit-test suite elevated inside the sandbox.
+    A folder containing Pester and PSScriptAnalyzer (the parent of Pester\<version>). Recommended
+    for ai-lab and ci; for apply-rollback it additionally runs the whole unit-test suite elevated.
 .PARAMETER Networking
     Force networking on.
 .PARAMETER NoLaunch
@@ -43,7 +47,7 @@ $ErrorActionPreference = 'Stop'
 
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $envPath = if (Test-Path -LiteralPath $Environment) { $Environment } else { Join-Path $PSScriptRoot "environments\$Environment.json" }
-if (-not (Test-Path -LiteralPath $envPath)) { throw "No environment '$Environment'. Use apply-rollback, ai-lab, or a path to an environment JSON." }
+if (-not (Test-Path -LiteralPath $envPath)) { throw "No environment '$Environment'. Use apply-rollback, ai-lab, ci, or a path to an environment JSON." }
 
 $maps = @()
 $vars = @{}
@@ -54,8 +58,8 @@ if ($PesterPath) {
     }
     $maps += @{ host = $PesterPath; sandbox = 'C:\ps-modules'; readOnly = $true }
 }
-elseif ((Split-Path -Leaf $envPath) -eq 'ai-lab.json') {
-    Write-Warning 'ai-lab runs a Pester suite; without -PesterPath it will try to install Pester from the gallery inside the sandbox.'
+elseif ((Split-Path -Leaf $envPath) -in @('ai-lab.json', 'ci.json')) {
+    Write-Warning "$([IO.Path]::GetFileNameWithoutExtension($envPath)) runs Pester; without -PesterPath it will try to install Pester from the gallery inside the sandbox."
 }
 if ($Tools) { $vars['CE_LAB_TOOLS'] = ($Tools -join ',') }
 

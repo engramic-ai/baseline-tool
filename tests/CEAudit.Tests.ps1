@@ -271,6 +271,8 @@ BeforeAll {
             if (-not $global:CETestSecure) { $pkgs = @([pscustomobject]@{ Name = '7-Zip'; Id = '7zip.7zip'; Version = '23.01'; Available = '25.01'; Source = 'winget' }) }
             [pscustomobject]@{ Available = $true; Packages = $pkgs }
         }
+        # The machine-wide VS Code folder is real on CI runners; keep built-in extension scanning out of device mocks.
+        Mock -ModuleName CEAudit Get-CEVsCodeBuiltInExtensionDir { , @() }
         Mock -ModuleName CEAudit Get-CEInstalledSoftware {
             $s = @([pscustomobject]@{ Name = 'Microsoft OneDrive'; Version = '25.1'; Publisher = 'Microsoft'; InstallDate = '' })
             if (-not $global:CETestSecure) {
@@ -2581,7 +2583,7 @@ Describe 'AI tools (UA-07, SC-09, UA-10)' {
         foreach ($t in @($list.tools)) {
             $signals = @($t.programs).Count + @($t.uninstallKeys).Count + @($t.appx).Count + @($t.processes).Count + @($t.paths).Count + @($t.vscodeExtensions).Count
             $signals | Should -BeGreaterThan 0 -Because $t.id
-            foreach ($proc in @($t.processes)) { $proc.image | Should -Match '^[\w.-]+\.exe$' -Because $t.id }
+            foreach ($proc in @($t.processes)) { $proc.image | Should -Match '^[\w. -]+\.exe$' -Because $t.id }
             foreach ($prog in @($t.programs)) { ($prog.name -replace '[*?]', '').Length | Should -BeGreaterOrEqual 4 -Because "$($t.id) program pattern must not be too broad" }
             @($t.sources).Count | Should -BeGreaterThan 0 -Because $t.id
             foreach ($u in @($t.sources)) { $u | Should -Match '^https://' -Because $t.id }
@@ -2590,7 +2592,13 @@ Describe 'AI tools (UA-07, SC-09, UA-10)' {
 
     It 'detects tools from programs, Store apps, profile folders, extensions and processes' {
         $profileDir = Join-Path $TestDrive 'ai-profile'
-        New-Item -ItemType Directory -Force -Path (Join-Path $profileDir '.gemini'), (Join-Path $profileDir '.vscode\extensions\github.copilot-chat-0.30.0'), (Join-Path $profileDir '.vscode\extensions\github.copilot-1.350.0') | Out-Null
+        New-Item -ItemType Directory -Force -Path (Join-Path $profileDir '.gemini'), (Join-Path $profileDir '.vscode\extensions\github.copilot-chat-0.30.0'), (Join-Path $profileDir '.vscode\extensions\github.copilot-1.350.0'),
+            (Join-Path $profileDir 'AppData\Local\Programs\Microsoft VS Code\7debcd0e2a\resources\app\extensions\copilot') | Out-Null
+        # VS Code 1.13x: the app sits in a commit-hash folder and ships Copilot Chat as a built-in whose
+        # folder is just "copilot"; its package.json carries the real identity.
+        Set-Content -LiteralPath (Join-Path $profileDir 'AppData\Local\Programs\Microsoft VS Code\7debcd0e2a\resources\app\extensions\copilot\package.json') -Value '{ "name": "copilot-chat", "publisher": "GitHub", "version": "0.66.0" }' -Encoding ASCII
+        $builtInDir = Join-Path $profileDir 'AppData\Local\Programs\Microsoft VS Code\7debcd0e2a\resources\app\extensions'
+        Mock -ModuleName CEAudit Get-CEVsCodeBuiltInExtensionDir { , @($builtInDir) }.GetNewClosure()
         InModuleScope CEAudit -Parameters @{ P = $profileDir } {
             param($P)
             $script:aiProfile = $P
@@ -2621,7 +2629,7 @@ Describe 'AI tools (UA-07, SC-09, UA-10)' {
             $byId['cursor'].Signals | Should -Contain 'Installed program: Cursor (User) 1.6'
             $byId['ollama'].Signals | Should -Contain 'Installed program: Ollama version 0.34.1'
             @($byId['ollama'].Processes).Count | Should -Be 0
-            $byId['github-copilot-vscode'].Signals | Should -Be @('VS Code extension: github.copilot-chat-0.30.0', 'VS Code extension: github.copilot-1.350.0')
+            $byId['github-copilot-vscode'].Signals | Should -Be @('VS Code extension: github.copilot-chat-0.30.0', 'VS Code built-in extension: github.copilot-chat', 'VS Code extension: github.copilot-1.350.0')
             $byId['gemini-cli'].Signals | Should -Contain 'Found %USERPROFILE%\.gemini'
             $st.UninspectedProcesses | Should -Be @('claude.exe (pid 30)') -Because 'node.exe and unrelated copilot.exe are not reported'
             Should -Invoke Get-CEProcessOwner -Times 0 -ParameterFilter { $Process.ProcessId -eq 60 }

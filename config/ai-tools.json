@@ -171,7 +171,9 @@
       "programs": [],
       "uninstallKeys": [],
       "appx": [],
-      "processes": [],
+      "processes": [
+        { "image": "Code.exe" }
+      ],
       "paths": [],
       "vscodeExtensions": [
         "github.copilot-chat-*",
@@ -533,7 +535,9 @@
       ],
       "uninstallKeys": [],
       "appx": [],
-      "processes": [],
+      "processes": [
+        { "image": "LM Studio.exe" }
+      ],
       "paths": [
         ".lmstudio"
       ],

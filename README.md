@@ -242,7 +242,18 @@ Because every write is mocked, the suite cannot tell you that a fix really takes
 .\tools\sandbox\New-SandboxRun.ps1 -PesterPath C:\modules  # also run the whole suite elevated inside the sandbox
 ```
 
-The repository is mapped read-only and networking is off, so nothing leaves the sandbox and nothing on the host changes. Results (three audits, the undo log, `summary.md` with a before/after/restored table per finding, and a transcript) land in `build\sandbox\results\<timestamp>\`. Closing the sandbox window destroys it.
+The repository is mapped read-only and networking is off, so nothing leaves the sandbox and nothing on the host changes. Results (three audits, the undo log, `summary.md` with a before/after/restored table per finding, and a transcript) land in `build\sandbox\results\apply-rollback\<timestamp>\`. Closing the sandbox window destroys it.
+
+### Proving AI-tool detection against real installs
+
+`config/ai-tools.json` says where each AI tool leaves its traces. The lab installs the real thing and checks the rules against it, one tool at a time, in a sandbox with network access:
+
+```powershell
+.\tools\sandbox\New-SandboxRun.ps1 -Environment ai-lab -PesterPath C:\modules                       # the default seven
+.\tools\sandbox\New-SandboxRun.ps1 -Environment ai-lab -PesterPath C:\modules -Tools cursor,ollama   # a subset
+```
+
+For each tool it asserts: a clean image detects nothing; the tool is detected after install and which rule fired; nothing else lit up; the running process is seen and UA-10 reports it (the sandbox user is an administrator); a seeded MCP config at the tool's documented path is found, parsed and its plaintext credential classified. `lab-summary.md` is a table with one row per tool. The install catalogue lives in `sandbox\tools.json`; the sandbox tooling itself (`sandbox\`) has no dependency on Baseline and is described in `sandbox\README.md`. The lab is deliberately not part of CI: a run downloads a few gigabytes and needs Windows Sandbox.
 
 CI (`.github/workflows/ci.yml`) does two things:
 

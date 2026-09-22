@@ -92,7 +92,7 @@ $wsb = @"
 $folders
   </MappedFolders>
   <LogonCommand>
-    <Command>powershell.exe -NoExit -ExecutionPolicy Bypass -File C:\baseline-tool\tools\sandbox\Invoke-SandboxTest.ps1</Command>
+    <Command>cmd.exe /c start "Engramic Baseline - sandbox run" powershell.exe -NoExit -ExecutionPolicy Bypass -File C:\baseline-tool\tools\sandbox\Invoke-SandboxTest.ps1</Command>
   </LogonCommand>
 </Configuration>
 "@
@@ -110,6 +110,6 @@ if ($NoLaunch) {
 }
 
 Write-Host ''
-Write-Host 'Starting Windows Sandbox. The run takes a few minutes; the window stays open with the summary when it finishes.'
+Write-Host 'Starting Windows Sandbox. The first launch can take a few minutes to build the image; a console titled "Engramic Baseline - sandbox run" then appears inside it and stays open with the verdict.'
 Write-Host 'Closing the window destroys the sandbox. Results are already on the host.'
 Start-Process -FilePath $sandboxExe -ArgumentList "`"$wsbPath`""

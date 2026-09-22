@@ -231,6 +231,19 @@ Invoke-ScriptAnalyzer -Path . -Recurse -Settings .\.github\PSScriptAnalyzerSetti
 
 The tests mock Windows, simulating an insecure and a hardened device, so they also run on Linux. They also cover the status file, the compliance discovery script evaluated against both rules files, the Remediations detection script, and a real headless run of the scheduled audit.
 
+The suite refuses to run elevated (so an escaped write is denied, not applied), mocks every device-changing command inside the module to throw unless a test mocks it deliberately, and checks statically that no check file can change the device and that the front ends only call exported functions.
+
+### Trying fixes for real: Windows Sandbox
+
+Because every write is mocked, the suite cannot tell you that a fix really takes on a live Windows and really comes back off. For that, run the cycle in a disposable Windows Sandbox (Pro, Enterprise or Education; enable *Windows Sandbox* under Settings > Optional features > More Windows features):
+
+```powershell
+.\tools\sandbox\New-SandboxRun.ps1                        # audit, apply selected fixes, audit, roll back, audit, compare
+.\tools\sandbox\New-SandboxRun.ps1 -PesterPath C:\modules  # also run the whole suite elevated inside the sandbox
+```
+
+The repository is mapped read-only and networking is off, so nothing leaves the sandbox and nothing on the host changes. Results (three audits, the undo log, `summary.md` with a before/after/restored table per finding, and a transcript) land in `build\sandbox\results\<timestamp>\`. Closing the sandbox window destroys it.
+
 CI (`.github/workflows/ci.yml`) does two things:
 
 - **Tests:** runs lint and the tests on Windows PowerShell 5.1 and PowerShell 7, and loads the desktop app's layout.

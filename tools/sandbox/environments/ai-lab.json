@@ -1,0 +1,9 @@
+{
+  "name": "ai-lab",
+  "description": "Install real AI tools one by one and check Baseline detects each: installed, running (elevated), MCP config",
+  "networking": true,
+  "mappedFolders": [ { "host": "{root}", "sandbox": "C:\\baseline-tool", "readOnly": true } ],
+  "tools": [],
+  "vars": { "CE_LAB_TOOLS": "claude-desktop,claude-code,cursor,github-copilot-vscode,ollama,lm-studio,windsurf" },
+  "run": { "script": "C:\\baseline-tool\\tests\\lab\\Invoke-Lab.ps1", "args": [] }
+}

@@ -91,7 +91,7 @@ The same rehearsal runs in GitHub Actions on every push (`.github/workflows/ci.y
 | `build\INTUNE-SETTINGS.md` | Every value to enter in the portal, filled in for this version |
 | `build\EngramicBaseline.zip` | The same payload, for RMM, Group Policy or manual installs |
 
-If you'd rather not build it yourself, push a tag such as `v0.2.0`. `.github/workflows/release.yml` then publishes a GitHub release with all of these files attached.
+If you'd rather not build it yourself, push a tag such as `v0.3.0`. `.github/workflows/release.yml` then publishes a GitHub release with all of these files attached.
 
 **Before building, you may want to customise:**
 
@@ -190,7 +190,7 @@ Any of these can be used in your own rules file. Unknown values are always repor
 The **Pre-remediation detection output** column then gives you one line per device across the tenant:
 
 ```
-FAIL | autofail=2 fail=7 review=4 | age=5h | TC2=Likely fail TC3=Likely pass TC4=Check TC5=Likely fail | v0.2.0 | SU-03:Overdue,SU-05:7zip-7zip,UA-01
+FAIL | autofail=2 fail=7 review=4 | age=5h | TC2=Likely fail TC3=Likely pass TC4=Check TC5=Likely fail | v0.3.0 | SU-03:Overdue,SU-05:7zip-7zip,UA-01
 ```
 
 Out of the box, the remediation script only runs a fresh audit. To have it fix things automatically, set `"enabled": true` in `config/auto-remediation.json` and copy the fixes you want from `suggested` into `remediationIds`. High-risk fixes are always skipped. Every change is written to an undo log in the device's report folder, and `Restore-CEChangeset.ps1` can roll it back.

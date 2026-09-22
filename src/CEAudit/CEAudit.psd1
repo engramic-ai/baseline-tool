@@ -1,6 +1,6 @@
 @{
     RootModule        = 'CEAudit.psm1'
-    ModuleVersion     = '0.2.0'
+    ModuleVersion     = '0.3.0'
     GUID              = '5d1f6f0e-1c3b-4b7e-9a51-3f7a2c1e8b44'
     Author            = 'Engramic'
     CompanyName       = 'Engramic'

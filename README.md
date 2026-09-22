@@ -134,7 +134,7 @@ The full step-by-step guide is in **[docs/INTUNE.md](docs/INTUNE.md)**. In short
 #                                                3. follow build\INTUNE-SETTINGS.md in the Intune portal
 ```
 
-Alternatively, push a tag such as `v0.2.0` and download the ready-made package from the GitHub release.
+Alternatively, push a tag such as `v0.3.0` and download the ready-made package from the GitHub release.
 
 | Intune feature | What you get |
 |---|---|

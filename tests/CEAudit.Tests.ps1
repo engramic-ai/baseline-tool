@@ -65,8 +65,12 @@ BeforeAll {
             $known = & (Get-Module CEAudit) { param($n) [bool](Get-Command $n -ErrorAction SilentlyContinue) } $cmd
             if ($known) { Mock -ModuleName CEAudit $cmd { throw "Tripwire: a test reached $cmd without mocking it" }.GetNewClosure() }
         }
-        # New-Item creates report folders legitimately; only registry keys are off limits.
-        Mock -ModuleName CEAudit New-Item -ParameterFilter { "$Path$LiteralPath" -match '^(HK(LM|CU|CR|U|CC):|Registry::)' } { throw 'Tripwire: a test reached New-Item on a registry path without mocking it' }
+        # New-Item creates report folders legitimately; only registry keys are off limits. One default mock
+        # that decides in the body: Pester 6 has no fallback when a -ParameterFilter does not match.
+        Mock -ModuleName CEAudit New-Item {
+            if ("$Path$LiteralPath" -match '^(HK(LM|CU|CR|U|CC):|Registry::)') { throw 'Tripwire: a test reached New-Item on a registry path without mocking it' }
+            Microsoft.PowerShell.Management\New-Item @PesterBoundParameters
+        }
     }
     Set-TestTripwires
 

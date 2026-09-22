@@ -824,27 +824,35 @@ Describe 'Desktop app result rendering' {
         function New-Tile { 'tile' }
         function New-CEFrameworkBar { param($Label, $Fraction, $Percent, $Deviation) 'bar' }
         function New-CEAiLine { param([string]$Text, [switch]$Bad) 'line' }
-        function Set-CEStatusStack { param($Summary) }
+        function Set-CEStatusStack { param($CheckMap) }
         function New-CELegendItem { param([string]$Colour, [string]$Text) 'legend' }
+        function Set-UiRichText { param($Block, [object[]]$Parts) $Block.Text = (@($Parts | ForEach-Object { $_['Text'] }) -join '') }
+        function Set-UiTabHeader { param($Tab, [string]$Label, $Count) $Tab.Header = "$Label $Count" }
+        function Set-UiTabsEnabled { param([bool]$On) }
         function Get-CEAiPosture { param($Context) [ordered]@{ agentsFound = 1; contained = $true; deviations = 0; agents = @([ordered]@{ name = 'Test agent'; elevated = $false; asSystem = $false; running = $true }); environments = @([ordered]@{ type = 'wsl'; name = 'Debian'; wslVersion = 2; defaultUidRoot = $false; autoMount = $true; networking = 'nat' }) } }
         # Read by the app functions via dynamic scope.
         Set-Variable -Name statusOrder -Value @('Pass', 'Fail', 'Warn', 'Manual', 'Skipped', 'NotApplicable', 'Error')
         Set-Variable -Name themeLabels -Value ([ordered]@{ Firewalls = 'Firewalls'; SecureConfiguration = 'Secure configuration'; SecurityUpdateManagement = 'Security update management'; UserAccessControl = 'User access control'; MalwareProtection = 'Malware protection'; NCSCHardening = 'NCSC hardening (beyond CE)' })
         $script:OutputRoot = $TestDrive
+        $script:FindingScope = $null
         $ui = @{}
         foreach ($n in 'VerdictBanner', 'VerdictText', 'VerdictSub', 'TcGrid', 'ThemeGrid', 'FindingsGrid', 'ChangesGrid', 'ManualGrid', 'HistoryGrid', 'ChangesTab', 'ManualTab', 'HistoryTab', 'OpenReportBtn', 'OpenFolderBtn', 'FindingCount', 'SelCount') {
             $ui[$n] = [pscustomobject]@{ BorderBrush = $null; Text = ''; Foreground = $null; ItemsSource = $null; Header = ''; IsEnabled = $false }
         }
         $ui.Tiles = [pscustomobject]@{ Children = (New-Object System.Collections.ArrayList) }
         $ui.FwBars = [pscustomobject]@{ Children = (New-Object System.Collections.ArrayList) }
-        $ui.FwBarsDetail = [pscustomobject]@{ Children = (New-Object System.Collections.ArrayList) }
-        $ui.AiSummary = [pscustomobject]@{ Text = ''; Foreground = $null }
-        $ui.AiAgents = [pscustomobject]@{ Children = (New-Object System.Collections.ArrayList) }
+        $ui.AiAgentsGrid = [pscustomobject]@{ ItemsSource = $null; Visibility = '' }
+        $ui.AiAgentsEmpty = [pscustomobject]@{ Visibility = '' }
+        $ui.AiMcpGrid = [pscustomobject]@{ ItemsSource = $null; Visibility = '' }
+        $ui.AiMcpEmpty = [pscustomobject]@{ Visibility = '' }
+        $ui.AiMcpMeta = [pscustomobject]@{ Text = '' }
         $ui.AiEnvs = [pscustomobject]@{ Children = (New-Object System.Collections.ArrayList) }
-        $ui.AiControls = [pscustomobject]@{ ItemsSource = $null }
-        $ui.AiOverview = [pscustomobject]@{ Visibility = '' }
-        $ui.AiOverviewText = [pscustomobject]@{ Text = '' }
-        $ui.AiOverviewDev = [pscustomobject]@{ Text = ''; Foreground = $null }
+        $ui.AiControlsLink = [pscustomobject]@{ Text = '' }
+        $ui.AiLine = [pscustomobject]@{ Visibility = '' }
+        $ui.AiLineText = [pscustomobject]@{ Text = '' }
+        $ui.ActMeta = [pscustomobject]@{ Text = '' }
+        $ui.OvEmpty = [pscustomobject]@{ Visibility = '' }
+        $ui.OvBody = [pscustomobject]@{ Visibility = '' }
         $ui.StatusStack = [pscustomobject]@{ Child = $null }
         $ui.StatusLegend = [pscustomobject]@{ Children = (New-Object System.Collections.ArrayList) }
         $ui.ThemeFilter = [pscustomobject]@{ SelectedValue = '(all)' }
@@ -855,12 +863,15 @@ Describe 'Desktop app result rendering' {
         $ui.TcGrid.ItemsSource.Count | Should -Be 5
         $ui.FindingCount.Text | Should -Match 'shown'
         $ui.SelCount.Text | Should -Match 'ticked'
-        $ui.AiOverview.Visibility | Should -Be 'Visible'
+        $ui.AiLine.Visibility | Should -Be 'Visible'
+        $ui.AiLineText.Text | Should -Match 'AI tool'
+        $ui.OvBody.Visibility | Should -Be 'Visible'
+        $ui.VerdictText.Text | Should -Not -BeNullOrEmpty
+        $ui.ChangesTab.Header | Should -Match '^Fixes \d+$'
         $ui.FwBars.Children.Count | Should -Be 3
-        $ui.FwBarsDetail.Children.Count | Should -Be 3
-        $ui.AiSummary.Text | Should -Match 'AI tool'
-        $ui.AiAgents.Children.Count | Should -BeGreaterThan 0
-        @($ui.AiControls.ItemsSource).Count | Should -BeGreaterThan 0
+        @($ui.AiAgentsGrid.ItemsSource).Count | Should -BeGreaterThan 0
+        $ui.AiMcpEmpty.Visibility | Should -Be 'Visible'
+        $ui.AiControlsLink.Text | Should -Match 'AI-related control'
 
         Show-Results (Import-SavedResults (Join-Path $script:guiOut 'findings.json'))
         $ui.ChangesGrid.ItemsSource.Count | Should -Be @($script:guiResult.Changeset.Items).Count
@@ -2168,7 +2179,7 @@ Describe 'Malware download test (MP-11, CE+ TC3)' {
         $html | Should -Match ([regex]::Escape('eicar.com.txt)</a> <span class="ref">right-click and choose <em>Save link as</em></span>'))
         $html | Should -Match ([regex]::Escape('eicar_com.zip)</a> <span class="ref">click to download</span>'))
         $html | Should -Match 'Expect an alert'
-        $html | Should -Match 'Last result: <span class="st st-Info">Info</span> No blocked test download'
+        $html | Should -Match 'Last result: <span class=''st st-Info''>&#8505; Info</span> No blocked test download'
         $html | Should -Not -Match 'X5O!P%@AP' -Because 'the report must never contain the test file itself'
         $md = Get-Content $r.Paths.Markdown -Raw
         $md | Should -Match ([regex]::Escape('- [EICAR test file (eicar.com)](https://secure.eicar.org/eicar.com) (right-click and choose Save link as)'))

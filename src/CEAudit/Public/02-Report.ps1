@@ -283,6 +283,14 @@ function Export-CEHtml {
     param($Findings, $Summary, $Context, $Changeset, [string]$Path, [string]$ChangesetPath)
 
     $e = { param($t) ConvertTo-CEHtmlText $t }
+    # Status/severity presentation comes from the shared model (Get-CEStatusStyle /
+    # Get-CESeverityStyle) so the report and the app match exactly.
+    $sevStyles = Get-CESeverityStyle
+    $sevTokL = (@($sevStyles.Keys | ForEach-Object { "--sev-$($_):$($sevStyles[$_].Light);" }) -join ' ')
+    $sevTokD = (@($sevStyles.Keys | ForEach-Object { "--sev-$($_):$($sevStyles[$_].Dark);" }) -join ' ')
+    $sevClasses = (@($sevStyles.Keys | ForEach-Object { ".sev-$($_){color:var(--sev-$($_));font-weight:600}" }) -join ' ')
+    $stPill = { param($s) $x = Get-CEStatusStyle ([string]$s); "<span class='st st-$s'>&#$($x.Icon); $(ConvertTo-CEHtmlText $x.Label)</span>" }
+    $sevCell = { param($sv) if (-not "$sv") { return '' } "<span class='sev sev-$sv'>$(ConvertTo-CEHtmlText ([string]$sv))</span>" }
     $rows = foreach ($f in $Findings) {
         $t = if ($f.Subject) { "$($f.Title) <span class='sub'>($(& $e $f.Subject))</span>" } else { & $e $f.Title }
         $ev = ''
@@ -294,10 +302,10 @@ function Export-CEHtml {
 @"
 <tr data-status="$($f.Status)" data-cat="$($f.Category)">
 <td><code>$(& $e $f.FindingId)</code></td>
-<td><span class="st st-$($f.Status)">$($f.Status)</span>$af</td>
+<td>$(& $stPill $f.Status)$af</td>
 <td><strong>$t</strong><div class="ref">$(& $e $f.Reference)</div></td>
 <td><div>$(& $e $f.Actual)</div><div class="exp">Expected: $(& $e $f.Expected)</div>$(if ($f.Recommendation) { "<div class='rec'>$(& $e $f.Recommendation)</div>" })$rem$ev</td>
-<td>$(& $e $f.Severity)</td>
+<td>$(& $sevCell $f.Severity)</td>
 <td>$((@($f.Frameworks) | ForEach-Object { "<span class='fw'>$(& $e $_)</span>" }) -join ' ')</td>
 </tr>
 "@
@@ -305,7 +313,7 @@ function Export-CEHtml {
 
     $tcRows = foreach ($t in $Summary.CEPlus) {
         $cls = switch ($t.State) { 'Likely pass' { 'Pass' } 'Likely fail' { 'Fail' } 'Check' { 'Warn' } default { 'Skipped' } }
-        "<tr><td><strong>$($t.TestCase)</strong> $(& $e $t.Name)</td><td>$(& $e $t.Scope)</td><td><span class='st st-$cls'>$(& $e $t.State)</span></td></tr>"
+        "<tr><td><strong>$($t.TestCase)</strong> $(& $e $t.Name)</td><td>$(& $e $t.Scope)</td><td><span class='st st-$cls'>&#$((Get-CEStatusStyle $cls).Icon); $(& $e $t.State)</span></td></tr>"
     }
     $mt = Get-CEMalwareTestInfo $Findings
     $mtHtml = ''
@@ -329,7 +337,7 @@ function Export-CEHtml {
 </ol>
 <ul class="testfiles">$links</ul>
 <p class="ref">Nothing malicious is included with this tool: the links go to EICAR (eicar.org).$page</p>
-<p>Last result: <span class="st st-$mtStatus">$(& $e $mtStatus)</span> $mtText</p>
+<p>Last result: $(& $stPill $mtStatus) $mtText</p>
 </div>
 "@
     }
@@ -342,15 +350,15 @@ function Export-CEHtml {
     $itemRows = foreach ($i in $Changeset.Items) {
         $af = if ($i.AutoFail) { "<span class='badge autofail'>AUTO-FAIL</span>" } else { '' }
         $sel = if ($i.Selected) { 'Yes' } else { 'No' }
-        "<tr><td><code>$($i.ItemId)</code></td><td>$sel</td><td><strong>$(& $e $i.Title)</strong><div class='ref'><code>$(& $e $i.RemediationId)</code> for $(& $e ($i.FindingIds -join ', '))</div>$(if ($i.Notes) { "<div class='rec'>$(& $e $i.Notes)</div>" })</td><td>$(& $e $i.Why)</td><td>$(& $e $i.Severity) $af</td><td>$(& $e $i.Risk)</td><td>$(if ($i.RequiresReboot) { 'Yes' })</td></tr>"
+        "<tr><td><code>$($i.ItemId)</code></td><td>$sel</td><td><strong>$(& $e $i.Title)</strong><div class='ref'><code>$(& $e $i.RemediationId)</code> for $(& $e ($i.FindingIds -join ', '))</div>$(if ($i.Notes) { "<div class='rec'>$(& $e $i.Notes)</div>" })</td><td>$(& $e $i.Why)</td><td>$(& $sevCell $i.Severity) $af</td><td>$(& $sevCell $i.Risk)</td><td>$(if ($i.RequiresReboot) { 'Yes' })</td></tr>"
     }
     $manualRows = foreach ($m in $Changeset.ManualActions) {
         $af = if ($m.AutoFail) { "<span class='badge autofail'>AUTO-FAIL</span>" } else { '' }
-        "<li><span class='st st-$($m.Status)'>$($m.Status)</span>$af <strong>$(& $e $m.Title)</strong> <code>$(& $e $m.FindingId)</code><br>$(& $e $m.Actual)<div class='rec'>$(& $e $m.Recommendation)</div></li>"
+        "<li>$(& $stPill $m.Status)$af <strong>$(& $e $m.Title)</strong> <code>$(& $e $m.FindingId)</code><br>$(& $e $m.Actual)<div class='rec'>$(& $e $m.Recommendation)</div></li>"
     }
     $statCards = foreach ($k in @('Pass', 'Fail', 'Warn', 'Manual', 'Skipped', 'NotApplicable', 'Error')) {
         $label = if ($k -eq 'NotApplicable') { 'Not applicable' } else { $k }
-        "<button class='card st-$k' data-filter='$k'><span class='n'>$($Summary.ByStatus[$k])</span><span class='l'>$label</span></button>"
+        "<button class='card st-$k$(if ($Summary.ByStatus[$k] -eq 0) { ' zero' })' data-filter='$k'><span class='n'>$($Summary.ByStatus[$k])</span><span class='l'>&#$((Get-CEStatusStyle $k).Icon); $label</span></button>"
     }
     $checkMap = Get-CEStatusCheckMap -Findings $Findings
     $fwRoll = Get-CEFrameworkRollup -CheckMap $checkMap -Summary $Summary
@@ -416,11 +424,11 @@ function Export-CEHtml {
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <style>
 :root { --bg:#f2f4f4; --fg:#0b0f0e; --muted:#566360; --card:#ffffff; --line:#e2e8e6;
-  --pass:#008687; --fail:#c23f2c; --warn:#a9721a; --manual:#3d6aa0; --skip:#7d8783; --brand:#008687;
+  --pass:#008687; --fail:#c23f2c; --warn:#a9721a; --manual:#3d6aa0; --skip:#7d8783; --brand:#008687; $sevTokL
   --sans:'Geist','Geist Fallback','IBM Plex Sans',system-ui,'Segoe UI',sans-serif;
   --mono:'Geist Mono','IBM Plex Mono',ui-monospace,'Cascadia Mono',Consolas,monospace; }
 @media (prefers-color-scheme: dark) { :root { --bg:#0b0e0d; --fg:#eef2f0; --muted:#9aa4a0; --card:#141a18; --line:#253029;
-  --pass:#35b8b5; --fail:#e88a7c; --warn:#dcac57; --manual:#8fb2e0; --skip:#8b958f; --brand:#35b8b5; } }
+  --pass:#35b8b5; --fail:#e88a7c; --warn:#dcac57; --manual:#8fb2e0; --skip:#8b958f; --brand:#35b8b5; $sevTokD } }
 * { box-sizing:border-box; }
 body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 var(--sans); }
 main { max-width:1200px; margin:0 auto; padding:24px 16px 64px; }
@@ -438,8 +446,10 @@ th, td { padding:8px 10px; border-bottom:1px solid var(--line); vertical-align:t
 th { font-size:.8rem; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); }
 tr:last-child td { border-bottom:none; }
 .st { display:inline-block; font-size:.75rem; font-weight:700; padding:1px 8px; border-radius:99px; border:1px solid currentColor; white-space:nowrap; }
-.st-Pass { color:var(--pass); } .st-Fail { color:var(--fail); } .st-Warn { color:var(--warn); } .st-Manual, .st-Info { color:var(--manual); }
-.st-Skipped, .st-NotApplicable, .st-Error { color:var(--skip); }
+.st-Pass { color:var(--pass); } .st-Fail, .st-Error { color:var(--fail); } .st-Warn { color:var(--warn); } .st-Manual, .st-Info { color:var(--manual); }
+.st-Skipped, .st-NotApplicable { color:var(--skip); }
+.sev { white-space:nowrap; } $sevClasses
+.card.zero { opacity:.5; }
 .badge.autofail { display:inline-block; white-space:nowrap; margin:2px 0 0 6px; font-size:.7rem; font-weight:700; color:#fff; background:var(--fail); padding:1px 6px; border-radius:4px; }
 .ref, .exp, .sub { color:var(--muted); font-size:.82rem; }
 .rec { margin-top:4px; font-size:.88rem; } .rem { margin-top:4px; font-size:.82rem; }

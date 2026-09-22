@@ -11,7 +11,7 @@
         'Invoke-CEAuditCore', 'Get-CECheck', 'Get-CECategory', 'Get-CEPack', 'Get-CEDeviceContext', 'Get-CEConfig',
         'New-CEChangeset', 'Export-CEReport', 'Invoke-CERemediation', 'Get-CERemediation',
         'Restore-CEUndoLog', 'Test-CEIsAdmin', 'Invoke-CEChangeset', 'Get-CEUndoLogs', 'Get-CESummary',
-        'Get-CEStatusCheckMap', 'Get-CEFrameworkRollup', 'Get-CEAiPosture',
+        'Get-CEStatusCheckMap', 'Get-CEFrameworkRollup', 'Get-CEAiPosture', 'Get-CEStatusStyle', 'Get-CESeverityStyle', 'Get-CEBucketStyle',
         'ConvertTo-CEStatus', 'Write-CEStatus', 'Write-CEEventLog', 'Get-CEDataRoot', 'Get-CEToolVersion', 'Test-CEComplianceRules'
     )
     CmdletsToExport   = @()

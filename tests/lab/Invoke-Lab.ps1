@@ -51,6 +51,14 @@ foreach ($row in $global:LabMatrix) {
     $lines += "| $($row.Tool) | $($row.Install) | $($row.Detected) | $($row.Signal) | $($row.Running) | $($row.Elevated) | $($row.Mcp) | $($row.Note) |"
 }
 $lines += ''
+# Coverage: the rules define the tools; say which this run exercised, which are not installable unattended, and which were left out.
+$ruleIds = @((Get-Content 'C:\baseline-tool\config\ai-tools.json' -Raw | ConvertFrom-Json).tools | ForEach-Object id)
+$labTools = @((Get-Content 'C:\sandbox\tools.json' -Raw | ConvertFrom-Json).tools)
+$ran = @($global:LabMatrix | ForEach-Object Tool)
+$manual = @($labTools | Where-Object { $_.PSObject.Properties['manual'] -and $_.manual } | ForEach-Object id)
+$notRun = @($ruleIds | Where-Object { $ran -notcontains $_ -and $manual -notcontains $_ } | Sort-Object)
+$lines += "Coverage: $($ruleIds.Count) tools in config/ai-tools.json; $($ran.Count) exercised in this run; $($manual.Count) not installable unattended ($($manual -join ', ')); $($notRun.Count) with a recipe but not in this run$(if ($notRun.Count) { ': ' + ($notRun -join ', ') })."
+$lines += ''
 $lines += 'Install = how the tool got onto the machine (winget / script / npm / vscode) or why it could not. Signal = the first detection rule that fired. Elevated flagged = UA-10 reported the running agent as administrator (the sandbox user is one).'
 Set-Content -LiteralPath (Join-Path $results 'lab-summary.md') -Value ($lines -join "`r`n") -Encoding UTF8
 $global:LabMatrix | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath (Join-Path $results 'lab-summary.json') -Encoding UTF8

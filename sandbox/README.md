@@ -35,7 +35,7 @@ Requires Windows 10/11 Pro, Enterprise or Education with the *Windows Sandbox* o
 
 ## tools.json
 
-The install catalogue: how to get a tool onto a machine unattended, and which executable it runs as. Types: `winget` (with optional `source`, e.g. `msstore`), `script` (a PowerShell one-liner such as a vendor's install script), `npm` (global package; depends on `node`), `vscode` (extension ids; depends on `vscode`). Tools marked `manual` cannot be installed unattended and are reported as such rather than skipped silently. winget ids drift; a failing id is reported per tool, never fatal.
+The install catalogue: how to get a tool onto a machine unattended, and which executable it runs as. It is an overlay keyed by id, not a list of tools: what a tool *is* lives in the consumer's rules (for Engramic Baseline, `config/ai-tools.json`, with a unit test keeping the two id sets equal), and only helper entries such as `vscode` and `node` carry a name. Types: `winget` (with optional `source`, e.g. `msstore`), `script` (a PowerShell one-liner such as a vendor's install script), `npm` (global package; depends on `node`), `vscode` (extension ids; depends on `vscode`). Tools marked `manual` cannot be installed unattended and are reported as such rather than skipped silently. winget ids drift; a failing id is reported per tool, never fatal.
 
 `SandboxLab.psm1` exposes the same operations to scripts running inside: `Install-Winget`, `Install-SandboxTool`, `Start-SandboxTool`, `Stop-SandboxTool`, `Find-SandboxToolExe`.
 

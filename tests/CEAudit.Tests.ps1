@@ -2575,6 +2575,26 @@ Describe 'AI tools (UA-07, SC-09, UA-10)' {
         }
     }
 
+    It 'the sandbox install catalogue is an overlay of the shipped tool list (same ids, no duplicated identity)' {
+        # config/ai-tools.json is the one place a tool is defined. sandbox/tools.json only says how the lab
+        # installs it. Ids must agree both ways so a rule cannot exist without a way to test it, and the
+        # overlay must not restate identity that could drift from the rules.
+        $rules = @((Get-Content (Join-Path $script:RepoRoot 'config\ai-tools.json') -Raw | ConvertFrom-Json).tools)
+        $lab = @((Get-Content (Join-Path $script:RepoRoot 'sandbox\tools.json') -Raw | ConvertFrom-Json).tools)
+        $isHelper = { param($t) [bool]($t.PSObject.Properties['helper'] -and $t.helper) }
+        $labIds = @($lab | Where-Object { -not (& $isHelper $_) } | ForEach-Object id | Sort-Object)
+        $ruleIds = @($rules | ForEach-Object id | Sort-Object)
+        @($ruleIds | Where-Object { $labIds -notcontains $_ }) -join ', ' | Should -BeNullOrEmpty -Because 'every detection rule needs a lab entry (a recipe, or manual: true with a reason)'
+        @($labIds | Where-Object { $ruleIds -notcontains $_ }) -join ', ' | Should -BeNullOrEmpty -Because 'the lab cannot install a tool the rules do not know'
+        foreach ($t in $lab) {
+            if (& $isHelper $t) { continue }
+            $t.PSObject.Properties['name'] | Should -BeNullOrEmpty -Because "$($t.id): identity belongs in config/ai-tools.json"
+            $manual = [bool]($t.PSObject.Properties['manual'] -and $t.manual)
+            if ($manual) { [string]$t.reason | Should -Not -BeNullOrEmpty -Because "$($t.id) is manual and must say why" }
+            else { [string]$t.install.type | Should -BeIn @('winget', 'script', 'npm', 'vscode') -Because $t.id }
+        }
+    }
+
     It 'the shipped tool list is well formed' {
         $list = Get-Content (Join-Path (Join-Path $script:RepoRoot 'config') 'ai-tools.json') -Raw | ConvertFrom-Json
         $list.lastReviewed | Should -Match '^\d{4}-\d{2}-\d{2}$'

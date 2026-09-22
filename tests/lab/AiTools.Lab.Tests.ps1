@@ -91,7 +91,10 @@ Describe 'Layer 0: clean image' -Tag Lab -Skip:(-not $script:lab) {
     }
 }
 
-Describe 'Tool: <_>' -Tag Lab -Skip:(-not $script:lab) -ForEach @(($env:CE_LAB_TOOLS -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ }) {
+# Pester 6 treats an empty -ForEach as a discovery error, so outside a lab run (no CE_LAB_TOOLS) the block is not declared at all.
+$script:labToolList = @(($env:CE_LAB_TOOLS -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+if ($script:labToolList.Count) {
+Describe 'Tool: <_>' -Tag Lab -Skip:(-not $script:lab) -ForEach $script:labToolList {
     BeforeAll {
         $script:id = $_
         $script:rule = @($script:catalog | Where-Object { $_.id -eq $script:id })
@@ -189,4 +192,5 @@ Describe 'Tool: <_>' -Tag Lab -Skip:(-not $script:lab) -ForEach @(($env:CE_LAB_T
             if ($existed) { Set-Content -LiteralPath $path -Value $backup -Encoding UTF8 } else { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue }
         }
     }
+}
 }

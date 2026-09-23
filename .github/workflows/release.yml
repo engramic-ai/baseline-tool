@@ -1,37 +1,74 @@
 name: Release
 
-# Push a tag like v0.2.0 to publish a release with the ready-to-upload Intune package.
+# Releases are NOT published from here.
+#
+# A release is signed, and the signing identity is a maintainer's own Azure login rather than a
+# workflow credential, so releases are cut on a maintainer machine with tools/New-SignedRelease.ps1.
+# Publishing an unsigned package from a tag would quietly undo that: a tag and the script would
+# produce two different releases, and the unsigned one would look just as official.
+#
+# What this workflow does instead:
+#   on a tag        check the tag agrees with the module version, so a mistagged commit is caught
+#   run by hand     build the package to prove it still builds, and keep it as an artefact
+#
+# Neither path creates a GitHub release or uploads anything a customer could install.
+
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
+  check-tag:
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Check tag matches module version
         shell: powershell
         run: |
           $v = (Import-PowerShellDataFile ./src/CEAudit/CEAudit.psd1).ModuleVersion
           if ("v$v" -ne $env:GITHUB_REF_NAME) { throw "Tag $env:GITHUB_REF_NAME does not match module version $v" }
+          Write-Host "Tag $env:GITHUB_REF_NAME matches module version $v"
+
+      - name: Say where the release comes from
+        shell: powershell
+        run: |
+          Write-Host 'This tag does not publish anything.'
+          Write-Host 'Cut the release on a maintainer machine:'
+          Write-Host '  .\tools\New-SignedRelease.ps1 -AzureMetadata <path to Artifact Signing metadata>'
+          Write-Host 'That signs every shipped script, verifies it, and prints the upload command.'
+
+  unsigned-build:
+    # Run by hand only. Proves the package still assembles; the result is UNSIGNED and is kept for
+    # inspection, never for distribution.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Build
         shell: powershell
-        run: |
-          ./intune/Build-IntunePackage.ps1 -DownloadTool
-          Compress-Archive -Path build/upload/* -DestinationPath build/intune-upload-files.zip
+        run: ./intune/Build-IntunePackage.ps1 -DownloadTool
 
-      - name: Publish release
-        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
+      - name: Confirm nothing here is signed
+        shell: powershell
+        run: |
+          $signed = @(Get-ChildItem ./build/payload -Recurse -File |
+              Where-Object { $_.Extension -in '.ps1', '.psm1', '.psd1' } |
+              Where-Object { (Get-AuthenticodeSignature -LiteralPath $_.FullName).Status -ne 'NotSigned' })
+          if ($signed.Count) { throw "$($signed.Count) file(s) are signed. This job must not produce anything installable." }
+          Write-Host 'Confirmed unsigned, as intended for an inspection build.'
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          body_path: build/INTUNE-SETTINGS.md
-          files: |
+          name: unsigned-build-do-not-publish
+          path: |
             build/*.intunewin
             build/EngramicBaseline.zip
-            build/intune-upload-files.zip
             build/INTUNE-SETTINGS.md
+          retention-days: 7

@@ -272,7 +272,13 @@ CI (`.github/workflows/ci.yml`) does two things:
 - **Tests:** runs lint and the tests on Windows PowerShell 5.1 and PowerShell 7, and loads the desktop app's layout.
 - **Deployment rehearsal:** runs the full Intune rehearsal on a Windows machine (install, audit as SYSTEM, discovery, rules, uninstall), then builds the package.
 
-**Releasing.** Bump `ModuleVersion` in `CEAudit.psd1` and `$required` in `intune/Detect-CEChecker.ps1` together - a unit test and the package build both check they match - then push a `v*` tag. `release.yml` builds and publishes the GitHub release with the Intune package attached.
+**Releasing.** Releases are signed, so they are cut on a maintainer machine rather than in CI: the signing identity is a
+person's Azure login, not a workflow credential.
+
+Bump `ModuleVersion` in `CEAudit.psd1` and `$required` in `intune/Detect-CEChecker.ps1` together - a unit test and the
+package build both check they match - commit, then run `tools/New-SignedRelease.ps1`. It runs the same lint and tests CI
+runs, signs every shipped script, verifies the result, and prints the tag and upload commands without running them.
+Pushing a `v*` tag only checks that the tag agrees with the module version; it publishes nothing.
 
 ### Adding a check
 

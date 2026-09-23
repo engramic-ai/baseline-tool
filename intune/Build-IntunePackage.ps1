@@ -30,6 +30,9 @@ param(
     [SecureString]$SignPfxPassword,
     [string]$SignAzureMetadata,
     [switch]$AllowSelfSigned,
+    # An Artifact Signing Public Trust Test profile chains to a root Windows does not trust, so a
+    # package built with one can be proven but must never be published.
+    [switch]$AllowUntrustedChain,
     # Refuse to produce a package from unsigned scripts. Release builds set this; a local
     # rehearsal leaves it off so Test-IntuneDeployment.ps1 still works on an unsigned tree.
     [switch]$RequireSignature
@@ -69,11 +72,13 @@ elseif ($SignPfxPath) { $signArgs['PfxPath'] = $SignPfxPath; if ($SignPfxPasswor
 elseif ($SignAzureMetadata) { $signArgs['AzureMetadata'] = $SignAzureMetadata }
 if ($signArgs.Count) {
     if ($AllowSelfSigned) { $signArgs['AllowSelfSigned'] = $true }
+    if ($AllowUntrustedChain) { $signArgs['AllowUntrustedChain'] = $true }
     foreach ($dir in @($payload, $upload)) { & $signer -Path $dir @signArgs }
 }
 if ($RequireSignature) {
     $verifyArgs = @{ VerifyOnly = $true }
     if ($AllowSelfSigned) { $verifyArgs['AllowSelfSigned'] = $true }
+    if ($AllowUntrustedChain) { $verifyArgs['AllowUntrustedChain'] = $true }
     foreach ($dir in @($payload, $upload)) { & $signer -Path $dir @verifyArgs }
 }
 

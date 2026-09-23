@@ -31,6 +31,10 @@
 .PARAMETER Path
     The assembled payload to sign. Mandatory and never defaulted, so this cannot accidentally
     sign your working tree and leave signature blocks in files you then commit.
+.PARAMETER AllowUntrustedChain
+    Accept a signature whose chain does not reach a trusted root. An Artifact Signing Public
+    Trust Test profile issues exactly that, so use it to exercise this pipeline against the real
+    service without producing a release anyone should install.
 .PARAMETER VerifyOnly
     Check signatures without signing. Used by Build-IntunePackage.ps1 -RequireSignature.
 .EXAMPLE
@@ -49,7 +53,8 @@ param(
     [Parameter(ParameterSetName = 'Azure')][string]$DlibPath,
     [Parameter(ParameterSetName = 'Verify')][switch]$VerifyOnly,
     [string]$TimestampUrl,
-    [switch]$AllowSelfSigned
+    [switch]$AllowSelfSigned,
+    [switch]$AllowUntrustedChain
 )
 $ErrorActionPreference = 'Stop'
 
@@ -68,7 +73,7 @@ if (-not $signable.Count) { throw "No PowerShell files found under '$root'." }
 # trusted root, and installing one needs a consent dialog that no automated run can answer. So for
 # -AllowSelfSigned an untrusted chain is the expected result and passes, while a missing signature
 # or a tampered file still fails.
-$script:AcceptableStatus = if ($AllowSelfSigned) { @('Valid', 'UnknownError', 'NotTrusted') } else { @('Valid') }
+$script:AcceptableStatus = if ($AllowSelfSigned -or $AllowUntrustedChain) { @('Valid', 'UnknownError', 'NotTrusted') } else { @('Valid') }
 
 function Get-SignatureState {
     param([string]$File)
@@ -149,14 +154,22 @@ if ($PSCmdlet.ParameterSetName -eq 'Azure') {
     # architecture must match the signtool above, which is x64.
     $dlib = $DlibPath
     if (-not $dlib) {
-        $roots = @($env:ProgramFiles, ${env:ProgramFiles(x86)}, $PWD.Path) | Where-Object { $_ }
+        # The client tools MSI installs a flat folder under LocalAppData; only the NuGet package has
+        # x64\ and x86\ subfolders. Look in the MSI location first so this does not sweep Program
+        # Files on every run, and stop at the first root that has a copy.
+        $roots = @((Join-Path $env:LOCALAPPDATA 'Microsoft\MicrosoftArtifactSigningClientTools'),
+            $PWD.Path, $env:ProgramFiles, ${env:ProgramFiles(x86)}) |
+            Where-Object { $_ -and (Test-Path -LiteralPath $_) }
         $found = New-Object System.Collections.ArrayList
         foreach ($r in $roots) {
-            $hits = @(Get-ChildItem -LiteralPath $r -Recurse -Filter 'Azure.CodeSigning.Dlib.dll' -ErrorAction SilentlyContinue |
-                    Where-Object { $_.FullName -match '\\x64\\' })
+            $hits = @(Get-ChildItem -LiteralPath $r -Recurse -Filter 'Azure.CodeSigning.Dlib.dll' -ErrorAction SilentlyContinue)
             foreach ($h in $hits) { [void]$found.Add($h.FullName) }
+            if ($found.Count) { break }
         }
-        $dlib = [string](@($found | Sort-Object -Descending) | Select-Object -First 1)
+        # Match the x64 signtool chosen above when the layout offers a choice.
+        $x64 = @($found | Where-Object { $_ -match '\\x64\\' })
+        $pick = @(if ($x64.Count) { $x64 } else { $found })
+        $dlib = [string](@($pick | Sort-Object -Descending) | Select-Object -First 1)
     }
     if (-not $dlib -or -not (Test-Path -LiteralPath $dlib)) {
         throw ('Azure.CodeSigning.Dlib.dll (x64) not found. Install the client tools with ' +

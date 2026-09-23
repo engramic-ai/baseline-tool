@@ -161,6 +161,34 @@ Add-Note @('## What to download', '',
     '| `intune-upload-files.zip` | The scripts and JSON that Intune takes as separate uploads. |',
     '| `INTUNE-SETTINGS.md` | Detection rules, install commands and requirements. |',
     '| `SHA256SUMS.txt` | Checksums for everything above. |', '')
+# An installer is only described when one was actually built, so the notes never promise a file
+# that is not attached.
+$msi = @($artefacts | Where-Object { $_.Extension -eq '.msi' }) | Select-Object -First 1
+$intuneName = [string](@($artefacts | Where-Object { $_.Extension -eq '.intunewin' }) |
+        Select-Object -First 1 -ExpandProperty Name)
+Add-Note @('## Installing', '')
+Add-Note @('### On your own PC', '')
+if ($msi) {
+    Add-Note @("Download ``$($msi.Name)`` and run it. It installs to Program Files and adds a Start menu",
+        'entry. Windows will show Engramic Ltd as the publisher.', '')
+}
+else {
+    Add-Note @('Download `EngramicBaseline.zip`. Before extracting it, right-click the file, choose Properties,',
+        'and tick Unblock, or Windows treats everything inside as downloaded from the internet.', '',
+        'Extract it somewhere of your choosing and run `app\Start-EB.cmd` to open the desktop app. Auditing',
+        'reads only; nothing is changed until you apply a fix, and every fix can be rolled back.', '')
+}
+Add-Note @('### Across a fleet', '',
+    "Use ``$(if ($intuneName) { $intuneName } else { 'the .intunewin package' })`` with Intune as a Win32 app.",
+    '`INTUNE-SETTINGS.md` lists the exact values to enter, including the detection rules. Upload the',
+    'scripts in `intune-upload-files.zip` separately for compliance and remediation.', '',
+    'Because everything is signed, you can set **Enforce script signature check** to Yes.', '')
+Add-Note @('### From PowerShell', '',
+    'Extract the zip and import the module directly:', '',
+    '```powershell',
+    'Import-Module .\src\CEAudit\CEAudit.psd1',
+    'Invoke-CEAudit',
+    '```', '')
 Add-Note @('## Verifying what you downloaded', '',
     "Every one of the $($states.Count) PowerShell files in this release is Authenticode signed and timestamped,",
     'so the signatures keep verifying after the signing certificate expires.', '',

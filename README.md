@@ -135,7 +135,7 @@ The full step-by-step guide is in **[docs/INTUNE.md](docs/INTUNE.md)**. In short
 #                                                3. follow build\INTUNE-SETTINGS.md in the Intune portal
 ```
 
-Alternatively, push a tag such as `v0.3.1` and download the ready-made package from the GitHub release.
+Alternatively, download the ready-made package from [Releases](https://github.com/engramic-ai/baseline-tool/releases) instead of building it.
 
 | Intune feature | What you get |
 |---|---|
@@ -272,7 +272,7 @@ CI (`.github/workflows/ci.yml`) does two things:
 - **Tests:** runs lint and the tests on Windows PowerShell 5.1 and PowerShell 7, and loads the desktop app's layout.
 - **Deployment rehearsal:** runs the full Intune rehearsal on a Windows machine (install, audit as SYSTEM, discovery, rules, uninstall), then builds the package.
 
-`release.yml` publishes the Intune package when you push a `v*` tag.
+**Releasing.** Bump `ModuleVersion` in `CEAudit.psd1` and `$required` in `intune/Detect-CEChecker.ps1` together - a unit test and the package build both check they match - then push a `v*` tag. `release.yml` builds and publishes the GitHub release with the Intune package attached.
 
 ### Adding a check
 

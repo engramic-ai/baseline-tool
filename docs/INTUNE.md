@@ -91,7 +91,7 @@ The same rehearsal runs in GitHub Actions on every push (`.github/workflows/ci.y
 | `build\INTUNE-SETTINGS.md` | Every value to enter in the portal, filled in for this version |
 | `build\EngramicBaseline.zip` | The same payload, for RMM, Group Policy or manual installs |
 
-If you'd rather not build it yourself, push a tag such as `v0.3.1`. `.github/workflows/release.yml` then publishes a GitHub release with all of these files attached.
+If you'd rather not build it yourself, every release ships these same files: download them from [Releases](https://github.com/engramic-ai/baseline-tool/releases).
 
 **Before building, you may want to customise:**
 

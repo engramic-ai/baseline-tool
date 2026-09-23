@@ -12,3 +12,20 @@ Third-party components distributed with this product:
     Copyright (c) 2023 Vercel, Inc. (https://vercel.com)
     Licensed under the SIL Open Font License, Version 1.1.
     Full licence text: app/fonts/OFL.txt
+
+Quoted material:
+
+  This product quotes short extracts from UK National Cyber Security Centre
+  publications, to identify the requirement each check implements.
+
+  "Cyber Essentials: Requirements for IT Infrastructure" v3.3 is UK Crown
+  copyright. It is quoted here as short attributed extracts for identification
+  and comment, not under any licence grant.
+
+  Other NCSC website content, including "Device security guidance: Windows",
+  is UK Crown copyright reused under the Open Government Licence v3.0:
+  http://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/
+
+  Cyber Essentials and Cyber Essentials Plus are schemes owned by the NCSC and
+  delivered by IASME. Engramic Ltd is not affiliated with, endorsed by or
+  approved by either, and this product confers no certification.

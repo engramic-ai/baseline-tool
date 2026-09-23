@@ -1,5 +1,15 @@
 # Security policy
 
+## Supported versions
+
+Engramic Baseline is in beta. Fixes go into the next release; while the version
+number starts with 0 there are no long-term support branches.
+
+| Version | Supported |
+|---|---|
+| Latest release | Yes |
+| Anything earlier | No - please update |
+
 ## Reporting a vulnerability
 
 Please report security issues privately to **security@engramic.ai**. Do not open a

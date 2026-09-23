@@ -3,11 +3,11 @@
 [![CI](https://github.com/engramic-ai/baseline-tool/actions/workflows/ci.yml/badge.svg)](https://github.com/engramic-ai/baseline-tool/actions/workflows/ci.yml)
 [![Checks against Cyber Essentials v3.3 (Danzell)](https://img.shields.io/badge/checks%20against-Cyber%20Essentials%20v3.3%20%28Danzell%29-1f4e79)](https://www.ncsc.gov.uk/sites/default/files/documents/cyber-essentials-requirements-for-it-infrastructure-v3-3.pdf)
 [![CE+ TC1-TC5 readiness](https://img.shields.io/badge/CE%2B-TC1--TC5%20readiness-1f4e79)](https://www.ncsc.gov.uk/files/cyber-essentials-plus-test-specification-v3-2.pdf)
-[![NCSC Windows device guidance](https://img.shields.io/badge/NCSC-Windows%20device%20guidance-1f4e79)](https://www.ncsc.gov.uk/collection/device-security-guidance/platform-guides/windows)
+[![Follows NCSC Windows device guidance](https://img.shields.io/badge/follows-NCSC%20Windows%20device%20guidance-1f4e79)](https://www.ncsc.gov.uk/collection/device-security-guidance/platform-guides/windows)
 [![PowerShell 5.1 and 7](https://img.shields.io/badge/PowerShell-5.1%20%7C%207-5391fe?logo=powershell&logoColor=white)](#development)
 [![Deploys with Intune](https://img.shields.io/badge/deploys%20with-Intune-0078d4)](docs/INTUNE.md)
 
-<sub>A self-assessment aid, not certification.</sub>
+<sub>Beta: 0.x releases, actively developed, interfaces may still change. A self-assessment aid, not certification &mdash; not affiliated with, endorsed by or approved by the NCSC or IASME.</sub>
 
 **Secure the Windows devices your AI agents run on.**
 

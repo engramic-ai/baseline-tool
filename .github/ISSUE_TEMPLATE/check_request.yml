@@ -1,0 +1,29 @@
+name: Check or fix request
+description: Suggest a new control to audit, or a fix for an existing finding
+labels: [enhancement]
+body:
+  - type: textarea
+    id: control
+    attributes:
+      label: What should it check?
+      description: What good looks like on a Windows device, and how you would verify it by hand.
+    validations: { required: true }
+  - type: input
+    id: framework
+    attributes:
+      label: Which requirement does it come from?
+      description: Cyber Essentials v3.3 question, a CE+ test case, NCSC guidance, or your own policy.
+      placeholder: "CE v3.3 Secure configuration, or NCSC Windows device guidance"
+  - type: dropdown
+    id: fixable
+    attributes:
+      label: Could it be fixed automatically?
+      options:
+        - "Yes, a setting that can be changed and rolled back"
+        - "No, it needs a person (attestation, hardware, a purchase)"
+        - "Not sure"
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else
+      description: Registry keys, cmdlets or docs that would help implement it.

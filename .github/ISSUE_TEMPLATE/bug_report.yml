@@ -1,0 +1,53 @@
+name: Bug report
+description: Something the tool got wrong, or a crash
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time. **Please do not paste a full report or `status.json`** - they
+        contain your device name, user names and installed software. Quote only the finding you mean.
+
+        For a suspected security vulnerability, use [SECURITY.md](https://github.com/engramic-ai/baseline-tool/blob/main/SECURITY.md) instead.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: From the app title bar, or `(Import-PowerShellDataFile .\src\CEAudit\CEAudit.psd1).ModuleVersion`
+      placeholder: "0.3.0"
+    validations: { required: true }
+  - type: dropdown
+    id: how
+    attributes:
+      label: How were you running it?
+      options:
+        - Desktop app (Start-EB.cmd)
+        - Command line (Invoke-CEAudit.ps1)
+        - Applying or rolling back fixes
+        - Intune / scheduled audit as SYSTEM
+        - Per-user probe
+    validations: { required: true }
+  - type: dropdown
+    id: elevated
+    attributes:
+      label: Was it elevated?
+      options: ["Yes, as administrator", "No, standard user", "As SYSTEM", "Not sure"]
+    validations: { required: true }
+  - type: input
+    id: os
+    attributes:
+      label: Windows version
+      description: "`winver`, or the device line in the app header"
+      placeholder: "Windows 11 25H2, build 26200.9457"
+    validations: { required: true }
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+      description: If a specific check is wrong, give its ID (for example SU-05) and what the device is actually set to.
+    validations: { required: true }
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Error text, the Activity log from the app, or steps to reproduce. Redact device and user names.

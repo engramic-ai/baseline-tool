@@ -1,0 +1,9 @@
+{
+  "name": "showcase",
+  "description": "Install representative AI tools, run a real audit, and keep the report for anonymous marketing screenshots",
+  "networking": true,
+  "mappedFolders": [ { "host": "{root}", "sandbox": "C:\\baseline-tool", "readOnly": true } ],
+  "tools": [],
+  "vars": { "CE_SHOWCASE_TOOLS": "claude-desktop,cursor,ollama" },
+  "run": { "script": "C:\\baseline-tool\\tools\\sandbox\\Invoke-SandboxShowcase.ps1", "args": [] }
+}

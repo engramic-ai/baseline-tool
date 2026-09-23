@@ -15,11 +15,14 @@
                       the unit tests on Windows PowerShell 5.1 and pwsh 7, the desktop app layout,
                       and the Intune deployment rehearsal (install, audit as SYSTEM, uninstall).
                       Networking on (pwsh and the Intune packaging tool are downloaded).
+      showcase        install representative AI tools, seed an MCP configuration, run a real audit
+                      and keep the report - anonymous, current marketing screenshots on demand.
+                      Networking on.
 
     Results land in build\sandbox\results\<environment>\<timestamp>\ on the host. The
     repository is mapped read-only; the sandbox is destroyed when its window closes.
 .PARAMETER Environment
-    apply-rollback (default), ai-lab or ci, or a path to your own environment JSON.
+    apply-rollback (default), ai-lab, ci or showcase, or a path to your own environment JSON.
 .PARAMETER Tools
     ai-lab only: which catalogue tools to install and test (ids from sandbox\tools.json).
     Default is the environment's own list.
@@ -47,7 +50,7 @@ $ErrorActionPreference = 'Stop'
 
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $envPath = if (Test-Path -LiteralPath $Environment) { $Environment } else { Join-Path $PSScriptRoot "environments\$Environment.json" }
-if (-not (Test-Path -LiteralPath $envPath)) { throw "No environment '$Environment'. Use apply-rollback, ai-lab, ci, or a path to an environment JSON." }
+if (-not (Test-Path -LiteralPath $envPath)) { throw "No environment '$Environment'. Use apply-rollback, ai-lab, ci, showcase, or a path to an environment JSON." }
 
 $maps = @()
 $vars = @{}

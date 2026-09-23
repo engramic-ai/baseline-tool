@@ -2993,6 +2993,120 @@ throw 'boom'
     }
 }
 
+Describe 'MCP inventory never records a credential value' {
+    # The AI tab and the docs both promise that only where and how a credential is stored is
+    # recorded. The classifier honoured that; the two descriptive fields beside it did not.
+    It 'redacts a token passed as a server argument' {
+        InModuleScope CEAudit {
+            $secret = 'sk-ant-api03-LEAKCANARY000000000000000000000000'
+            $cfg = ConvertFrom-CEJsonc -Text ('{ "mcpServers": { "s": { "command": "npx", "args": ["-y", "@scope/server", "' + $secret + '"] } } }')
+            $recs = @(ConvertTo-CEMcpServers -Config $cfg -Root 'mcpServers' -ToolId 't' -RelPath 'x' -AclIssue '' -Patterns (Get-CECredentialPatterns))
+            ($recs | ConvertTo-Json -Depth 6) | Should -Not -Match 'LEAKCANARY'
+            $recs[0].argsSummary | Should -Match '@scope/server'
+        }
+    }
+
+    It 'keeps only scheme, host and port from a url, dropping userinfo and path' {
+        InModuleScope CEAudit {
+            $patterns = Get-CECredentialPatterns
+            $cases = @(
+                @{ Url = 'https://user:LEAKCANARY@mcp.example.com/sse'; Expect = 'https://mcp.example.com/...' },
+                @{ Url = 'https://mcp.example.com/LEAKCANARY/sse';      Expect = 'https://mcp.example.com/...' },
+                @{ Url = 'https://mcp.example.com:8443/';               Expect = 'https://mcp.example.com:8443' },
+                @{ Url = 'https://mcp.example.com/?token=LEAKCANARY';   Expect = 'https://mcp.example.com' }
+            )
+            foreach ($c in $cases) {
+                $cfg = ConvertFrom-CEJsonc -Text ('{ "mcpServers": { "s": { "url": "' + $c.Url + '" } } }')
+                $recs = @(ConvertTo-CEMcpServers -Config $cfg -Root 'mcpServers' -ToolId 't' -RelPath 'x' -AclIssue '' -Patterns $patterns)
+                ($recs | ConvertTo-Json -Depth 6) | Should -Not -Match 'LEAKCANARY' -Because $c.Url
+                $recs[0].endpoint | Should -Be $c.Expect -Because $c.Url
+            }
+        }
+    }
+
+    It 'redacts a bare high-entropy argument the pattern list does not recognise' {
+        InModuleScope CEAudit {
+            $cfg = ConvertFrom-CEJsonc -Text '{ "mcpServers": { "s": { "command": "run", "args": ["QWERTYUIOPASDFGHJKLZXCVBNM123456"] } } }'
+            $recs = @(ConvertTo-CEMcpServers -Config $cfg -Root 'mcpServers' -ToolId 't' -RelPath 'x' -AclIssue '' -Patterns (Get-CECredentialPatterns))
+            $recs[0].argsSummary | Should -Be '(redacted)'
+        }
+    }
+}
+
+Describe 'Undo log cannot be used to escalate privilege' {
+    # A tampered undo log is the one input a rollback trusts, and a rollback often runs elevated.
+    # Naming an allow-listed command was once enough; these are the shapes that got through.
+    It 'refuses a registry record outside the keys the tool writes' {
+        InModuleScope CEAudit {
+            $bad = @(
+                'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon',
+                'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run',
+                'HKLM:\SYSTEM\CurrentControlSet\Services\Foo',
+                'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\sethc.exe',
+                'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\..\..\..\SOFTWARE\Microsoft\Windows\CurrentVersion\Run',
+                'HKLM:\SOFTWARE\Policies\*'
+            )
+            foreach ($p in $bad) { Test-CEUndoRegistryPathAllowed $p | Should -Not -BeNullOrEmpty -Because $p }
+        }
+    }
+
+    It 'still allows every key the shipped remediations write' {
+        InModuleScope CEAudit {
+            $ok = @(
+                'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa',
+                'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp',
+                'HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters\Interfaces\{1234}',
+                'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection',
+                'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit',
+                'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU',
+                'HKCU:\Software\Policies\Microsoft\Office\16.0\Word\Security'
+            )
+            foreach ($p in $ok) { Test-CEUndoRegistryPathAllowed $p | Should -BeNullOrEmpty -Because $p }
+        }
+    }
+
+    It 'refuses an allow-listed command whose arguments would hand over the machine' {
+        InModuleScope CEAudit {
+            $bad = @(
+                'net localgroup administrators attacker /add',
+                'net.exe localgroup administrators attacker /add',
+                'net.exe user attacker P@ssw0rd! /add',
+                'net.exe user administrator /active:yes',
+                "Set-Service -Name 'Foo' -BinaryPathName 'C:\payload.exe'",
+                "Set-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run' -Name x -Value 'payload'",
+                "Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Foo' -Name ImagePath -Value 'payload'",
+                "Write-Warning 'x' > C:\Windows\System32\payload.ps1"
+            )
+            foreach ($c in $bad) { Test-CEUndoCommandAllowed $c | Should -Not -BeNullOrEmpty -Because $c }
+        }
+    }
+
+    It 'skips a tampered registry record instead of writing it, and keeps going' {
+        InModuleScope CEAudit {
+            Mock New-ItemProperty { }
+            Mock New-Item { }
+            Mock Test-CEIsAdmin { $false }
+            $log = Join-Path $TestDrive 'undo-tampered.json'
+            [pscustomobject]@{
+                ComputerName = $env:COMPUTERNAME
+                Items        = @([pscustomobject]@{
+                        ItemId = 'C001'
+                        Undo   = @([pscustomobject]@{
+                                Type = 'Registry'; Existed = $true; Kind = 'ExpandString'
+                                Path = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+                                Name = 'Userinit'; Value = 'C:\payload.exe'
+                            })
+                    })
+            } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $log -Encoding UTF8
+
+            $warnings = @()
+            Restore-CEUndoLog -Path $log -Confirm:$false -WarningVariable warnings -WarningAction SilentlyContinue
+            Should -Invoke New-ItemProperty -Times 0
+            ($warnings -join ' ') | Should -Match 'Refusing to restore'
+        }
+    }
+}
+
 Describe 'Undo command safety (Test-CEUndoCommandAllowed)' {
     It 'allows the commands remediations actually generate' {
         InModuleScope CEAudit {
@@ -3003,7 +3117,11 @@ Describe 'Undo command safety (Test-CEUndoCommandAllowed)' {
                 "net.exe user 'bob' /passwordreq:no",
                 "Add-MpPreference -AttackSurfaceReductionRules_Ids 'abc' -AttackSurfaceReductionRules_Actions 'Enabled'",
                 "Set-Service -Name 'W32Time' -StartupType 'Manual'",
-                "wevtutil.exe sl Application /ms:20971520"
+                "wevtutil.exe sl Application /ms:20971520",
+                "net.exe accounts /lockoutthreshold:10; net.exe accounts /lockoutduration:15 /lockoutwindow:15",
+                "Set-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Control\SecureBoot' -Name 'AvailableUpdates' -Value 0",
+                "Suspend-BitLocker -MountPoint `$env:SystemDrive -RebootCount 1 | Out-Null",
+                "Enable-WindowsOptionalFeature -Online -FeatureName 'SMB1Protocol' -NoRestart -All | Out-Null"
             )
             foreach ($c in $ok) { Test-CEUndoCommandAllowed $c | Should -BeNullOrEmpty -Because $c }
         }

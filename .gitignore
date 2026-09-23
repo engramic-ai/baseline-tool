@@ -8,3 +8,7 @@ build-tools/
 # Locally installed feature packs (paid packs live in their own private repos)
 /packs/
 app/_drv.ps1
+
+# Artifact Signing metadata: account, region and profile names. Never commit.
+artifact-signing*.json
+metadata.json

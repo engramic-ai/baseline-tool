@@ -10,7 +10,7 @@
     Reads the 64-bit registry view, so it works whether Intune runs it as a
     32-bit or 64-bit process.
 #>
-$required = [version]'0.3.1'
+$required = [version]'0.3.2'
 
 try {
     $hklm = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine, [Microsoft.Win32.RegistryView]::Registry64)

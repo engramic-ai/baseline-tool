@@ -162,5 +162,6 @@ Write-Host ("  gh release create v$version --title `"Engramic Baseline $version`
 foreach ($a in $artefacts) { Write-Host ("      `"$($a.FullName)`" ``") }
 Write-Host ("      `"$OutputPath\SHA256SUMS.txt`"")
 Write-Host ''
-Write-Host 'Note: .github/workflows/release.yml also builds on a tag, and its build is UNSIGNED.' -ForegroundColor Yellow
-Write-Host 'Until that is changed, create the release from these files rather than letting the tag do it.' -ForegroundColor Yellow
+Write-Host 'Pushing the tag publishes nothing: release.yml only checks the tag against the module' -ForegroundColor Yellow
+Write-Host 'version. The release is created from the files above, by you, with the command above.' -ForegroundColor Yellow
+Write-Host 'Tag the commit these artefacts were built from, not whatever main has moved on to.' -ForegroundColor Yellow

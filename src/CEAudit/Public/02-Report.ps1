@@ -522,7 +522,7 @@ $hwHtml
 <div class="tablewrap"><table id="findings"><thead><tr><th>ID</th><th>Status</th><th>Check</th><th>Result</th><th>Severity</th><th>Frameworks</th></tr></thead><tbody>
 $($rows -join "`n")
 </tbody></table></div>
-<footer>Checks map to Cyber Essentials: Requirements for IT Infrastructure v3.3 (Danzell), the Cyber Essentials Plus test specification and NCSC Windows device security guidance. This is a self-assessment aid: it does not replace an IASME-licensed Certification Body and cannot see network devices, cloud tenants or other devices in scope.</footer>
+<footer>Checks map to Cyber Essentials: Requirements for IT Infrastructure v3.3 (Danzell), the Cyber Essentials Plus test specification and NCSC Windows device security guidance. This is a self-assessment aid: it does not replace an IASME-licensed Certification Body and cannot see network devices, cloud tenants or other devices in scope. Cyber Essentials is a UK Government scheme owned by the NCSC and delivered by IASME; Engramic Baseline is independent and is not affiliated with, endorsed by or approved by either. Certification can only be issued by an IASME-licensed Certification Body.</footer>
 </main>
 <script>
 (function () {

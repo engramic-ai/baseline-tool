@@ -47,9 +47,24 @@ Add-Check 'installs without prompting' ($p.ExitCode -eq 0) "msiexec exit $($p.Ex
 
 # --- what the user got ----------------------------------------------------------------------------
 Write-Host '==> What landed on the machine' -ForegroundColor Cyan
-$expected = @('app\Start-CEAuditGui.ps1', 'src\CEAudit\CEAudit.psd1', 'src\CEAudit\CEAudit.psm1', 'config')
-$missing = @($expected | Where-Object { -not (Test-Path -LiteralPath (Join-Path $installRoot $_)) })
-Add-Check 'the payload is in Program Files' ($missing.Count -eq 0) $(if ($missing.Count) { "missing: $($missing -join ', ')" } else { $installRoot })
+# Compare against the payload the MSI was built from, not a list of paths someone remembered to
+# write down. Checking only that expected files arrived proves nothing was lost; it says nothing
+# about what else came along. WiX is a build tool we pin by hash alone, so what it ADDS matters.
+$payloadDir = Join-Path (Split-Path -Parent $MsiPath) 'payload'
+if (-not (Test-Path -LiteralPath $payloadDir)) { throw "Cannot find the payload the installer was built from: $payloadDir" }
+function Get-RelativeFileSet {
+    param([string]$Root)
+    $full = (Resolve-Path -LiteralPath $Root).Path.TrimEnd('\')
+    $set = @(Get-ChildItem -LiteralPath $full -Recurse -File -ErrorAction SilentlyContinue |
+            ForEach-Object { $_.FullName.Substring($full.Length + 1) })
+    return , @($set | Sort-Object)
+}
+$wanted = Get-RelativeFileSet -Root $payloadDir
+$got = Get-RelativeFileSet -Root $installRoot
+$absent = @($wanted | Where-Object { $got -notcontains $_ })
+$extra = @($got | Where-Object { $wanted -notcontains $_ })
+Add-Check 'every payload file was installed' ($absent.Count -eq 0) $(if ($absent.Count) { "missing: $(($absent | Select-Object -First 5) -join ', ')" } else { "$($wanted.Count) file(s)" })
+Add-Check 'the installer added nothing of its own' ($extra.Count -eq 0) $(if ($extra.Count) { "unexpected: $(($extra | Select-Object -First 5) -join ', ')" } else { 'no extra files' })
 
 Add-Check 'a Start menu entry exists' (Test-Path -LiteralPath $shortcut)
 if (Test-Path -LiteralPath $shortcut) {
@@ -57,7 +72,27 @@ if (Test-Path -LiteralPath $shortcut) {
     $lnk = $sh.CreateShortcut($shortcut)
     $pointsAtApp = ($lnk.TargetPath -match 'powershell\.exe$') -and ($lnk.Arguments -match 'Start-CEAuditGui\.ps1')
     Add-Check 'the Start menu entry launches the app' $pointsAtApp $lnk.Arguments
+    # The shortcut runs powershell.exe, so without an icon of our own a user would see PowerShell's
+    # blue console tile in their Start menu rather than anything of ours.
+    $ownIcon = $lnk.IconLocation -and ($lnk.IconLocation -notmatch 'powershell\.exe')
+    Add-Check 'the Start menu entry shows our icon, not PowerShell blue' $ownIcon $lnk.IconLocation
 }
+
+# An MSI can run arbitrary code at install time through custom actions. This one has none, and that
+# is worth asserting rather than assuming: it is the main thing a compromised build tool could add.
+$customActions = 0
+try {
+    $wi = New-Object -ComObject WindowsInstaller.Installer
+    $db = $wi.GetType().InvokeMember('OpenDatabase', 'InvokeMethod', $null, $wi, @($MsiPath, 0))
+    try {
+        $view = $db.GetType().InvokeMember('OpenView', 'InvokeMethod', $null, $db, @('SELECT Action FROM CustomAction'))
+        $view.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $view, $null)
+        while ($view.GetType().InvokeMember('Fetch', 'InvokeMethod', $null, $view, $null)) { $customActions++ }
+    }
+    catch { $customActions = 0 }  # no CustomAction table at all is the strongest possible answer
+    Add-Check 'the installer runs no code of its own' ($customActions -eq 0) "$customActions custom action(s)"
+}
+catch { Add-Check 'the installer runs no code of its own' $false "could not read the MSI: $($_.Exception.Message)" }
 
 $arp = @(Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall' -ErrorAction SilentlyContinue |
         ForEach-Object { Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue } |

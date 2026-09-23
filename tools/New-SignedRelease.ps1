@@ -131,21 +131,87 @@ $sums = foreach ($a in $artefacts) {
 }
 Set-Content -LiteralPath (Join-Path $OutputPath 'SHA256SUMS.txt') -Value $sums -Encoding ASCII
 
-$notes = @(
-    "# Engramic Baseline $version", '',
-    "Built from commit $commit on $(Get-Date -Format 'yyyy-MM-dd').", '',
-    "Signed by: $signer", '',
-    "All $($states.Count) shipped PowerShell files are Authenticode signed and timestamped."
-)
+# The certificate subject carries the registered address. That belongs in the signature, where
+# anyone who wants it can read it, not on a public release page. Name the organisation instead.
+$org = if ($signer -match 'O=([^,]+)') { $matches[1].Trim() } else { $signer }
+$issuer = if ($states.Count) { [string]$states[0].SignerCertificate.Issuer } else { '' }
+$issuerCn = if ($issuer -match 'CN=([^,]+)') { $matches[1].Trim() } else { $issuer }
+$thumb = if ($states.Count) { [string]$states[0].SignerCertificate.Thumbprint } else { '' }
+
+# What changed, taken from the commits since the last tag. Merges are left out: their subjects name
+# a branch, while the commits themselves say what was done.
+$prevTag = @(& git tag --list 'v*' --sort=-v:refname 2>$null |
+        Where-Object { $_ -and $_ -ne "v$version" }) | Select-Object -First 1
+$changes = @()
+if ($prevTag) { $changes = @(& git log "$prevTag..HEAD" --no-merges --format=%s 2>$null | Where-Object { $_ }) }
+
+$notes = New-Object System.Collections.ArrayList
+function Add-Note { param([string[]]$Lines) foreach ($l in $Lines) { [void]$notes.Add($l) } }
+
+Add-Note @("# Engramic Baseline $version", '')
+if ($changes.Count) {
+    Add-Note @("## What changed since $prevTag", '')
+    foreach ($c in $changes) { Add-Note @("- $c") }
+    Add-Note @('')
+}
+Add-Note @('## What to download', '',
+    '| File | Use |', '|---|---|',
+    '| `EngramicBaseline-VERSION.intunewin` | Intune Win32 app. Follow `INTUNE-SETTINGS.md` for the exact values to enter. |'.Replace('VERSION', $version),
+    '| `EngramicBaseline.zip` | The same payload for RMM, Group Policy or a manual install. |',
+    '| `intune-upload-files.zip` | The scripts and JSON that Intune takes as separate uploads. |',
+    '| `INTUNE-SETTINGS.md` | Detection rules, install commands and requirements. |',
+    '| `SHA256SUMS.txt` | Checksums for everything above. |', '')
+# An installer is only described when one was actually built, so the notes never promise a file
+# that is not attached.
+$msi = @($artefacts | Where-Object { $_.Extension -eq '.msi' }) | Select-Object -First 1
+$intuneName = [string](@($artefacts | Where-Object { $_.Extension -eq '.intunewin' }) |
+        Select-Object -First 1 -ExpandProperty Name)
+Add-Note @('## Installing', '')
+Add-Note @('### On your own PC', '')
+if ($msi) {
+    Add-Note @("Download ``$($msi.Name)`` and run it. It installs to Program Files and adds a Start menu",
+        'entry. Windows will show Engramic Ltd as the publisher.', '')
+}
+else {
+    Add-Note @('Download `EngramicBaseline.zip`. Before extracting it, right-click the file, choose Properties,',
+        'and tick Unblock, or Windows treats everything inside as downloaded from the internet.', '',
+        'Extract it somewhere of your choosing and run `app\Start-EB.cmd` to open the desktop app. Auditing',
+        'reads only; nothing is changed until you apply a fix, and every fix can be rolled back.', '')
+}
+Add-Note @('### Across a fleet', '',
+    "Use ``$(if ($intuneName) { $intuneName } else { 'the .intunewin package' })`` with Intune as a Win32 app.",
+    '`INTUNE-SETTINGS.md` lists the exact values to enter, including the detection rules. Upload the',
+    'scripts in `intune-upload-files.zip` separately for compliance and remediation.', '',
+    'Because everything is signed, you can set **Enforce script signature check** to Yes.', '')
+Add-Note @('### From PowerShell', '',
+    'Extract the zip and import the module directly:', '',
+    '```powershell',
+    'Import-Module .\src\CEAudit\CEAudit.psd1',
+    'Invoke-CEAudit',
+    '```', '')
+Add-Note @('## Verifying what you downloaded', '',
+    "Every one of the $($states.Count) PowerShell files in this release is Authenticode signed and timestamped,",
+    'so the signatures keep verifying after the signing certificate expires.', '',
+    "- Signed by **$org**", "- Issued by $issuerCn", ('- Certificate thumbprint `{0}`' -f $thumb), '',
+    'Unpack the zip and check any script for yourself:', '',
+    '```powershell',
+    'Get-AuthenticodeSignature .\src\CEAudit\CEAudit.psm1 | Format-List Status, SignerCertificate',
+    '```', '',
+    'A trustworthy copy reports `Valid`. Anything else means the file was altered after signing, or',
+    'did not come from us.', '')
+Add-Note @('## Checksums', '', '```')
+foreach ($line in $sums) { Add-Note @($line) }
+Add-Note @('```', '', "Built from commit $commit on $(Get-Date -Format 'yyyy-MM-dd').")
+
 if (-not $publishable) {
-    $notes += @('', '## DO NOT PUBLISH', '',
+    Add-Note @('', '## DO NOT PUBLISH', '',
         'Signed with a certificate whose chain does not reach a trusted root, which is what an',
         'Artifact Signing Public Trust Test profile issues. This build proves the pipeline. It is',
         'not a release: Windows will report the signature as untrusted on every customer machine.')
 }
 # ASCII, not UTF8: Windows PowerShell writes a byte order mark with -Encoding UTF8, and this file
 # gets uploaded as release notes where the mark shows up as stray characters.
-Set-Content -LiteralPath (Join-Path $OutputPath 'RELEASE-NOTES.md') -Value ($notes -join "`r`n") -Encoding ASCII
+Set-Content -LiteralPath (Join-Path $OutputPath 'RELEASE-NOTES.md') -Value ($notes.ToArray() -join "`r`n") -Encoding ASCII
 
 # --- what to do next -------------------------------------------------------------------------------
 Write-Host ''
@@ -157,10 +223,14 @@ if (-not $publishable) {
 Write-Host ("Signed release ready in {0}" -f $OutputPath) -ForegroundColor Green
 Write-Host 'Nothing has been published. To publish it, tag the commit and upload these artefacts:' -ForegroundColor Cyan
 Write-Host ''
-Write-Host ("  git tag v$version && git push origin v$version")
+# Not "git tag ... && git push ...": && is a parse error in Windows PowerShell 5.1, which this
+# repo still supports, so the printed commands have to run in either shell.
+Write-Host ("  git tag v$version")
+Write-Host ("  git push origin v$version")
 Write-Host ("  gh release create v$version --title `"Engramic Baseline $version`" --notes-file `"$OutputPath\RELEASE-NOTES.md`" ``")
 foreach ($a in $artefacts) { Write-Host ("      `"$($a.FullName)`" ``") }
 Write-Host ("      `"$OutputPath\SHA256SUMS.txt`"")
 Write-Host ''
-Write-Host 'Note: .github/workflows/release.yml also builds on a tag, and its build is UNSIGNED.' -ForegroundColor Yellow
-Write-Host 'Until that is changed, create the release from these files rather than letting the tag do it.' -ForegroundColor Yellow
+Write-Host 'Pushing the tag publishes nothing: release.yml only checks the tag against the module' -ForegroundColor Yellow
+Write-Host 'version. The release is created from the files above, by you, with the command above.' -ForegroundColor Yellow
+Write-Host 'Tag the commit these artefacts were built from, not whatever main has moved on to.' -ForegroundColor Yellow

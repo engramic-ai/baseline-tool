@@ -131,21 +131,59 @@ $sums = foreach ($a in $artefacts) {
 }
 Set-Content -LiteralPath (Join-Path $OutputPath 'SHA256SUMS.txt') -Value $sums -Encoding ASCII
 
-$notes = @(
-    "# Engramic Baseline $version", '',
-    "Built from commit $commit on $(Get-Date -Format 'yyyy-MM-dd').", '',
-    "Signed by: $signer", '',
-    "All $($states.Count) shipped PowerShell files are Authenticode signed and timestamped."
-)
+# The certificate subject carries the registered address. That belongs in the signature, where
+# anyone who wants it can read it, not on a public release page. Name the organisation instead.
+$org = if ($signer -match 'O=([^,]+)') { $matches[1].Trim() } else { $signer }
+$issuer = if ($states.Count) { [string]$states[0].SignerCertificate.Issuer } else { '' }
+$issuerCn = if ($issuer -match 'CN=([^,]+)') { $matches[1].Trim() } else { $issuer }
+$thumb = if ($states.Count) { [string]$states[0].SignerCertificate.Thumbprint } else { '' }
+
+# What changed, taken from the commits since the last tag. Merges are left out: their subjects name
+# a branch, while the commits themselves say what was done.
+$prevTag = @(& git tag --list 'v*' --sort=-v:refname 2>$null |
+        Where-Object { $_ -and $_ -ne "v$version" }) | Select-Object -First 1
+$changes = @()
+if ($prevTag) { $changes = @(& git log "$prevTag..HEAD" --no-merges --format=%s 2>$null | Where-Object { $_ }) }
+
+$notes = New-Object System.Collections.ArrayList
+function Add-Note { param([string[]]$Lines) foreach ($l in $Lines) { [void]$notes.Add($l) } }
+
+Add-Note @("# Engramic Baseline $version", '')
+if ($changes.Count) {
+    Add-Note @("## What changed since $prevTag", '')
+    foreach ($c in $changes) { Add-Note @("- $c") }
+    Add-Note @('')
+}
+Add-Note @('## What to download', '',
+    '| File | Use |', '|---|---|',
+    '| `EngramicBaseline-VERSION.intunewin` | Intune Win32 app. Follow `INTUNE-SETTINGS.md` for the exact values to enter. |'.Replace('VERSION', $version),
+    '| `EngramicBaseline.zip` | The same payload for RMM, Group Policy or a manual install. |',
+    '| `intune-upload-files.zip` | The scripts and JSON that Intune takes as separate uploads. |',
+    '| `INTUNE-SETTINGS.md` | Detection rules, install commands and requirements. |',
+    '| `SHA256SUMS.txt` | Checksums for everything above. |', '')
+Add-Note @('## Verifying what you downloaded', '',
+    "Every one of the $($states.Count) PowerShell files in this release is Authenticode signed and timestamped,",
+    'so the signatures keep verifying after the signing certificate expires.', '',
+    "- Signed by **$org**", "- Issued by $issuerCn", ('- Certificate thumbprint `{0}`' -f $thumb), '',
+    'Unpack the zip and check any script for yourself:', '',
+    '```powershell',
+    'Get-AuthenticodeSignature .\src\CEAudit\CEAudit.psm1 | Format-List Status, SignerCertificate',
+    '```', '',
+    'A trustworthy copy reports `Valid`. Anything else means the file was altered after signing, or',
+    'did not come from us.', '')
+Add-Note @('## Checksums', '', '```')
+foreach ($line in $sums) { Add-Note @($line) }
+Add-Note @('```', '', "Built from commit $commit on $(Get-Date -Format 'yyyy-MM-dd').")
+
 if (-not $publishable) {
-    $notes += @('', '## DO NOT PUBLISH', '',
+    Add-Note @('', '## DO NOT PUBLISH', '',
         'Signed with a certificate whose chain does not reach a trusted root, which is what an',
         'Artifact Signing Public Trust Test profile issues. This build proves the pipeline. It is',
         'not a release: Windows will report the signature as untrusted on every customer machine.')
 }
 # ASCII, not UTF8: Windows PowerShell writes a byte order mark with -Encoding UTF8, and this file
 # gets uploaded as release notes where the mark shows up as stray characters.
-Set-Content -LiteralPath (Join-Path $OutputPath 'RELEASE-NOTES.md') -Value ($notes -join "`r`n") -Encoding ASCII
+Set-Content -LiteralPath (Join-Path $OutputPath 'RELEASE-NOTES.md') -Value ($notes.ToArray() -join "`r`n") -Encoding ASCII
 
 # --- what to do next -------------------------------------------------------------------------------
 Write-Host ''

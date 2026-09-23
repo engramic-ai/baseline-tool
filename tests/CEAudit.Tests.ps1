@@ -2993,6 +2993,46 @@ throw 'boom'
     }
 }
 
+Describe 'MCP inventory never records a credential value' {
+    # The AI tab and the docs both promise that only where and how a credential is stored is
+    # recorded. The classifier honoured that; the two descriptive fields beside it did not.
+    It 'redacts a token passed as a server argument' {
+        InModuleScope CEAudit {
+            $secret = 'sk-ant-api03-LEAKCANARY000000000000000000000000'
+            $cfg = ConvertFrom-CEJsonc -Text ('{ "mcpServers": { "s": { "command": "npx", "args": ["-y", "@scope/server", "' + $secret + '"] } } }')
+            $recs = @(ConvertTo-CEMcpServers -Config $cfg -Root 'mcpServers' -ToolId 't' -RelPath 'x' -AclIssue '' -Patterns (Get-CECredentialPatterns))
+            ($recs | ConvertTo-Json -Depth 6) | Should -Not -Match 'LEAKCANARY'
+            $recs[0].argsSummary | Should -Match '@scope/server'
+        }
+    }
+
+    It 'keeps only scheme, host and port from a url, dropping userinfo and path' {
+        InModuleScope CEAudit {
+            $patterns = Get-CECredentialPatterns
+            $cases = @(
+                @{ Url = 'https://user:LEAKCANARY@mcp.example.com/sse'; Expect = 'https://mcp.example.com/...' },
+                @{ Url = 'https://mcp.example.com/LEAKCANARY/sse';      Expect = 'https://mcp.example.com/...' },
+                @{ Url = 'https://mcp.example.com:8443/';               Expect = 'https://mcp.example.com:8443' },
+                @{ Url = 'https://mcp.example.com/?token=LEAKCANARY';   Expect = 'https://mcp.example.com' }
+            )
+            foreach ($c in $cases) {
+                $cfg = ConvertFrom-CEJsonc -Text ('{ "mcpServers": { "s": { "url": "' + $c.Url + '" } } }')
+                $recs = @(ConvertTo-CEMcpServers -Config $cfg -Root 'mcpServers' -ToolId 't' -RelPath 'x' -AclIssue '' -Patterns $patterns)
+                ($recs | ConvertTo-Json -Depth 6) | Should -Not -Match 'LEAKCANARY' -Because $c.Url
+                $recs[0].endpoint | Should -Be $c.Expect -Because $c.Url
+            }
+        }
+    }
+
+    It 'redacts a bare high-entropy argument the pattern list does not recognise' {
+        InModuleScope CEAudit {
+            $cfg = ConvertFrom-CEJsonc -Text '{ "mcpServers": { "s": { "command": "run", "args": ["QWERTYUIOPASDFGHJKLZXCVBNM123456"] } } }'
+            $recs = @(ConvertTo-CEMcpServers -Config $cfg -Root 'mcpServers' -ToolId 't' -RelPath 'x' -AclIssue '' -Patterns (Get-CECredentialPatterns))
+            $recs[0].argsSummary | Should -Be '(redacted)'
+        }
+    }
+}
+
 Describe 'Undo log cannot be used to escalate privilege' {
     # A tampered undo log is the one input a rollback trusts, and a rollback often runs elevated.
     # Naming an allow-listed command was once enough; these are the shapes that got through.

@@ -169,9 +169,32 @@ function ConvertTo-CEMcpServers {
         $transport = if ($declared) { $declared.ToLowerInvariant() } elseif ($command) { 'stdio' } elseif ($url) { 'http' } else { 'unknown' }
 
         $srvArgs = @(Get-CEObjectValue $srv 'args' @())
-        $pkg = @($srvArgs | Where-Object { $_ -and -not ([string]$_).StartsWith('-') } | Select-Object -First 2)
+        # The summary names the package a server runs, and must never carry the secret next to it:
+        # "npx -y @scope/server sk-live-..." would otherwise put the token in status.json and the report.
+        # Anything the classifier recognises is redacted, as is anything shaped like a bare token
+        # (long, and without the separators a package name or a path would have).
+        $pkg = @($srvArgs |
+            Where-Object { $_ -and -not ([string]$_).StartsWith('-') } |
+            Select-Object -First 2 |
+            ForEach-Object {
+                $a = [string]$_
+                if (Get-CECredentialClass -Key '(argument)' -Value $a -Patterns $Patterns) { '(redacted)' }
+                elseif ($a.Length -ge 20 -and $a -notmatch '[\\/@.:]') { '(redacted)' }
+                else { $a }
+            })
         $argsSummary = ($pkg -join ' ')
-        $endpoint = if ($url) { ($url -split '\?', 2)[0] } else { '' }
+        # Keep scheme, host and port only. Userinfo is a credential, and a path segment is a common
+        # place to put a session token, so neither is recorded.
+        $endpoint = ''
+        if ($url) {
+            $parsed = $null
+            if ([Uri]::TryCreate($url, [UriKind]::Absolute, [ref]$parsed)) {
+                $endpoint = '{0}://{1}' -f $parsed.Scheme, $parsed.Host
+                if (-not $parsed.IsDefaultPort) { $endpoint += ':' + $parsed.Port }
+                if ($parsed.AbsolutePath -and $parsed.AbsolutePath -ne '/') { $endpoint += '/...' }
+            }
+            else { $endpoint = '(unreadable url)' }
+        }
 
         $creds = New-Object System.Collections.ArrayList
         # env block

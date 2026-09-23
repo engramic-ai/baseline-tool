@@ -190,7 +190,7 @@ Any of these can be used in your own rules file. Unknown values are always repor
 The **Pre-remediation detection output** column then gives you one line per device across the tenant:
 
 ```
-FAIL | autofail=2 fail=7 review=4 | age=5h | TC2=Likely fail TC3=Likely pass TC4=Check TC5=Likely fail | v0.3.1 | SU-03:Overdue,SU-05:7zip-7zip,UA-01
+FAIL | autofail=2 fail=7 review=4 | age=5h | TC2=Likely fail TC3=Likely pass TC4=Check TC5=Likely fail | v0.3.2 | SU-03:Overdue,SU-05:7zip-7zip,UA-01
 ```
 
 Out of the box, the remediation script only runs a fresh audit. To have it fix things automatically, set `"enabled": true` in `config/auto-remediation.json` and copy the fixes you want from `suggested` into `remediationIds`. High-risk fixes are always skipped. Every change is written to an undo log in the device's report folder, and `Restore-CEChangeset.ps1` can roll it back.

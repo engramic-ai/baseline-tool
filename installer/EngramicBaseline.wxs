@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Installer for the person putting Baseline on their own PC.
+
+  A fleet is deployed with the .intunewin package instead, which is why this deliberately does NOT
+  register the scheduled audit tasks: on a personal machine a daily SYSTEM task nobody asked for is
+  a surprise, not a feature. The Start menu entry runs the desktop app; everything else is the same
+  signed payload the Intune package carries.
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*"
+           Name="Engramic Baseline"
+           Language="1033"
+           Version="$(var.Version)"
+           Manufacturer="Engramic Ltd"
+           UpgradeCode="{2C7F5E3A-8D41-4B6E-9A25-3F0C1B7D4E88}">
+
+    <Package InstallerVersion="500"
+             Compressed="yes"
+             InstallScope="perMachine"
+             Description="Audit this device against Cyber Essentials and NCSC device guidance"
+             Manufacturer="Engramic Ltd" />
+
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="A newer version of Engramic Baseline is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Icon Id="AppIcon" SourceFile="$(var.PayloadDir)\app\engramic-baseline.ico" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon" />
+    <Property Id="ARPHELPLINK" Value="https://www.engramic.ai/products/baseline/" />
+    <Property Id="ARPURLINFOABOUT" Value="https://www.engramic.ai/products/baseline/" />
+    <Property Id="ARPNOREPAIR" Value="1" />
+
+    <!-- The audit reads registry and service state the account may not otherwise see. -->
+    <Condition Message="Engramic Baseline needs Windows 7 or later.">
+      <![CDATA[Installed OR (VersionNT >= 601)]]>
+    </Condition>
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLFOLDER" Name="EngramicBaseline" />
+      </Directory>
+      <Directory Id="ProgramMenuFolder" />
+    </Directory>
+
+    <DirectoryRef Id="ProgramMenuFolder">
+      <Component Id="StartMenuShortcut" Guid="{9B4E2D17-6C53-4A80-B1F9-27E5A6C03D14}">
+        <!--
+          Targets powershell.exe rather than a .cmd: a batch file cannot carry an Authenticode
+          signature, so shipping one would put an unsignable file in the one place a user clicks.
+        -->
+        <Shortcut Id="AppShortcut"
+                  Name="Engramic Baseline"
+                  Description="Audit this device against Cyber Essentials"
+                  Target="[System64Folder]WindowsPowerShell\v1.0\powershell.exe"
+                  Arguments="-NoProfile -WindowStyle Hidden -File &quot;[INSTALLFOLDER]app\Start-CEAuditGui.ps1&quot;"
+                  WorkingDirectory="INSTALLFOLDER"
+                  Icon="AppIcon" />
+        <RegistryValue Root="HKLM"
+                       Key="Software\Engramic\Baseline"
+                       Name="InstallFolder"
+                       Type="string"
+                       Value="[INSTALLFOLDER]"
+                       KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <Feature Id="Complete" Title="Engramic Baseline" Level="1">
+      <ComponentGroupRef Id="PayloadFiles" />
+      <ComponentRef Id="StartMenuShortcut" />
+    </Feature>
+  </Product>
+</Wix>

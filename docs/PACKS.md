@@ -1,6 +1,6 @@
 # Feature packs
 
-A pack adds checks, remediations, categories and config to Engramic Baseline without changing the core module. The core stays MIT licensed; packs can live in their own (private) repositories. Licensing for paid packs is designed in issue #3.
+A pack adds checks, remediations, categories and config to Engramic Baseline without changing the core module. The core stays Apache 2.0 licensed; packs can live in their own (private) repositories. Licensing for paid packs is designed in issue #3.
 
 ## Where packs are loaded from
 

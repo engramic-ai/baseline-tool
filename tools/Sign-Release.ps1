@@ -18,7 +18,11 @@
     Three ways to supply a certificate:
       -Thumbprint     a certificate already in CurrentUser\My or LocalMachine\My
       -PfxPath        a .pfx, with -PfxPassword as a SecureString
-      -AzureMetadata  Azure Artifact Signing, via signtool and the signing dlib
+      -AzureMetadata  Azure Artifact Signing, via signtool and the signing dlib. Needs the
+                      Artifact Signing Certificate Profile Signer role, and an Endpoint in the
+                      metadata matching the account's region or every sign returns 403. Those
+                      certificates are valid for three days, so the timestamp is what keeps a
+                      signature verifying afterwards.
 
     A self-signed certificate is for developing and testing this pipeline only. It is refused
     unless -AllowSelfSigned is given, because a self-signed release is worse than an unsigned
@@ -42,6 +46,7 @@ param(
     [Parameter(ParameterSetName = 'Pfx')][SecureString]$PfxPassword,
     [Parameter(ParameterSetName = 'Azure', Mandatory)][string]$AzureMetadata,
     [Parameter(ParameterSetName = 'Azure')][string]$SignToolPath,
+    [Parameter(ParameterSetName = 'Azure')][string]$DlibPath,
     [Parameter(ParameterSetName = 'Verify')][switch]$VerifyOnly,
     [string]$TimestampUrl,
     [switch]$AllowSelfSigned
@@ -138,8 +143,25 @@ if ($PSCmdlet.ParameterSetName -eq 'Azure') {
     }
     if (-not $SignToolPath -or -not (Test-Path -LiteralPath $SignToolPath)) { throw 'signtool.exe not found; pass -SignToolPath.' }
     if (-not (Test-Path -LiteralPath $AzureMetadata)) { throw "Artifact Signing metadata not found: $AzureMetadata" }
-    $dlib = Join-Path (Split-Path -Parent $AzureMetadata) 'Azure.CodeSigning.Dlib.dll'
-    if (-not (Test-Path -LiteralPath $dlib)) { throw "Azure.CodeSigning.Dlib.dll not found next to the metadata file ($dlib)." }
+    # The dlib ships in its own package and does not sit beside metadata.json. The Artifact Signing
+    # Client Tools installer (winget Microsoft.Azure.ArtifactSigningClientTools) is the easy route;
+    # the NuGet package Microsoft.ArtifactSigning.Client extracted by hand also works. Either way the
+    # architecture must match the signtool above, which is x64.
+    $dlib = $DlibPath
+    if (-not $dlib) {
+        $roots = @($env:ProgramFiles, ${env:ProgramFiles(x86)}, $PWD.Path) | Where-Object { $_ }
+        $found = New-Object System.Collections.ArrayList
+        foreach ($r in $roots) {
+            $hits = @(Get-ChildItem -LiteralPath $r -Recurse -Filter 'Azure.CodeSigning.Dlib.dll' -ErrorAction SilentlyContinue |
+                    Where-Object { $_.FullName -match '\\x64\\' })
+            foreach ($h in $hits) { [void]$found.Add($h.FullName) }
+        }
+        $dlib = [string](@($found | Sort-Object -Descending) | Select-Object -First 1)
+    }
+    if (-not $dlib -or -not (Test-Path -LiteralPath $dlib)) {
+        throw ('Azure.CodeSigning.Dlib.dll (x64) not found. Install the client tools with ' +
+            '"winget install -e --id Microsoft.Azure.ArtifactSigningClientTools", or pass -DlibPath.')
+    }
     foreach ($f in $signable) {
         if (-not $PSCmdlet.ShouldProcess($f.FullName, 'Authenticode sign')) { continue }
         & $SignToolPath sign /v /fd SHA256 /tr $TimestampUrl /td SHA256 /dlib $dlib /dmdf $AzureMetadata $f.FullName | Out-Null

@@ -54,7 +54,10 @@ param(
     [Parameter(ParameterSetName = 'Verify')][switch]$VerifyOnly,
     [string]$TimestampUrl,
     [switch]$AllowSelfSigned,
-    [switch]$AllowUntrustedChain
+    [switch]$AllowUntrustedChain,
+    # Defaults to the PowerShell a customer runs. An installer is signed by adding '.msi', which
+    # only the Azure path can do: signtool handles MSI, Set-AuthenticodeSignature does not.
+    [string[]]$IncludeExtensions = @('.ps1', '.psm1', '.psd1')
 )
 $ErrorActionPreference = 'Stop'
 
@@ -66,8 +69,13 @@ $root = (Resolve-Path -LiteralPath $Path).Path
 # -Include is silently ignored alongside -LiteralPath -Recurse, which would hand every file in the
 # payload to the signer, icons and JSON included. Filter on the extension instead.
 $signable = @(Get-ChildItem -LiteralPath $root -Recurse -File -ErrorAction SilentlyContinue |
-        Where-Object { $_.Extension -in '.ps1', '.psm1', '.psd1' -and $_.FullName -notmatch '\\(tests|sandbox|tools)\\' })
-if (-not $signable.Count) { throw "No PowerShell files found under '$root'." }
+        Where-Object { $_.Extension -in $IncludeExtensions -and $_.FullName -notmatch '\\(tests|sandbox|tools)\\' })
+if (-not $signable.Count) { throw ("No files matching {0} found under '{1}'." -f ($IncludeExtensions -join ', '), $root) }
+$nonScript = @($signable | Where-Object { $_.Extension -notin '.ps1', '.psm1', '.psd1' })
+if ($nonScript.Count -and $PSCmdlet.ParameterSetName -notin 'Azure', 'Verify') {
+    throw ('Only the Azure path can sign ' + (($nonScript.Extension | Sort-Object -Unique) -join ', ') +
+        ": signtool handles them and Set-AuthenticodeSignature does not.")
+}
 
 # A real build must verify as Valid. A declared self-signed test build cannot: nothing chains to a
 # trusted root, and installing one needs a consent dialog that no automated run can answer. So for

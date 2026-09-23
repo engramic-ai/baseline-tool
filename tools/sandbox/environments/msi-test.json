@@ -1,0 +1,9 @@
+{
+  "name": "msi-test",
+  "description": "Install the desktop MSI on a clean Windows, check what it puts there, then uninstall and check it left nothing behind",
+  "networking": false,
+  "mappedFolders": [ { "host": "{root}", "sandbox": "C:\\baseline-tool", "readOnly": true } ],
+  "tools": [],
+  "vars": {},
+  "run": { "script": "C:\\baseline-tool\\tools\\sandbox\\Invoke-SandboxMsiTest.ps1", "args": [] }
+}

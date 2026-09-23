@@ -21,10 +21,54 @@ $script:CEUndoAllowedCommands = @(
     'Enable-LocalUser', 'Disable-LocalUser',
     'Add-MpPreference', 'Remove-MpPreference', 'Set-MpPreference',
     'Enable-WindowsOptionalFeature', 'Disable-WindowsOptionalFeature',
-    'Set-Service', 'Set-ItemProperty', 'New-ItemProperty', 'Remove-ItemProperty',
+    'Set-Service', 'Set-ItemProperty',
     'Set-CESecurityPolicyValue', 'Suspend-BitLocker', 'Write-Warning',
+    # Two generated undo commands pipe to Out-Null; without it here they were refused at rollback.
+    'Out-Null',
     'net', 'net.exe', 'auditpol', 'auditpol.exe', 'wevtutil', 'wevtutil.exe'
 )
+
+# Registry keys the shipped remediations write, and therefore the only keys an undo record may
+# touch. Naming a command is not enough on its own: without this, a tampered log could restore a
+# "previous value" into Winlogon\Userinit, a Run key or a service ImagePath and get code execution
+# as whoever runs the rollback. A prefix matches the key itself or anything beneath it.
+$script:CEUndoAllowedRegistryPaths = @(
+    'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer',
+    'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System',
+    'HKLM:\SOFTWARE\Microsoft\WindowsUpdate\UX\Settings',
+    'HKLM:\SOFTWARE\Policies\Google\Chrome',
+    'HKLM:\SOFTWARE\Policies\Microsoft\Edge',
+    'HKLM:\SOFTWARE\Policies\Microsoft\PassportForWork\PINComplexity',
+    'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender',
+    'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient',
+    'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer',
+    'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System',
+    'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate',
+    'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard',
+    'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa',
+    'HKLM:\SYSTEM\CurrentControlSet\Control\Remote Assistance',
+    'HKLM:\SYSTEM\CurrentControlSet\Control\SecureBoot',
+    'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\WDigest',
+    'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server',
+    'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters',
+    'HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters',
+    'HKCU:\Software\Policies\Microsoft\Office'
+)
+$script:CEUndoAllowedRegistryKinds = @('String', 'ExpandString', 'Binary', 'DWord', 'MultiString', 'QWord', 'BinaryBase64')
+
+function Test-CEUndoRegistryPathAllowed {
+    <# Returns $null if an undo record may write this key, otherwise the reason it was refused. #>
+    param([string]$Path)
+    if (-not $Path) { return 'the record has no registry path' }
+    # Reject anything that could walk out of an allowed prefix, or that the provider would expand.
+    if ($Path -match '\.\.|\*|\?|/') { return "registry path '$Path' contains a wildcard or a relative segment" }
+    $norm = $Path.TrimEnd('\')
+    foreach ($allowed in $script:CEUndoAllowedRegistryPaths) {
+        if ($norm -eq $allowed) { return $null }
+        if ($norm.StartsWith($allowed + '\', [StringComparison]::OrdinalIgnoreCase)) { return $null }
+    }
+    return "registry path '$Path' is outside the keys this tool changes"
+}
 
 function Test-CEUndoCommandAllowed {
     <#
@@ -44,14 +88,65 @@ function Test-CEUndoCommandAllowed {
                 ($n -is [System.Management.Automation.Language.InvokeMemberExpressionAst])
             }, $true))
     if ($danger.Count) { return 'contains a script block or method call' }
+    # A redirection turns any allow-listed command into an arbitrary file write.
+    $redirects = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.RedirectionAst] }, $true))
+    if ($redirects.Count) { return 'contains a redirection' }
     $commands = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true))
     if (-not $commands.Count) { return 'no command to run' }
     foreach ($c in $commands) {
         $name = $c.GetCommandName()
         if (-not $name) { return 'command invoked indirectly' }
         if ($script:CEUndoAllowedCommands -notcontains $name) { return "command '$name' is not allow-listed" }
+        # Naming an allow-listed command is not enough: several of them will hand over the machine
+        # if their arguments are chosen freely.
+        $refused = Test-CEUndoCommandArgument -Command $c -Name $name
+        if ($refused) { return $refused }
     }
     return $null
+}
+
+function Test-CEUndoCommandArgument {
+    <#
+        Argument rules for the allow-listed commands that can escalate. net can add an
+        administrator, Set-Service can repoint a service binary, and Set-ItemProperty can write
+        any key, so each is held to the shape the shipped remediations actually generate.
+    #>
+    param([System.Management.Automation.Language.CommandAst]$Command, [string]$Name)
+    $elements = @($Command.CommandElements)
+    $text = { param($i) if ($i -lt $elements.Count) { [string]$elements[$i].Extent.Text.Trim("'" + '"') } else { '' } }
+
+    switch -Regex ($Name) {
+        '^net(\.exe)?$' {
+            # 'net accounts ...' and 'net user <name> /passwordreq:...' are the only forms generated.
+            $verb = (& $text 1)
+            if ($verb -notin @('accounts', 'user')) { return "'net $verb' is not allowed in an undo command" }
+            if ($verb -eq 'user') {
+                $switches = @($elements | Select-Object -Skip 2 | ForEach-Object { [string]$_.Extent.Text } | Where-Object { $_ -like '/*' })
+                foreach ($sw in $switches) {
+                    if ($sw -notmatch '^/passwordreq:(yes|no)$') { return "'net user $sw' is not allowed in an undo command" }
+                }
+            }
+            return $null
+        }
+        '^Set-Service$' {
+            foreach ($e in $elements) {
+                if ($e -is [System.Management.Automation.Language.CommandParameterAst] -and
+                    $e.ParameterName -match '^(BinaryPathName|Path)$') { return 'Set-Service may not change a service binary in an undo command' }
+            }
+            return $null
+        }
+        '^Set-ItemProperty$' {
+            for ($i = 0; $i -lt $elements.Count; $i++) {
+                $e = $elements[$i]
+                if ($e -is [System.Management.Automation.Language.CommandParameterAst] -and $e.ParameterName -match '^(LiteralPath|Path)$') {
+                    $value = if ($e.Argument) { [string]$e.Argument.Extent.Text } else { (& $text ($i + 1)) }
+                    return (Test-CEUndoRegistryPathAllowed ([string]$value).Trim("'" + '"'))
+                }
+            }
+            return 'Set-ItemProperty in an undo command must name the key it writes'
+        }
+        default { return $null }
+    }
 }
 
 function Register-CERemediation {
@@ -281,6 +376,16 @@ function Restore-CEUndoLog {
         [Parameter(Mandatory)][string]$Path,
         [string[]]$ItemId
     )
+    # An elevated rollback replays instructions from a file. If a standard user can write that file
+    # or its folder, they choose what an administrator runs, so refuse rather than warn.
+    if (Test-CEIsAdmin) {
+        $acl = @(Get-CEPathAclProblem -Path $Path) + @(Get-CEPathAclProblem -Path (Split-Path -Parent $Path))
+        if ($acl.Count) {
+            throw ("Refusing to roll back from '$Path': standard users can change it, so an elevated rollback would run " +
+                   "instructions they control. $($acl -join '; '). Move the results folder somewhere only administrators can write, " +
+                   'or roll back as the user who owns it.')
+        }
+    }
     $log = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
     if ($log.ComputerName -and $log.ComputerName -ne $env:COMPUTERNAME) {
         throw "Undo log is for $($log.ComputerName), not $($env:COMPUTERNAME)."
@@ -295,6 +400,14 @@ function Restore-CEUndoLog {
         foreach ($r in $records) {
             if ($r.Type -eq 'Registry') {
                 $target = "$($r.Path)\$($r.Name)"
+                $refused = Test-CEUndoRegistryPathAllowed ([string]$r.Path)
+                if (-not $refused -and $r.Existed -and ($script:CEUndoAllowedRegistryKinds -notcontains [string]$r.Kind)) {
+                    $refused = "value kind '$($r.Kind)' is not one this tool writes"
+                }
+                if ($refused) {
+                    Write-Warning "[$($item.ItemId)] Refusing to restore $target ($refused). The undo log may be tampered with or from a different version; skipping this step."
+                    continue
+                }
                 if (-not $r.Existed) {
                     if ($PSCmdlet.ShouldProcess($target, "[$($item.ItemId)] Remove value (did not exist before)")) {
                         Remove-ItemProperty -LiteralPath $r.Path -Name $r.Name -Force -ErrorAction SilentlyContinue

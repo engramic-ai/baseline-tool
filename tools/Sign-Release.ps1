@@ -96,7 +96,7 @@ if ($PSCmdlet.ParameterSetName -eq 'Verify') {
     foreach ($u in $unstamped) { Write-Warning ("not timestamped: " + $u.File.Substring($root.Length + 1)) }
     if ($bad.Count) { throw "$($bad.Count) of $($states.Count) file(s) are not validly signed." }
     Write-Host ("All {0} file(s) signed by {1}" -f $states.Count, ($states[0].Signer)) -ForegroundColor Green
-    if ($AllowSelfSigned) { Write-Warning 'Accepted an untrusted chain because -AllowSelfSigned was given. Do not publish this build.' }
+    if ($AllowSelfSigned -or $AllowUntrustedChain) { Write-Warning 'Accepted an untrusted chain because -AllowSelfSigned was given. Do not publish this build.' }
     return
 }
 
@@ -148,6 +148,25 @@ if ($PSCmdlet.ParameterSetName -eq 'Azure') {
     }
     if (-not $SignToolPath -or -not (Test-Path -LiteralPath $SignToolPath)) { throw 'signtool.exe not found; pass -SignToolPath.' }
     if (-not (Test-Path -LiteralPath $AzureMetadata)) { throw "Artifact Signing metadata not found: $AzureMetadata" }
+    # signtool does not necessarily share our working directory, so hand it a full path.
+    $AzureMetadata = (Resolve-Path -LiteralPath $AzureMetadata).Path
+    # DefaultAzureCredential walks a chain of credential types and some of them block for a long
+    # time off-Azure: the managed identity probe waits on an endpoint that only exists in Azure,
+    # and the interactive one waits with no window. That looks exactly like a hung signtool. Name
+    # the ones to skip in the metadata's ExcludeCredentials so only the intended login is tried.
+    $meta = Get-Content -LiteralPath $AzureMetadata -Raw
+    # The Azure CLI credential shells out to az, so it fails with "Azure CLI not installed" when
+    # az is missing from THIS process's PATH - which is what a shell opened before installing it
+    # looks like. signtool reports that only as an internal error, so say it plainly here.
+    $usesCli = ($meta -notmatch 'AccessToken') -and -not $env:AZURE_CLIENT_ID
+    if ($usesCli -and -not (Get-Command az -ErrorAction SilentlyContinue)) {
+        Write-Warning ('az is not on PATH for this process, so the Azure CLI login cannot be used. ' +
+            'Open a new shell, or add the CLI directory to PATH before signing.')
+    }
+    if ($meta -notmatch 'ExcludeCredentials') {
+        Write-Warning ("$AzureMetadata has no ExcludeCredentials list. If signing hangs with no output, " +
+            "that is the credential chain blocking, not the service.")
+    }
     # The dlib ships in its own package and does not sit beside metadata.json. The Artifact Signing
     # Client Tools installer (winget Microsoft.Azure.ArtifactSigningClientTools) is the easy route;
     # the NuGet package Microsoft.ArtifactSigning.Client extracted by hand also works. Either way the
@@ -203,5 +222,5 @@ if ($failed.Count -or $bad.Count) {
     throw ("Signing failed for {0} file(s); {1} do not verify. " -f $failed.Count, $bad.Count) + ($failed | Select-Object -First 3 | Out-String)
 }
 Write-Host ("Signed and verified {0} file(s) as {1}" -f $states.Count, $states[0].Signer) -ForegroundColor Green
-if ($AllowSelfSigned) { Write-Warning 'This build is signed by an untrusted self-signed certificate and must not be published.' }
+if ($AllowSelfSigned -or $AllowUntrustedChain) { Write-Warning 'This build is signed by an untrusted self-signed certificate and must not be published.' }
 if ($unstamped.Count) { Write-Warning "$($unstamped.Count) signature(s) have no timestamp and will stop verifying when the certificate expires." }

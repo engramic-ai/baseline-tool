@@ -2,10 +2,12 @@
 
 [![CI](https://github.com/engramic-ai/baseline-tool/actions/workflows/ci.yml/badge.svg)](https://github.com/engramic-ai/baseline-tool/actions/workflows/ci.yml)
 [![Checks against Cyber Essentials v3.3 (Danzell)](https://img.shields.io/badge/checks%20against-Cyber%20Essentials%20v3.3%20%28Danzell%29-1f4e79)](https://www.ncsc.gov.uk/sites/default/files/documents/cyber-essentials-requirements-for-it-infrastructure-v3-3.pdf)
-[![CE+ test cases TC1-TC5](https://img.shields.io/badge/CE%2B-TC1--TC5-1f4e79)](https://www.ncsc.gov.uk/files/cyber-essentials-plus-test-specification-v3-2.pdf)
+[![CE+ TC1-TC5 readiness](https://img.shields.io/badge/CE%2B-TC1--TC5%20readiness-1f4e79)](https://www.ncsc.gov.uk/files/cyber-essentials-plus-test-specification-v3-2.pdf)
 [![NCSC Windows device guidance](https://img.shields.io/badge/NCSC-Windows%20device%20guidance-1f4e79)](https://www.ncsc.gov.uk/collection/device-security-guidance/platform-guides/windows)
 [![PowerShell 5.1 and 7](https://img.shields.io/badge/PowerShell-5.1%20%7C%207-5391fe?logo=powershell&logoColor=white)](#development)
 [![Deploys with Intune](https://img.shields.io/badge/deploys%20with-Intune-0078d4)](docs/INTUNE.md)
+
+<sub>A self-assessment aid, not certification.</sub>
 
 **Secure the Windows devices your AI agents run on.**
 
@@ -19,7 +21,7 @@ Free and open source.
 
 [**Download on GitHub &rarr;**](https://github.com/engramic-ai/baseline-tool/releases)
 
-Supports Windows 11 and Windows Server 2016 to 2025.
+Supports Windows 11 and Windows Server 2016 to 2025. Windows 10 still runs the audit, and is reported as out of support.
 
 ![Report overview: AI and shadow-AI posture, per-framework coverage and control status](docs/images/report-overview.png)
 
@@ -49,13 +51,13 @@ The per-user probe detects recognised AI assistants and agents, identifies their
 
 ![Fixes: each one explains what it changes, why, how risky it is and whether it needs a restart](docs/images/report-fixes.png)
 
-<sub>Every finding comes with a fix you can preview, apply and roll back.</sub>
+<sub>Most findings come with a fix you can preview, apply and roll back.</sub>
 
 > This is a self-assessment aid, not certification. It doesn't replace an IASME-licensed Certification Body, and it can only see the device it runs on. Your routers, cloud tenants and other devices are also in scope for certification.
 >
 > Cyber Essentials is an NCSC scheme delivered by IASME. This project isn't affiliated with or endorsed by NCSC or IASME.
 
-### In 30 seconds
+### Getting started
 
 **One device:** download the repo, then double-click **`app\Start-EB.cmd`** and press **Run audit**. No desktop (Windows Server Core, or SSH/RDP-only)? Use the [command line](#command-line) instead.
 
@@ -110,9 +112,8 @@ powershell -ExecutionPolicy Bypass -File .\app\Invoke-CEAudit.ps1
 
 | Tab | What it's for |
 |---|---|
-| **Overview** | The audit message, the AI and shadow-AI summary, a judgement bar per framework (Cyber Essentials v3.3, NCSC hardening, CE+) and a control-status breakdown |
-| **AI** | The recognised AI tools and agents detected, whether each is contained or deviating, and the WSL, VM and container environments in scope - the shadow-AI picture in one place |
-| **Frameworks** | Each framework judged on its own: CE+ TC1 to TC5 readiness and results by control theme |
+| **Overview** | The verdict, the AI posture and anything you need to act on, a coverage bar per framework (Cyber Essentials v3.3, NCSC hardening, CE+), Cyber Essentials Plus readiness with the controls behind each test case, and a control-status breakdown |
+| **AI** | The AI tools found, whether each can act on the device and is running with administrator rights, the MCP servers they are wired to and how those hold their credentials, and the WSL, VM and container environments in scope |
 | **Controls** | Every control result, filterable by theme, status or text, with what was expected, what was found, what to do and the evidence behind it |
 | **Fixes** | The changeset. Tick fixes, **Preview** (nothing changes), then **Apply**. Auto-fail fixes are listed first. High-risk fixes are never pre-ticked. |
 | **Manual actions** | Things a script can't do safely or can't see, such as MFA attestation, software review and Tamper Protection |
@@ -139,7 +140,7 @@ Alternatively, push a tag such as `v0.3.0` and download the ready-made package f
 | Intune feature | What you get |
 |---|---|
 | **Win32 app** | Installs to Program Files (locked down) and registers a **daily scheduled task running as SYSTEM** that audits the device and writes `%ProgramData%\EngramicBaseline\status.json`, a full report and an event log entry, plus a **per-user task** that runs the shadow-AI/WSL checks as each signed-in user |
-| **Custom compliance** | `Discover-CECompliance.ps1` plus a rules file, so each device reports compliant or not compliant, with user-facing reasons in Company Portal. There's a lenient rules file (automatic fails, supported OS, antivirus, audit freshness) and a strict one (full Cyber Essentials). |
+| **Custom compliance** | `Discover-CECompliance.ps1` plus a rules file, so each device reports compliant or not compliant, with user-facing reasons in Company Portal. There's a lenient rules file (automatic fails, supported OS, antivirus, audit freshness), a strict one (the full Cyber Essentials check set) and one that gates on framework coverage. |
 | **Remediations** (optional) | A tenant-wide report with one line per device showing the compliance state, counts and failing check IDs. It can also apply fixes you allow-list. |
 
 Compliance is based on the last scheduled audit. A device that hasn't completed an audit in 72 hours is **not compliant**, so a broken install can't pass silently.
@@ -185,7 +186,7 @@ Installed apps such as OneDrive, Dropbox, Slack and Xero are detected and listed
 
 - **The audit only reads settings.** Nothing changes until you apply a changeset.
 - **Changesets can't run arbitrary code.** Each item names a remediation from a fixed library (`src/CEAudit/Remediations`) plus simple parameters, and every parameter is checked again at apply time against allow-lists and patterns.
-- **Everything is reversible where possible.** Registry changes record their previous value, and other changes record a generated undo command. Windows and app updates are marked as not reversible.
+- **Everything is reversible where possible.** Registry changes record their previous value, and other changes record a generated undo command. Windows and app updates, and the Secure Boot 2023 certificate deployment, are marked as not reversible.
 - **Risky changes need an explicit choice.** High-risk items (disabling accounts, Memory Integrity by registry, Credential Guard) are never pre-selected, and the CLI also needs `-IncludeHighRisk`.
 - **There are guard rails.** It won't disable the built-in Administrator if it's the only admin, won't disable the signed-in account, and won't turn off password complexity until a 12-character minimum is in place.
 - **It warns about central management.** On domain, Entra or Intune devices, it warns that local changes may be overwritten, so fix the policy at its source.
@@ -207,7 +208,7 @@ Installed apps such as OneDrive, Dropbox, Slack and Xero are detected and listed
 | `config/os-lifecycle.json` | Windows 11 end-of-servicing dates by release and edition. **Review this periodically**: SU-01 warns when it's more than 90 days old |
 | `config/unsupported-software.json` | End-of-life products to flag. Add your own. |
 | `config/asr-rules.json` | ASR rules to recommend. `standard: true` rules are proposed in Block mode, the rest in Audit mode. |
-| `config/ai-tools.json` | AI assistants and agents recognised on the device (20 tools): how to detect them, which account they use, and whether they can run commands or change files |
+| `config/ai-tools.json` | AI assistants and agents recognised on the device (20 tools): how to detect them, which account they use, and whether the tool can act on the device |
 | `config/virtualisation.json` | Processes that publish ports for virtual machines and containers (FW-07), and WSL distributions created by container tools that SC-12 doesn't warn about |
 | `config/malware-test.json` | Test file links for the malware download test (MP-11), and where to record the result when you don't use Microsoft Defender |
 | `config/cloud-services.json` | MFA attestations and detection hints |
@@ -315,7 +316,7 @@ intune/
   Uninstall-CEChecker.ps1     Win32 app uninstall
   Detect-CEChecker.ps1        Win32 app detection script
   Discover-CECompliance.ps1   Custom compliance discovery script
-  compliance-rules*.json      Custom compliance rules (strict and automatic-fail only)
+  compliance-rules*.json      Custom compliance rules (lenient, strict, framework coverage)
   Detect-CECompliance.ps1     Remediations detection (per-device summary)
   Remediate-CECompliance.ps1  Remediations remediation (refresh audit, optional auto-fix)
   Build-IntunePackage.ps1     Builds .intunewin, upload files and portal settings

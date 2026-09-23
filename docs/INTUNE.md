@@ -35,7 +35,7 @@ For Intune specifically, you can also deploy `Invoke-CEUserProbe.ps1` as a **use
 
 ## Requirements
 
-- Windows 10 22H2 or Windows 11, x64, enrolled in Intune (custom compliance needs the Intune Management Extension, which Intune installs automatically when you assign a Win32 app or script)
+- Windows 11 or Windows Server 2016 to 2025, x64, enrolled in Intune (custom compliance needs the Intune Management Extension, which Intune installs automatically when you assign a Win32 app or script). Windows 10 devices still audit, but report as out of support.
 - Windows PowerShell 5.1 (built in). PowerShell 7 isn't needed.
 - **Remediations** requires Windows Enterprise E3/E5 (or equivalent) licensing. Everything else works with standard Intune.
 
@@ -112,7 +112,7 @@ You can also change settings on individual devices without rebuilding. A file wi
 | Uninstall command | `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\intune\Uninstall-CEChecker.ps1` |
 | Install behaviour | System |
 | Return codes | `0` success, `1` failed |
-| Requirements | x64, Windows 10 22H2 or later |
+| Requirements | x64, Windows 10 22H2 or later (the floor Intune offers; it admits Windows 11 and Server, and Windows 10 itself reports as out of support) |
 | Detection | Custom script: `upload\Detect-CEChecker.ps1`. Run as 32-bit on 64-bit clients: **No** |
 | Assignment | **Required** for your device group |
 

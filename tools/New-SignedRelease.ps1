@@ -23,8 +23,10 @@
     output is marked DO-NOT-PUBLISH.
 .PARAMETER SkipPreFlight
     Skip lint and tests. Only for iterating on this script itself.
+.PARAMETER ModulePath
+    A folder holding Pester and PSScriptAnalyzer, passed to Invoke-PreFlight.ps1.
 .EXAMPLE
-    .\tools\New-SignedRelease.ps1 -AzureMetadata C:\keys\artifact-signing.json
+    .\tools\New-SignedRelease.ps1 -AzureMetadata C:\keys\artifact-signing.json -ModulePath C:\modules
 .EXAMPLE
     .\tools\New-SignedRelease.ps1 -AzureMetadata .\build\test-profile.json -AllowUntrustedChain
 #>
@@ -34,6 +36,10 @@ param(
     [string]$OutputPath,
     [switch]$AllowUntrustedChain,
     [switch]$SkipPreFlight,
+    # Passed straight to Invoke-PreFlight.ps1. Needed when Pester and PSScriptAnalyzer are kept in
+    # a folder of their own rather than installed, which is how this repo pins the versions CI uses.
+    [string]$ModulePath,
+    [string]$PesterVersion,
     [switch]$AllowDirtyTree
 )
 $ErrorActionPreference = 'Stop'
@@ -67,7 +73,10 @@ if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
 # --- the same checks CI would run -------------------------------------------------------------
 if (-not $SkipPreFlight) {
     Write-Step 'Lint and tests'
-    & (Join-Path $repo 'tools\Invoke-PreFlight.ps1')
+    $preFlightArgs = @{}
+    if ($ModulePath) { $preFlightArgs['ModulePath'] = $ModulePath }
+    if ($PesterVersion) { $preFlightArgs['PesterVersion'] = $PesterVersion }
+    & (Join-Path $repo 'tools\Invoke-PreFlight.ps1') @preFlightArgs
     if ($LASTEXITCODE -ne 0) { throw 'Pre-flight failed, so nothing was built. Fix that before releasing.' }
 }
 

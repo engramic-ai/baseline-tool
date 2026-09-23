@@ -59,13 +59,22 @@ The per-user probe detects recognised AI assistants and agents, identifies their
 
 ### Getting started
 
-**One device:** download the repo, then double-click **`app\Start-EB.cmd`** and press **Run audit**. No desktop (Windows Server Core, or SSH/RDP-only)? Use the [command line](#command-line) instead.
+**One device:** download the signed installer from [Releases](https://github.com/engramic-ai/baseline-tool/releases),
+run it, and open **Engramic Baseline** from the Start menu. Windows shows Engramic Ltd as the publisher. Working from
+the source instead? Double-click **`app\Start-EB.cmd`**. No desktop (Windows Server Core, or SSH/RDP-only)? Use the
+[command line](#command-line) instead.
 
 **A fleet:** in an elevated prompt, run `.\intune\Test-IntuneDeployment.ps1` to rehearse the deployment, then `.\intune\Build-IntunePackage.ps1 -DownloadTool` to build the package, and follow [docs/INTUNE.md](docs/INTUNE.md). Or download a ready-made package from [Releases](https://github.com/engramic-ai/baseline-tool/releases).
 
 ---
 
 ## Quick start
+
+The quickest route is the installer on the [Releases](https://github.com/engramic-ai/baseline-tool/releases) page: run it,
+then open **Engramic Baseline** from the Start menu. It installs to Program Files, adds nothing to startup, and registers no
+scheduled task; that belongs to the [Intune deployment](docs/INTUNE.md).
+
+To run from the source instead:
 
 1. Download or clone the repo: `git clone https://github.com/engramic-ai/baseline-tool`
 2. If you downloaded a zip, unblock the files first: `Get-ChildItem -Recurse | Unblock-File`

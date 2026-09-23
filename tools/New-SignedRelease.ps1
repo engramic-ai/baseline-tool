@@ -40,7 +40,8 @@ param(
     # a folder of their own rather than installed, which is how this repo pins the versions CI uses.
     [string]$ModulePath,
     [string]$PesterVersion,
-    [switch]$AllowDirtyTree
+    [switch]$AllowDirtyTree,
+    [switch]$SkipInstaller
 )
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
@@ -120,10 +121,32 @@ if (-not $publishable -and -not $AllowUntrustedChain) {
     throw "Only $valid of $($states.Count) file(s) verify as Valid, so this build is not releasable."
 }
 
+$script:AcceptableInstallerStatus = if ($AllowUntrustedChain) { @('Valid', 'UnknownError', 'NotTrusted') } else { @('Valid') }
+
+# --- the desktop installer ------------------------------------------------------------------------
+# Built from the signed payload, so the files inside carry the same signatures a customer can check.
+# The MSI is then signed itself: that signature is what Windows shows at the elevation prompt, and
+# it is the only thing most people will ever look at.
+if (-not $SkipInstaller) {
+    Write-Step 'Desktop installer'
+    & (Join-Path $repo 'installer\Build-Msi.ps1') -PayloadPath (Join-Path $OutputPath 'payload') `
+        -Version $version -OutputPath $OutputPath | Out-Host
+    $msiArgs = @{ AzureMetadata = $AzureMetadata; IncludeExtensions = @('.msi') }
+    if ($AllowUntrustedChain) { $msiArgs['AllowUntrustedChain'] = $true }
+    & (Join-Path $repo 'tools\Sign-Release.ps1') -Path $OutputPath @msiArgs | Out-Host
+    $msiFile = @(Get-ChildItem -LiteralPath $OutputPath -Filter '*.msi')
+    if ($msiFile.Count -ne 1) { throw "Expected one .msi in $OutputPath, found $($msiFile.Count)." }
+    $msiSig = Get-AuthenticodeSignature -LiteralPath $msiFile[0].FullName
+    if ($script:AcceptableInstallerStatus -notcontains [string]$msiSig.Status) {
+        throw "The installer is not signed acceptably: $($msiSig.Status)."
+    }
+    if (-not $msiSig.TimeStamperCertificate) { throw 'The installer signature has no timestamp.' }
+}
+
 # --- artefacts and their checksums ----------------------------------------------------------------
 Write-Step 'Artefacts'
 $artefacts = @(Get-ChildItem -LiteralPath $OutputPath -File |
-        Where-Object { $_.Extension -in '.intunewin', '.zip', '.md' } | Sort-Object Name)
+        Where-Object { $_.Extension -in '.intunewin', '.zip', '.md', '.msi' } | Sort-Object Name)
 $sums = foreach ($a in $artefacts) {
     $h = (Get-FileHash -LiteralPath $a.FullName -Algorithm SHA256).Hash
     Write-Host ("  {0,-42} {1,10:N0} bytes" -f $a.Name, $a.Length)
@@ -148,24 +171,27 @@ if ($prevTag) { $changes = @(& git log "$prevTag..HEAD" --no-merges --format=%s 
 $notes = New-Object System.Collections.ArrayList
 function Add-Note { param([string[]]$Lines) foreach ($l in $Lines) { [void]$notes.Add($l) } }
 
+# An installer is only described when one was actually built, so the notes never promise a file
+# that is not attached.
+$msi = @($artefacts | Where-Object { $_.Extension -eq '.msi' }) | Select-Object -First 1
+$intuneName = [string](@($artefacts | Where-Object { $_.Extension -eq '.intunewin' }) |
+        Select-Object -First 1 -ExpandProperty Name)
 Add-Note @("# Engramic Baseline $version", '')
 if ($changes.Count) {
     Add-Note @("## What changed since $prevTag", '')
     foreach ($c in $changes) { Add-Note @("- $c") }
     Add-Note @('')
 }
-Add-Note @('## What to download', '',
-    '| File | Use |', '|---|---|',
+Add-Note @('## What to download', '', '| File | Use |', '|---|---|')
+if ($msi) {
+    Add-Note @(('| `{0}` | Installer for a single PC. Start here if you are installing on your own machine. |' -f $msi.Name))
+}
+Add-Note @(
     '| `EngramicBaseline-VERSION.intunewin` | Intune Win32 app. Follow `INTUNE-SETTINGS.md` for the exact values to enter. |'.Replace('VERSION', $version),
     '| `EngramicBaseline.zip` | The same payload for RMM, Group Policy or a manual install. |',
     '| `intune-upload-files.zip` | The scripts and JSON that Intune takes as separate uploads. |',
     '| `INTUNE-SETTINGS.md` | Detection rules, install commands and requirements. |',
     '| `SHA256SUMS.txt` | Checksums for everything above. |', '')
-# An installer is only described when one was actually built, so the notes never promise a file
-# that is not attached.
-$msi = @($artefacts | Where-Object { $_.Extension -eq '.msi' }) | Select-Object -First 1
-$intuneName = [string](@($artefacts | Where-Object { $_.Extension -eq '.intunewin' }) |
-        Select-Object -First 1 -ExpandProperty Name)
 Add-Note @('## Installing', '')
 Add-Note @('### On your own PC', '')
 if ($msi) {

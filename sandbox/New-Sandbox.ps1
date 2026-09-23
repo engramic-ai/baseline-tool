@@ -123,6 +123,13 @@ foreach ($f in $folders) { Write-Host ("Map         : {0} -> {1}{2}" -f $f.host,
 $sandboxExe = Join-Path $env:windir 'System32\WindowsSandbox.exe'
 $missing = 'Windows Sandbox is not installed. Enable "Windows Sandbox" under Settings > Optional features > More Windows features (Pro, Enterprise or Education), restart, and run this again.'
 if ($NoLaunch) { if (-not (Test-Path -LiteralPath $sandboxExe)) { Write-Warning $missing }; return }
+
+# Windows Sandbox runs one instance at a time. Launching a second silently attaches to nothing and
+# leaves you watching a results folder that never fills, so say so instead.
+if (Get-Process -Name 'vmmemWindowsSandbox', 'WindowsSandboxServer' -ErrorAction SilentlyContinue) {
+    throw ('A Windows Sandbox is already running, and only one is allowed at a time. Close its window ' +
+        'and wait for it to shut down (about 20 seconds), then run this again.')
+}
 if (-not (Test-Path -LiteralPath $sandboxExe)) { throw $missing }
 Write-Host ''
 Write-Host "Starting Windows Sandbox. A console titled `"$name`" appears inside it once the image is up (the first launch takes a few minutes)."

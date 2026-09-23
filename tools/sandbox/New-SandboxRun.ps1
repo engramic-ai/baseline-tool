@@ -18,11 +18,13 @@
       showcase        install representative AI tools, seed an MCP configuration, run a real audit
                       and keep the report - anonymous, current marketing screenshots on demand.
                       Networking on.
+      sign-test       prove tools\Sign-Release.ps1 and the -RequireSignature gate end to end with a
+                      throwaway self-signed certificate that dies with the sandbox. Networking on.
 
     Results land in build\sandbox\results\<environment>\<timestamp>\ on the host. The
     repository is mapped read-only; the sandbox is destroyed when its window closes.
 .PARAMETER Environment
-    apply-rollback (default), ai-lab, ci or showcase, or a path to your own environment JSON.
+    apply-rollback (default), ai-lab, ci, showcase or sign-test, or a path to your own environment JSON.
 .PARAMETER Tools
     ai-lab only: which catalogue tools to install and test (ids from sandbox\tools.json).
     Default is the environment's own list.
@@ -50,7 +52,7 @@ $ErrorActionPreference = 'Stop'
 
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $envPath = if (Test-Path -LiteralPath $Environment) { $Environment } else { Join-Path $PSScriptRoot "environments\$Environment.json" }
-if (-not (Test-Path -LiteralPath $envPath)) { throw "No environment '$Environment'. Use apply-rollback, ai-lab, ci, showcase, or a path to an environment JSON." }
+if (-not (Test-Path -LiteralPath $envPath)) { throw "No environment '$Environment'. Use apply-rollback, ai-lab, ci, showcase, sign-test, or a path to an environment JSON." }
 
 $maps = @()
 $vars = @{}

@@ -22,7 +22,17 @@
 param(
     [string]$OutputPath,
     [string]$IntuneWinAppUtilPath,
-    [switch]$DownloadTool
+    [switch]$DownloadTool,
+    # Sign the assembled payload before packing. The .intunewin is an encrypted container, so a
+    # signature on it proves nothing; Windows and Intune verify what is inside.
+    [string]$SignThumbprint,
+    [string]$SignPfxPath,
+    [SecureString]$SignPfxPassword,
+    [string]$SignAzureMetadata,
+    [switch]$AllowSelfSigned,
+    # Refuse to produce a package from unsigned scripts. Release builds set this; a local
+    # rehearsal leaves it off so Test-IntuneDeployment.ps1 still works on an unsigned tree.
+    [switch]$RequireSignature
 )
 
 $ErrorActionPreference = 'Stop'
@@ -48,6 +58,23 @@ foreach ($i in $items) { Copy-Item -LiteralPath (Join-Path $repo $i) -Destinatio
 foreach ($f in @('Discover-CECompliance.ps1', 'compliance-rules.json', 'compliance-rules-autofail-only.json',
         'Detect-CECompliance.ps1', 'Remediate-CECompliance.ps1', 'Detect-CEChecker.ps1')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $f) -Destination $upload
+}
+
+# Signing goes here: after the payload and upload folders are assembled, before the zip is made
+# and before IntuneWinAppUtil wraps anything.
+$signer = Join-Path $repo 'tools\Sign-Release.ps1'
+$signArgs = @{}
+if ($SignThumbprint) { $signArgs['Thumbprint'] = $SignThumbprint }
+elseif ($SignPfxPath) { $signArgs['PfxPath'] = $SignPfxPath; if ($SignPfxPassword) { $signArgs['PfxPassword'] = $SignPfxPassword } }
+elseif ($SignAzureMetadata) { $signArgs['AzureMetadata'] = $SignAzureMetadata }
+if ($signArgs.Count) {
+    if ($AllowSelfSigned) { $signArgs['AllowSelfSigned'] = $true }
+    foreach ($dir in @($payload, $upload)) { & $signer -Path $dir @signArgs }
+}
+if ($RequireSignature) {
+    $verifyArgs = @{ VerifyOnly = $true }
+    if ($AllowSelfSigned) { $verifyArgs['AllowSelfSigned'] = $true }
+    foreach ($dir in @($payload, $upload)) { & $signer -Path $dir @verifyArgs }
 }
 
 # Zip for non-Intune deployment

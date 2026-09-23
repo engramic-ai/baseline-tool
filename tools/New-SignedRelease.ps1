@@ -157,7 +157,10 @@ if (-not $publishable) {
 Write-Host ("Signed release ready in {0}" -f $OutputPath) -ForegroundColor Green
 Write-Host 'Nothing has been published. To publish it, tag the commit and upload these artefacts:' -ForegroundColor Cyan
 Write-Host ''
-Write-Host ("  git tag v$version && git push origin v$version")
+# Not "git tag ... && git push ...": && is a parse error in Windows PowerShell 5.1, which this
+# repo still supports, so the printed commands have to run in either shell.
+Write-Host ("  git tag v$version")
+Write-Host ("  git push origin v$version")
 Write-Host ("  gh release create v$version --title `"Engramic Baseline $version`" --notes-file `"$OutputPath\RELEASE-NOTES.md`" ``")
 foreach ($a in $artefacts) { Write-Host ("      `"$($a.FullName)`" ``") }
 Write-Host ("      `"$OutputPath\SHA256SUMS.txt`"")

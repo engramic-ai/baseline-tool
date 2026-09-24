@@ -7,7 +7,8 @@
 
 function Get-CEWingetUpgrades {
     <#
-        Returns @{ Available = <winget usable?>; Packages = <packages with an upgrade> }.
+        Returns @{ Available = <winget usable?>; Packages = <packages with an upgrade>;
+        Unverified = <copies of winget.exe found but not signed by Microsoft, so not run> }.
         Prefers the Microsoft.WinGet.Client module; falls back to parsing winget.exe output.
     #>
     [CmdletBinding()]
@@ -17,11 +18,12 @@ function Get-CEWingetUpgrades {
         $pkgs = @(Get-WinGetPackage | Where-Object { $_.IsUpdateAvailable } | ForEach-Object {
             [pscustomobject]@{ Name = $_.Name; Id = $_.Id; Version = [string]$_.InstalledVersion; Available = [string]($_.AvailableVersions | Select-Object -First 1); Source = $_.Source }
         })
-        return [pscustomobject]@{ Available = $true; Packages = $pkgs }
+        return [pscustomobject]@{ Available = $true; Packages = $pkgs; Unverified = @() }
     }
-    $winget = Get-CEWingetPath
+    $tool = Resolve-CEWingetPath
+    $winget = $tool.Path
     if (-not $winget) {
-        return [pscustomobject]@{ Available = $false; Packages = @() }
+        return [pscustomobject]@{ Available = $false; Packages = @(); Unverified = @($tool.Refused) }
     }
 
     $prev = [Console]::OutputEncoding
@@ -32,7 +34,7 @@ function Get-CEWingetUpgrades {
     finally {
         [Console]::OutputEncoding = $prev
     }
-    return [pscustomobject]@{ Available = $true; Packages = @(ConvertFrom-CEWingetTable -Lines $native.Output) }
+    return [pscustomobject]@{ Available = $true; Packages = @(ConvertFrom-CEWingetTable -Lines $native.Output); Unverified = @() }
 }
 
 function ConvertFrom-CEWingetTable {
@@ -304,6 +306,13 @@ Register-CECheck -Id 'SU-05' -Category 'SecurityUpdateManagement' -Severity 'Hig
         $winget = Get-CEWingetUpgrades
         $upgrades = @($winget.Packages)
         if (-not $winget.Available) {
+            $unverified = @(Get-CEObjectValue $winget 'Unverified' @())
+            if ($unverified.Count) {
+                return New-CEResult -Status 'Manual' -Expected 'All applications on the latest vendor-supported version' `
+                    -Actual "winget.exe could not be verified as signed by Microsoft, so it was not run: $($unverified -join '; ')" `
+                    -Evidence $unverified `
+                    -Recommendation 'Reinstall App Installer from the Microsoft Store and find out how an unsigned winget.exe got there. Until then, check each application for updates manually.'
+            }
             return New-CEResult -Status 'Manual' -Expected 'All applications on the latest vendor-supported version' `
                 -Actual 'winget (App Installer) was not found on this device' `
                 -Recommendation 'Install App Installer from the Microsoft Store, or check each application for updates manually.'

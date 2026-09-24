@@ -9,10 +9,13 @@ At import, the module looks for pack folders in:
 | Folder | Use | Permissions required |
 |---|---|---|
 | `packs\<pack>` next to the module (repo root) | Local development. Git-ignored. | None |
-| Folders listed in `CE_CHECKER_PACKS` (separated by `;` on Windows) | Development and tests | None |
+| Folders passed on import: `Import-Module .\src\CEAudit\CEAudit.psd1 -ArgumentList $null, @('C:\dev\my-packs')` | Development and tests | None |
+| Folders listed in `CE_CHECKER_PACKS` (separated by `;` on Windows) | Development, when not running as administrator | None |
 | `%ProgramData%\EngramicBaseline\packs\<pack>` | Installed copies (Intune) | Owned by, and only writable by, SYSTEM, Administrators or TrustedInstaller |
 
 Audits run elevated or as SYSTEM, so a pack under `%ProgramData%` that a standard user could change or owns is refused: loading it would let that user run code as SYSTEM.
+
+`CE_CHECKER_PACKS`, and `CE_CHECKER_DATA` (which moves the data folder), are ignored with a warning when the audit runs as administrator. An elevated process started from a user's session inherits that session's environment variables, so honouring them would let a standard user add pack folders or move the data folder out from under the permission checks. Pass folders on the `Import-Module` line instead, as the tests and `Invoke-CEScheduledAudit.ps1 -DataRoot` do. A moved data folder gets the same permission checks as the default one.
 
 `Get-CEPack` lists every pack found, with `Loaded` or `Skipped` and the reason. `Invoke-CEAudit.ps1 -ListChecks` prints the same, and reports and `status.json` list the packs.
 

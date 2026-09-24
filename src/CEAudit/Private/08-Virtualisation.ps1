@@ -284,12 +284,23 @@ function Get-CEWslNetworkingMode {
     return ''
 }
 
+# Signer names on the Docker CLI (the certificate's common name).
+$script:CEDockerPublishers = @('Docker Inc', 'Docker, Inc.')
+
+function Resolve-CEDockerPath {
+    <# docker.exe signed by Docker: the Docker Desktop copy first, then PATH (see Resolve-CETrustedTool). #>
+    $candidates = @()
+    if ($env:ProgramFiles) { $candidates += Join-Path $env:ProgramFiles 'Docker\Docker\resources\bin\docker.exe' }
+    $candidates += @(Get-Command 'docker.exe' -CommandType Application -ErrorAction SilentlyContinue | ForEach-Object { $_.Source })
+    return (Resolve-CETrustedTool -Candidate $candidates -Publisher $script:CEDockerPublishers)
+}
+
 function Get-CEContainer {
-    <# Running Docker containers, when the docker CLI is available in a user session. #>
-    param($Context)
-    if ($Context.IsSystem -or -not (Get-Command docker -ErrorAction SilentlyContinue)) { return ,@() }
+    <# Running Docker containers, when a verified docker CLI (Resolve-CEDockerPath) is available in a user session. #>
+    param($Context, [string]$DockerPath)
+    if ($Context.IsSystem -or -not $DockerPath) { return ,@() }
     try {
-        $native = Invoke-CENative -FilePath 'docker' -ArgumentList @('ps', '--format', '{{.Names}}|{{.Image}}|{{.Ports}}')
+        $native = Invoke-CENative -FilePath $DockerPath -ArgumentList @('ps', '--format', '{{.Names}}|{{.Image}}|{{.Ports}}')
         if ($native.ExitCode -ne 0) { return ,@() }
         return ,@(@($native.Output) | Where-Object { $_ -match '^[^|]+\|' } | ForEach-Object {
             $parts = "$_" -split '\|', 3
@@ -352,13 +363,20 @@ function Get-CEVirtualisationStateUncached {
     elseif ($Context.IsSystem) { $notes += 'Ran as SYSTEM: WSL drive mounting and Docker containers need a user session to check' }
     $hyperV = Get-CEHyperVMachine -Context $Context
     if (-not $hyperV.Readable) { $notes += $hyperV.Message }
+    $docker = $null
+    if (-not $Context.IsSystem) {
+        $docker = Resolve-CEDockerPath
+        if (-not $docker.Path -and @($docker.Refused).Count) {
+            $notes += "Docker containers were not checked: $(@($docker.Refused) -join '; ') is not signed by Docker, so it was not run"
+        }
+    }
     return [pscustomobject]@{
         HyperV         = $hyperV
         VMware         = Get-CEVMwareMachine -ProfilePath $profilePath
         VirtualBox     = Get-CEVirtualBoxMachine -ProfilePath $profilePath
         Wsl            = $wsl
         WslNetworking  = Get-CEWslNetworkingMode -ProfilePath $profilePath
-        Containers     = Get-CEContainer -Context $Context
+        Containers     = Get-CEContainer -Context $Context -DockerPath $(if ($docker) { $docker.Path } else { '' })
         Listeners      = Get-CEVirtualisationListener
         Notes          = $notes
     }

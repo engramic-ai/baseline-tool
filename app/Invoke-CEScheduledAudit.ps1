@@ -37,8 +37,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-if ($DataRoot) { $env:CE_CHECKER_DATA = $DataRoot }
-Import-Module (Join-Path $PSScriptRoot '..\src\CEAudit\CEAudit.psd1') -Force
+# Passed to the module directly: it ignores the CE_CHECKER_DATA environment variable when elevated.
+Import-Module (Join-Path $PSScriptRoot '..\src\CEAudit\CEAudit.psd1') -Force -ArgumentList $DataRoot
 $DataRoot = Get-CEDataRoot
 
 $reportRoot = Join-Path $DataRoot 'reports'

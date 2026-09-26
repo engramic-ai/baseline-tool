@@ -263,7 +263,17 @@ function Get-CEAIToolStateUncached {
                 Elevated  = $(switch ($elevation) { 1 { $true } 0 { $false } default { $null } })
             }
         })
-        if ($procInfo.Count) { $signals += "Running: $((@($procInfo | ForEach-Object { "$($_.Image) (pid $($_.ProcessId))" })) -join ', ')" }
+        if ($procInfo.Count) {
+            # Agents keep every pid (UA-10 names them). A browser or chat app runs many processes of one
+            # image, so those are counted instead.
+            $runText = if ($canAct) { @($procInfo | ForEach-Object { "$($_.Image) (pid $($_.ProcessId))" }) }
+            else {
+                @(foreach ($g in @($procInfo | Group-Object -Property Image)) {
+                    if ($g.Count -eq 1) { "$($g.Name) (pid $($g.Group[0].ProcessId))" } else { "$($g.Name) ($($g.Count) processes)" }
+                })
+            }
+            $signals += "Running: $(@($runText) -join ', ')"
+        }
         [void]$tools.Add([pscustomobject]@{
             Id             = [string](Get-CEObjectValue $t 'id' '')
             Name           = [string](Get-CEObjectValue $t 'name' '')

@@ -2647,37 +2647,49 @@ Describe 'AI tools (UA-07, SC-09, UA-10)' {
         InModuleScope CEAudit -Parameters @{ P = $profileDir } {
             param($P)
             $script:aiProfile = $P
-            Mock Get-CEUserProfilePath { $script:aiProfile }
-            Mock Get-CEInstalledSoftware {
-                @([pscustomobject]@{ Name = 'Cursor (User)'; Version = '1.6'; Publisher = 'Anysphere'; KeyName = '{DADADADA}_is1' },
-                  [pscustomobject]@{ Name = 'Cursor Themes Pack'; Version = '2'; Publisher = 'Somebody else'; KeyName = 'x' },
-                  [pscustomobject]@{ Name = 'Ollama version 0.34.1'; Version = '0.34.1'; Publisher = 'Ollama'; KeyName = '{44E8}_is1' })
+            # The shipped catalog plus a browser that can't act on the device, which runs many processes.
+            $orig = (Get-CEConfig).'ai-tools'
+            (Get-CEConfig).'ai-tools' = [pscustomobject]@{ schemaVersion = 2; tools = @(@($orig.tools) + @(
+                [pscustomobject]@{ id = 't-browser'; name = 'Browser Y'; canActOnDevice = $false; windows = [pscustomobject]@{ processes = @([pscustomobject]@{ image = 'browsx.exe'; path = '*\Browser Y\*' }) } })) }
+            try {
+                Mock Get-CEUserProfilePath { $script:aiProfile }
+                Mock Get-CEInstalledSoftware {
+                    @([pscustomobject]@{ Name = 'Cursor (User)'; Version = '1.6'; Publisher = 'Anysphere'; KeyName = '{DADADADA}_is1' },
+                      [pscustomobject]@{ Name = 'Cursor Themes Pack'; Version = '2'; Publisher = 'Somebody else'; KeyName = 'x' },
+                      [pscustomobject]@{ Name = 'Ollama version 0.34.1'; Version = '0.34.1'; Publisher = 'Ollama'; KeyName = '{44E8}_is1' })
+                }
+                Mock Get-CEStorePackageName { @('Claude', 'Microsoft.Copilot', 'Microsoft.WindowsCalculator') }
+                Mock Get-CEProcessList {
+                    @([pscustomobject]@{ Name = 'claude.exe'; ProcessId = 10; Path = 'C:\Program Files\WindowsApps\Claude_2.1_x64__pzs8sxrjxfjjc\app\claude.exe'; CommandLine = 'claude.exe'; Cim = $null },
+                      [pscustomobject]@{ Name = 'claude.exe'; ProcessId = 20; Path = 'C:\Users\paul\.local\bin\claude.exe'; CommandLine = 'claude'; Cim = $null },
+                      [pscustomobject]@{ Name = 'claude.exe'; ProcessId = 30; Path = ''; CommandLine = ''; Cim = $null },
+                      [pscustomobject]@{ Name = 'node.exe'; ProcessId = 40; Path = 'C:\nodejs\node.exe'; CommandLine = 'node C:\npm\node_modules\@google\gemini-cli\bundle\gemini.js'; Cim = $null },
+                      [pscustomobject]@{ Name = 'node.exe'; ProcessId = 50; Path = ''; CommandLine = ''; Cim = $null },
+                      [pscustomobject]@{ Name = 'copilot.exe'; ProcessId = 60; Path = 'C:\Tools\SomethingElse\copilot.exe'; CommandLine = 'copilot'; Cim = $null },
+                      [pscustomobject]@{ Name = 'browsx.exe'; ProcessId = 70; Path = 'C:\Apps\Browser Y\browsx.exe'; CommandLine = 'browsx'; Cim = $null },
+                      [pscustomobject]@{ Name = 'browsx.exe'; ProcessId = 71; Path = 'C:\Apps\Browser Y\browsx.exe'; CommandLine = 'browsx --type=renderer'; Cim = $null },
+                      [pscustomobject]@{ Name = 'browsx.exe'; ProcessId = 72; Path = 'C:\Apps\Browser Y\browsx.exe'; CommandLine = 'browsx --type=gpu'; Cim = $null })
+                }
+                Mock Get-CEProcessOwner { 'PC\paul' }
+                Mock Get-CEProcessElevation { if ($ProcessId -eq 20) { 1 } else { 0 } }
+                $st = Get-CEAIToolStateUncached -Context ([pscustomobject]@{ IsSystem = $false })
+                $byId = @{}
+                foreach ($t in $st.Tools) { $byId[$t.Id] = $t }
+                @($byId.Keys | Sort-Object) | Should -Be @('claude-code', 'claude-desktop', 'cursor', 'gemini-cli', 'github-copilot-vscode', 'ollama', 't-browser')
+                $byId['claude-desktop'].Processes.ProcessId | Should -Be 10
+                $byId['claude-desktop'].Signals | Should -Contain 'Running: claude.exe (pid 10)'
+                $byId['t-browser'].Signals | Should -Be @('Running: browsx.exe (3 processes)') -Because 'a tool that cannot act on the device has its processes counted, not listed'
+                $byId['claude-code'].Processes.ProcessId | Should -Be 20 -Because 'claude.exe is told apart by path'
+                $byId['claude-code'].Processes[0].Elevated | Should -BeTrue
+                $byId['cursor'].Signals | Should -Contain 'Installed program: Cursor (User) 1.6'
+                $byId['ollama'].Signals | Should -Contain 'Installed program: Ollama version 0.34.1'
+                @($byId['ollama'].Processes).Count | Should -Be 0
+                $byId['github-copilot-vscode'].Signals | Should -Be @('VS Code extension: github.copilot-chat-0.30.0', 'VS Code built-in extension: github.copilot-chat', 'VS Code extension: github.copilot-1.350.0')
+                $byId['gemini-cli'].Signals | Should -Contain 'Found %USERPROFILE%\.gemini'
+                $st.UninspectedProcesses | Should -Be @('claude.exe (pid 30)') -Because 'node.exe and unrelated copilot.exe are not reported'
+                Should -Invoke Get-CEProcessOwner -Times 0 -ParameterFilter { $Process.ProcessId -eq 60 }
             }
-            Mock Get-CEStorePackageName { @('Claude', 'Microsoft.Copilot', 'Microsoft.WindowsCalculator') }
-            Mock Get-CEProcessList {
-                @([pscustomobject]@{ Name = 'claude.exe'; ProcessId = 10; Path = 'C:\Program Files\WindowsApps\Claude_2.1_x64__pzs8sxrjxfjjc\app\claude.exe'; CommandLine = 'claude.exe'; Cim = $null },
-                  [pscustomobject]@{ Name = 'claude.exe'; ProcessId = 20; Path = 'C:\Users\paul\.local\bin\claude.exe'; CommandLine = 'claude'; Cim = $null },
-                  [pscustomobject]@{ Name = 'claude.exe'; ProcessId = 30; Path = ''; CommandLine = ''; Cim = $null },
-                  [pscustomobject]@{ Name = 'node.exe'; ProcessId = 40; Path = 'C:\nodejs\node.exe'; CommandLine = 'node C:\npm\node_modules\@google\gemini-cli\bundle\gemini.js'; Cim = $null },
-                  [pscustomobject]@{ Name = 'node.exe'; ProcessId = 50; Path = ''; CommandLine = ''; Cim = $null },
-                  [pscustomobject]@{ Name = 'copilot.exe'; ProcessId = 60; Path = 'C:\Tools\SomethingElse\copilot.exe'; CommandLine = 'copilot'; Cim = $null })
-            }
-            Mock Get-CEProcessOwner { 'PC\paul' }
-            Mock Get-CEProcessElevation { if ($ProcessId -eq 20) { 1 } else { 0 } }
-            $st = Get-CEAIToolStateUncached -Context ([pscustomobject]@{ IsSystem = $false })
-            $byId = @{}
-            foreach ($t in $st.Tools) { $byId[$t.Id] = $t }
-            @($byId.Keys | Sort-Object) | Should -Be @('claude-code', 'claude-desktop', 'cursor', 'gemini-cli', 'github-copilot-vscode', 'ollama')
-            $byId['claude-desktop'].Processes.ProcessId | Should -Be 10
-            $byId['claude-code'].Processes.ProcessId | Should -Be 20 -Because 'claude.exe is told apart by path'
-            $byId['claude-code'].Processes[0].Elevated | Should -BeTrue
-            $byId['cursor'].Signals | Should -Contain 'Installed program: Cursor (User) 1.6'
-            $byId['ollama'].Signals | Should -Contain 'Installed program: Ollama version 0.34.1'
-            @($byId['ollama'].Processes).Count | Should -Be 0
-            $byId['github-copilot-vscode'].Signals | Should -Be @('VS Code extension: github.copilot-chat-0.30.0', 'VS Code built-in extension: github.copilot-chat', 'VS Code extension: github.copilot-1.350.0')
-            $byId['gemini-cli'].Signals | Should -Contain 'Found %USERPROFILE%\.gemini'
-            $st.UninspectedProcesses | Should -Be @('claude.exe (pid 30)') -Because 'node.exe and unrelated copilot.exe are not reported'
-            Should -Invoke Get-CEProcessOwner -Times 0 -ParameterFilter { $Process.ProcessId -eq 60 }
+            finally { (Get-CEConfig).'ai-tools' = $orig }
         }
     }
 
@@ -2888,7 +2900,8 @@ Describe 'AI tools (UA-07, SC-09, UA-10)' {
             $md | Should -Match ([regex]::Escape('Approval (config/ai-approvals.json, SC-14): 1 approved, 1 not reviewed.'))
             $html | Should -Match "<span class='appr ok' title='Approved by A\. O&#39;Brien on "
             $html | Should -Match "<span class='appr due'[^>]*>not reviewed</span>"
-            $html | Should -Match ([regex]::Escape("It can't see AI used in a browser tab."))
+            $html | Should -Match ([regex]::Escape("Baseline finds recognised AI apps and browser extensions installed on this device. It can't see AI websites used in a browser tab."))
+            $md | Should -Match ([regex]::Escape("Baseline finds recognised AI apps and browser extensions installed on this device. It can't see AI websites used in a browser tab."))
         }
 
         It 'reads Windows signals from the windows block, and from the top level in older overrides' {

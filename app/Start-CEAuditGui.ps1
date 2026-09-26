@@ -453,7 +453,7 @@ $script:OutputRoot = $OutputRoot
               <StackPanel x:Name="AiEnvs" Margin="0,2,0,8"/>
               <TextBlock Margin="0,14,0,0"><Hyperlink x:Name="AiControlsLink">AI-related controls in Controls &#8594;</Hyperlink></TextBlock>
               <TextBlock Margin="0,18,0,0" FontSize="11.5" Foreground="{StaticResource Muted}" TextWrapping="Wrap"
-                         Text="The agents, WSL distributions and MCP servers you use live in your session. This is your posture; other users are audited in their own sessions, and SYSTEM never sees shadow AI. Credential values are never read or recorded, only where and how they are stored. Baseline finds AI installed on this device; it can't see AI used in a browser tab."/>
+                         Text="The agents, WSL distributions and MCP servers you use live in your session. This is your posture; other users are audited in their own sessions, and an audit run as SYSTEM sees only some of it (the signed-in user's browser extensions and profile folders). Credential values are never read or recorded, only where and how they are stored. Baseline finds recognised AI apps and browser extensions installed on this device; it can't see AI websites used in a browser tab."/>
             </StackPanel>
           </ScrollViewer>
         </TabItem>

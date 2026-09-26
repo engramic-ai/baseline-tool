@@ -186,7 +186,7 @@ function Export-CEMarkdown {
             else { & $w "- $($env.type): $($env.name)" }
         }
         & $w ''
-        & $w 'Baseline finds AI installed on this device. It can''t see AI used in a browser tab.'
+        & $w 'Baseline finds recognised AI apps and browser extensions installed on this device. It can''t see AI websites used in a browser tab.'
         & $w ''
         & $w '## Frameworks'
         & $w ''
@@ -420,7 +420,7 @@ function Export-CEHtml {
     $aiEmpty = if ($aiPosture.agentsFound -eq 0) { "<p class='ref'>No AI tools detected in this session.$(if ($Context.IsSystem) { ' Shadow AI is collected per user; run as the signed-in user for the full picture.' })</p>" } else { '' }
     $aiApprovals = Get-CEAIApprovalSummary -Posture $aiPosture
     $aiApprHtml = if ($aiApprovals) { "<div class='ref'>Approval (config/ai-approvals.json, SC-14): $(& $e $aiApprovals)</div>" } else { '' }
-    $aiHtml = "<h2 id='ai'>AI on this device</h2><div class='aibox'><div class='h'><strong>$($aiPosture.agentsFound) AI tool(s) found</strong><span class='dev0 $aiDevCls'>$aiDevTxt</span></div>$aiApprHtml$aiEmpty$(if ($agentsLi) { "<ul>$agentsLi</ul>" })$(if ($envLi) { "<div class='ref' style='margin-top:8px'>Where AI runs</div><ul>$envLi</ul>" })$(if ($mcpLi) { "<div class='ref' style='margin-top:8px'>MCP servers</div><ul>$mcpLi</ul>" })<p class='ref' style='margin:10px 0 0'>Baseline finds AI installed on this device. It can't see AI used in a browser tab.</p></div>"
+    $aiHtml = "<h2 id='ai'>AI on this device</h2><div class='aibox'><div class='h'><strong>$($aiPosture.agentsFound) AI tool(s) found</strong><span class='dev0 $aiDevCls'>$aiDevTxt</span></div>$aiApprHtml$aiEmpty$(if ($agentsLi) { "<ul>$agentsLi</ul>" })$(if ($envLi) { "<div class='ref' style='margin-top:8px'>Where AI runs</div><ul>$envLi</ul>" })$(if ($mcpLi) { "<div class='ref' style='margin-top:8px'>MCP servers</div><ul>$mcpLi</ul>" })<p class='ref' style='margin:10px 0 0'>Baseline finds recognised AI apps and browser extensions installed on this device. It can't see AI websites used in a browser tab.</p></div>"
 
     $applyCmd = & $e ".\app\Apply-CEChangeset.ps1 -Path '$ChangesetPath' -WhatIf"
 

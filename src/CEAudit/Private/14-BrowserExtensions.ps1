@@ -18,10 +18,13 @@ function Test-CEPlainDirectory {
 }
 
 function Test-CERelativePathText {
-    <# A relative path with no empty, '.', '..', drive or wildcard parts. #>
+    <#
+        A relative path with no empty, '.', '..', drive or wildcard parts, and no part ending in '.' or
+        a space (Windows drops those when it uses the path, so it would name a different folder).
+    #>
     param([string]$Relative)
     if (-not $Relative -or $Relative -match '^[\\/]' -or $Relative -match '[:*?"<>|]') { return $false }
-    foreach ($seg in ($Relative -split '[\\/]')) { if (-not $seg -or $seg -eq '.' -or $seg -eq '..') { return $false } }
+    foreach ($seg in ($Relative -split '[\\/]')) { if (-not $seg -or $seg -match '[. ]$') { return $false } }
     return $true
 }
 
@@ -43,11 +46,34 @@ function Test-CEPlainDirectoryChain {
     return $true
 }
 
+function Test-CEPlainProfileItem {
+    <#
+        Whether Relative names a file or folder below ProfilePath that is reached through plain
+        folders only and is not itself a junction or symbolic link. Reads attributes only: nothing
+        is opened and no link the user made is followed. ProfilePath must be on a local fixed drive.
+    #>
+    param([string]$ProfilePath, [string]$Relative)
+    if (-not $ProfilePath -or -not (Test-CELocalFilePath $ProfilePath)) { return $false }
+    if (-not (Test-CERelativePathText $Relative)) { return $false }
+    $parent = Split-Path -Parent $Relative
+    if ($parent -and -not (Test-CEPlainDirectoryChain -Base $ProfilePath -Relative $parent)) { return $false }
+    try {
+        $full = Join-Path $ProfilePath $Relative
+        $d = New-Object IO.DirectoryInfo $full
+        if ($d.Exists) { return (([int]($d.Attributes -band [IO.FileAttributes]::ReparsePoint)) -eq 0) }
+        $f = New-Object IO.FileInfo $full
+        return ($f.Exists -and ([int]($f.Attributes -band [IO.FileAttributes]::ReparsePoint)) -eq 0)
+    }
+    catch { return $false }
+}
+
 function Get-CEPlainChildName {
     <#
         Names of the plain (non-link) child directories of Path, or of its files ending in
         -Extension. Looks at no more than -Max entries. Names only: nothing is opened. Never
-        descends into a child.
+        descends into a child. Leaves out names ending in '.' or a space: Windows drops that
+        character when the name is used in a path, so 'Profile 1.' would lead into a link
+        called 'Profile 1' that was skipped here.
     #>
     param([string]$Path, [int]$Max, [string]$Extension)
     $names = New-Object System.Collections.ArrayList
@@ -59,6 +85,7 @@ function Get-CEPlainChildName {
         foreach ($i in $items) {
             if (++$seen -gt $Max) { Write-Verbose "Stopped listing $Path at $Max entries"; break }
             if (([int]($i.Attributes -band [IO.FileAttributes]::ReparsePoint)) -ne 0) { continue }
+            if ($i.Name -match '[. ]$') { continue }
             [void]$names.Add($i.Name)
         }
     }
@@ -242,6 +269,8 @@ function Get-CEBrowserExtensionList {
         }
         $profiles = 0
         foreach ($c in $candidates) {
+            # The profile folder as a path: Windows normalises it the same way the reads below will.
+            if (-not (Test-CEPlainDirectory $c.Path)) { continue }
             $extDir = Join-Path $c.Path $(if ($b.Engine -eq 'firefox') { 'extensions' } else { 'Extensions' })
             if (-not (Test-CEPlainDirectory $extDir)) { continue }
             if (++$profiles -gt $roots.MaxProfiles) { Write-Verbose "Stopped at $($roots.MaxProfiles) $($b.Name) profiles"; break }

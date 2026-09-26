@@ -45,15 +45,27 @@ function Get-CEVsCodeBuiltInExtensionDir {
     <#
         Folders holding the extensions VS Code ships with (Copilot Chat since 1.13x). The user
         installer puts them under the profile; the machine installer, which winget picks when
-        elevated, under Program Files. Only folders that exist are returned. Tests mock this.
+        elevated, under Program Files. Only folders that exist are returned; under the profile,
+        only those reached through plain folders (no junctions or symbolic links). Tests mock this.
     #>
     param([string]$ProfilePath)
+    $dirs = @()
+    # The user's own install: through plain folders only, since the user controls their profile.
+    if ($ProfilePath -and (Test-CELocalFilePath $ProfilePath)) {
+        foreach ($name in 'Microsoft VS Code', 'Microsoft VS Code Insiders') {
+            $rel = "AppData\Local\Programs\$name"
+            if (-not (Test-CEPlainDirectoryChain -Base $ProfilePath -Relative $rel)) { continue }
+            $install = Join-Path $ProfilePath $rel
+            $subs = Get-CEPlainChildName -Path $install -Max 64   # assign first: it returns ,array
+            foreach ($sub in @('resources\app\extensions') + @($subs | ForEach-Object { "$_\resources\app\extensions" })) {
+                if (Test-CEPlainDirectoryChain -Base $install -Relative $sub) { $dirs += Join-Path $install $sub }
+            }
+        }
+    }
     $installs = @()
-    if ($ProfilePath) { $installs += @('Microsoft VS Code', 'Microsoft VS Code Insiders' | ForEach-Object { Join-Path $ProfilePath "AppData\Local\Programs\$_" }) }
     foreach ($root in @($env:ProgramFiles, ${env:ProgramFiles(x86)} | Where-Object { $_ })) {
         $installs += @('Microsoft VS Code', 'Microsoft VS Code Insiders' | ForEach-Object { Join-Path $root $_ })
     }
-    $dirs = @()
     foreach ($install in ($installs | Where-Object { Test-Path -LiteralPath $_ })) {
         # Older layouts: <install>\resources\app\extensions. Since 1.13x the app lives in a
         # commit-hash subfolder: <install>\<hash>\resources\app\extensions.
@@ -182,8 +194,11 @@ function Get-CEAIToolStateUncached {
     $profilePath = Get-CEUserProfilePath -Context $Context
     $extensions = @()
     $builtIn = @()
-    if ($profilePath) {
+    if ($profilePath -and (Test-CELocalFilePath $profilePath)) {
         foreach ($folder in '.vscode\extensions', '.vscode-insiders\extensions') {
+            # Only through plain folders: the profile belongs to the user, and a SYSTEM audit must not follow their links.
+            if (-not (Test-CEPlainDirectoryChain -Base $profilePath -Relative $folder)) { continue }
+            # Names only: listing a folder does not go into its children.
             $extensions += @(Get-ChildItem -LiteralPath (Join-Path $profilePath $folder) -Directory -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
         }
     }
@@ -191,7 +206,9 @@ function Get-CEAIToolStateUncached {
     # extensions folder, in unversioned directories such as github.copilot-chat.
     $builtInDirs = Get-CEVsCodeBuiltInExtensionDir -ProfilePath $profilePath   # assign first: it returns ,array and @(...) would nest it
     foreach ($folder in $builtInDirs) {
-        $builtIn += @(Get-ChildItem -LiteralPath $folder -Directory -ErrorAction SilentlyContinue | ForEach-Object { Get-CEVsCodeBuiltInExtensionId -Folder $_.FullName })
+        $builtIn += @(Get-ChildItem -LiteralPath $folder -Directory -ErrorAction SilentlyContinue |
+            Where-Object { ([int]($_.Attributes -band [IO.FileAttributes]::ReparsePoint)) -eq 0 } |
+            ForEach-Object { Get-CEVsCodeBuiltInExtensionId -Folder $_.FullName })
     }
     # AI browser extensions: folder and file names in the user's browser profiles, only for ids in the catalog.
     $extIds = Get-CEBrowserExtensionIdSet -Catalog $catalog
@@ -216,7 +233,8 @@ function Get-CEAIToolStateUncached {
         foreach ($a in @(Get-CEObjectValue $w 'appx' @())) { if ($store -contains $a) { $signals += "Store app: $a" } }
         if ($profilePath) {
             foreach ($rel in @(Get-CEObjectValue $w 'paths' @())) {
-                if (Test-Path -LiteralPath (Join-Path $profilePath $rel)) { $signals += "Found %USERPROFILE%\$rel" }
+                # Attributes only, through plain folders: a link the user made is never followed.
+                if (Test-CEPlainProfileItem -ProfilePath $profilePath -Relative $rel) { $signals += "Found %USERPROFILE%\$rel" }
             }
         }
         foreach ($pattern in @(Get-CEObjectValue $w 'vscodeExtensions' @())) {

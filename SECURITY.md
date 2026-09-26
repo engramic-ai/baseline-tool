@@ -34,11 +34,14 @@ folders named in `config/browser-profiles.json`, including when it runs as SYSTE
 the signed-in user's profile. It never opens a file there, so it never reads browsing
 history, cookies, browser settings or extension data, and it records only extensions
 listed in `config/ai-tools.json`. It skips folders below the profile folder that are
-junctions or symbolic links. These checks are made by path, so a user who can create
-symbolic links (for example with Developer Mode on) could swap a folder for a link
-between the check and the read; a SYSTEM audit could then connect to a network share.
-The same applies to the profile folders and VS Code extensions it already lists.
-Blocking local-to-remote symbolic link evaluation by policy prevents this.
+junctions or symbolic links, and names ending in a dot or a space, which Windows would
+read as a different folder. The same rules apply when it looks for AI tools' folders in
+the profile and lists VS Code extensions there: it checks that each folder on the way is
+a plain folder, and checks the last one by its attributes only. These checks are made by
+path, so a user who can create symbolic links (for example with Developer Mode on) could
+swap a folder for a link between the check and the read; a SYSTEM audit could then
+connect to a network share. Blocking local-to-remote symbolic link evaluation by policy
+prevents this.
 
 When it finds a credential in one of those files it records **only a classification**:
 the provider, the credential type, and whether the value is held in plaintext or

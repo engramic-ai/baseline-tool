@@ -2943,7 +2943,7 @@ Describe 'AI tools (UA-07, SC-09, UA-10)' {
 
     Context 'AI browser extensions' {
         BeforeAll {
-            $global:CEOrigBrowserConfig = InModuleScope CEAudit { @{ Tools = (Get-CEConfig)['ai-tools']; Browsers = (Get-CEConfig)['browser-profiles'] } }
+            $global:CEOrigBrowserConfig = InModuleScope CEAudit { @{ Tools = (Get-CEConfig)['ai-tools']; Browsers = (Get-CEConfig)['browser-profiles']; Approvals = (Get-CEConfig)['ai-approvals'] } }
             $global:CETestExtId = @{ Claude = 'fcoeoabgfenejglbffodgkkbkcdhcgfn'; ChatGpt = 'hehggadaopoacecdllhhajmbjkdcmajg'; ChatGptEdge = 'odlomjlbamekndcpllcnffbgeohgkmjh'
                 Other = 'cjpalhdlnbpafiamejdnhcphjbkeiagm'; Early = ('a' * 32) }
             # Tools found only by their browser extensions, with real store ids.
@@ -3021,6 +3021,7 @@ Describe 'AI tools (UA-07, SC-09, UA-10)' {
                 param($O)
                 (Get-CEConfig)['ai-tools'] = $O.Tools
                 (Get-CEConfig)['browser-profiles'] = $O.Browsers
+                (Get-CEConfig)['ai-approvals'] = $O.Approvals
             }
         }
 
@@ -3046,6 +3047,28 @@ Describe 'AI tools (UA-07, SC-09, UA-10)' {
                 # The shipped file loads without anything being dropped.
                 @((Get-CEBrowserProfileRoot).Browsers).Count | Should -Be @($L.windows).Count
             }
+            foreach ($b in @($list.windows)) {
+                $prop = $b.PSObject.Properties['installed']
+                $inst = @(if ($prop -and $null -ne $prop.Value) { $prop.Value })
+                # A missing install place makes a live browser look uninstalled, and UA-07 then drops its services.
+                foreach ($i in @($inst | Where-Object { $_.base -eq 'programFiles' })) {
+                    @($inst | Where-Object { $_.base -eq 'programFilesX86' -and $_.path -eq $i.path }).Count | Should -Be 1 -Because "$($b.name) can also be installed in Program Files (x86)"
+                }
+            }
+            $names | Should -Contain 'Opera Neon Developer'
+            # A catalog 'paths' folder must not hold a browser's profiles: they stay after an uninstall, so the
+            # browser would still be reported while its extensions say it is not installed.
+            $tools = Get-Content (Join-Path $script:RepoRoot 'config\ai-tools.json') -Raw | ConvertFrom-Json
+            $roots = @($list.windows | ForEach-Object { ([string]$_.root).ToLowerInvariant() })
+            foreach ($t in @($tools.tools)) {
+                $w = $t.PSObject.Properties['windows']
+                if (-not $w -or $null -eq $w.Value -or -not $w.Value.PSObject.Properties['paths']) { continue }
+                foreach ($rel in @($w.Value.paths)) {
+                    InModuleScope CEAudit -Parameters @{ R = [string]$rel } { param($R) Test-CERelativePathText $R | Should -BeTrue -Because $R }
+                    $l = ([string]$rel).ToLowerInvariant()
+                    @($roots | Where-Object { $_ -eq $l -or $_.StartsWith("$l\") }).Count | Should -Be 0 -Because "$($t.id): $rel holds a browser's profiles"
+                }
+            }
         }
 
         It 'reads a partial browser-profiles.json override without failing' {
@@ -3068,15 +3091,17 @@ Describe 'AI tools (UA-07, SC-09, UA-10)' {
         It 'finds AI browser extensions by folder name in Chromium and Firefox profiles' {
             $p = Join-Path $TestDrive 'bx-profile'
             New-TestTree $p @(
-                "$CETestChromeData\Profile 1\Extensions\$($CETestExtId.Claude)\1.0.93_0",
-                "$CETestChromeData\Profile 1\Extensions\$($CETestExtId.Claude)\1.0.94_0",
+                "$CETestChromeData\Profile 1\Extensions\$($CETestExtId.Claude)\1.0.99_0",
+                "$CETestChromeData\Profile 1\Extensions\$($CETestExtId.Claude)\1.0.100_0",
+                "$CETestChromeData\Work Stuff\Extensions\$($CETestExtId.Claude)\2.0_0",
                 "AppData\Local\Microsoft\Edge\User Data\Default\Extensions\$($CETestExtId.ChatGptEdge)\1.26.901.11451_0",
                 "AppData\Local\Microsoft\Edge\User Data\Default\Extensions\$($CETestExtId.Other)\1.0_0",
                 'AppData\Local\Microsoft\Edge\User Data\Default\Extensions\Temp',
                 "AppData\Local\BraveSoftware\Brave-Browser\User Data\$($CETestExtId.ChatGpt)\1.0_0",
                 "AppData\Roaming\Opera Software\Opera Stable\Extensions\$($CETestExtId.Claude)\1.0_0",
                 'AppData\Roaming\Mozilla\Firefox\Profiles\ab12cd34.default-release\extensions\support@wordtune.com.xpi',
-                'AppData\Roaming\Mozilla\Firefox\Profiles\ab12cd34.default-release\extensions\x@y.xpix')
+                'AppData\Roaming\Mozilla\Firefox\Profiles\ab12cd34.default-release\extensions\x@y.xpix',
+                'AppData\Roaming\Mozilla\Firefox\Profiles\ab12cd34.Paul Work\extensions\support@wordtune.com.xpi')
             # A settings file holding a URL: it must never be opened.
             Set-Content -LiteralPath (Join-Path $p "$CETestChromeData\Profile 1\Preferences") -Value '{ "homepage": "https://secret.example/" }' -Encoding ASCII
             Set-TestBrowserConfig -Tools $CETestExtTools -Browsers $CETestBrowsers
@@ -3085,7 +3110,8 @@ Describe 'AI tools (UA-07, SC-09, UA-10)' {
 
             $claude = @(Get-TestToolById $st 't-claude')
             $claude.Count | Should -Be 1
-            $claude[0].Signals | Should -Contain "Google Chrome extension: $($CETestExtId.Claude) 1.0.94 (profile: Profile 1)"
+            $claude[0].Signals | Should -Contain "Google Chrome extension: $($CETestExtId.Claude) 1.0.100 (profile: Profile 1)" -Because 'versions are compared as numbers, not by name'
+            $claude[0].Signals | Should -Contain "Google Chrome extension: $($CETestExtId.Claude) 2.0 (profile: other)" -Because 'a profile folder name the person chose is never shown'
             $claude[0].Signals | Should -Contain "Opera extension: $($CETestExtId.Claude) 1.0 (profile: main)"
             $claude[0].LeftoverOnly | Should -BeFalse
             $claude[0].CanActOnDevice | Should -BeFalse
@@ -3095,11 +3121,14 @@ Describe 'AI tools (UA-07, SC-09, UA-10)' {
 
             $wordtune = @(Get-TestToolById $st 't-wordtune')
             $wordtune[0].Signals.GetType().IsArray | Should -BeTrue -Because 'one signal is still a list on Windows PowerShell 5.1'
-            @($wordtune[0].Signals) | Should -Be @('Mozilla Firefox add-on: support@wordtune.com (profile: default-release)')
+            @($wordtune[0].Signals).Count | Should -Be 2
+            @($wordtune[0].Signals) | Should -Contain 'Mozilla Firefox add-on: support@wordtune.com (profile: default-release)'
+            @($wordtune[0].Signals) | Should -Contain 'Mozilla Firefox add-on: support@wordtune.com (profile: other)'
 
             $all = @($st.Tools | ForEach-Object { $_.Signals }) -join "`n"
             $all | Should -Not -Match 'x@y' -Because '*.xpi also matches .xpix on Windows PowerShell 5.1, and that is filtered out'
             $all | Should -Not -Match 'secret\.example'
+            $all | Should -Not -Match 'Work Stuff|Paul Work'
             @(Get-TestBrowserMatch $p | Where-Object { $_.Id -eq $CETestExtId.Other }).Count | Should -Be 0 -Because 'only ids in the catalog are returned'
         }
 
@@ -3119,12 +3148,19 @@ Describe 'AI tools (UA-07, SC-09, UA-10)' {
             @($claude[0].Signals) | Should -Be @("Google Chrome extension: $($CETestExtId.Claude) 1.0.94 (profile: Profile 1)")
             $claude[0].LeftoverOnly | Should -BeFalse
 
-            $leftover = New-TestAITool 'Old Extension' -Service 'X' -CanAct $false -Id 'old-extension'
+            $leftover = New-TestAITool 'Old Extension' -Service 'X' -CanAct $false -Id 't-claude'
             $leftover | Add-Member -NotePropertyName LeftoverOnly -NotePropertyValue $true
             Set-TestAITools -Tools @($leftover, (New-TestAITool 'Cursor' -Service 'Cursor'))
             $f = @(Invoke-CEAuditCore -Id 'SC-14' | Where-Object Subject -eq 'Old Extension')
             $f[0].Status | Should -Be 'Warn' -Because 'a leftover changes the advice, not the status'
             $f[0].Recommendation | Should -Match '^Old Extension is only in the profile folder of a browser that is no longer installed\. Delete that folder'
+            InModuleScope CEAudit -Parameters @{ D = (Get-Date).Date.AddDays(-5).ToString('yyyy-MM-dd') } {
+                param($D)
+                (Get-CEConfig)['ai-approvals'] = ("{ `"tools`": [ { `"id`": `"t-claude`", `"decision`": `"not-approved`", `"decidedBy`": `"A. Person`", `"decidedOn`": `"$D`" } ] }" | ConvertFrom-Json)
+            }
+            $f = @(Invoke-CEAuditCore -Id 'SC-14' | Where-Object Subject -eq 'Old Extension')
+            $f[0].Status | Should -Be 'Fail'
+            $f[0].Recommendation | Should -Be 'Old Extension is only in the profile folder of a browser that is no longer installed. Delete that folder (see the evidence). If the tool is now needed, change the decision in config/ai-approvals.json instead.'
             $mfa = @(Invoke-CEAuditCore -Id 'UA-07')
             @($mfa | Where-Object Subject -eq 'X').Count | Should -Be 0 -Because 'a leftover profile does not show the service is in use'
             @($mfa | Where-Object Subject -eq 'Cursor').Count | Should -Be 1
@@ -3134,7 +3170,7 @@ Describe 'AI tools (UA-07, SC-09, UA-10)' {
             InModuleScope CEAudit {
                 $names = 'Get-CEBrowserExtensionList', 'Get-CEPlainChildName', 'Get-CEChromiumExtensionVersion', 'Test-CEPlainDirectory', 'Test-CEPlainDirectoryChain',
                     'Test-CERelativePathText', 'Get-CEBrowserProfileLabel', 'Get-CEBrowserExtensionIdSet', 'Test-CEFirefoxAddonId', 'Test-CEBrowserInstalled',
-                    'Get-CEBrowserProfileRoot', 'Format-CEBrowserExtensionEvidence', 'ConvertTo-CEBoundedInt'
+                    'Get-CEBrowserProfileRoot', 'Format-CEBrowserExtensionEvidence', 'ConvertTo-CEBoundedInt', 'Test-CEPlainProfileItem'
                 $text = @($names | ForEach-Object { (Get-Command $_ -CommandType Function).ScriptBlock.ToString() }) -join "`n"
                 $text | Should -Not -Match 'Get-Content|ReadAll|OpenRead|OpenText|OpenWrite|StreamReader|FileStream|\.Open\(|ConvertFrom-Json|Import-Csv|Select-String|Get-Item|Get-ChildItem|Test-Path|Resolve-Path|Registry|Invoke-CENative|Invoke-Expression|Start-Process|-Recurse|\[IO\.File\]|&\s*\$'
                 # Listings stay lazy: routing the enumerable through an 'if' expression would read the whole folder first.
@@ -3186,6 +3222,158 @@ Describe 'AI tools (UA-07, SC-09, UA-10)' {
             }
         }
 
+        It 'knows a browser is installed from Program Files and Program Files (x86)' {
+            $p = Join-Path $TestDrive 'bx-programfiles'
+            New-TestTree $p @("$CETestChromeData\Default\Extensions\$($CETestExtId.Claude)\1.0_0",
+                "AppData\Local\BraveSoftware\Brave-Browser\User Data\Default\Extensions\$($CETestExtId.ChatGpt)\1.0_0",
+                "AppData\Local\Microsoft\Edge\User Data\Default\Extensions\$($CETestExtId.ChatGptEdge)\1.0_0")
+            $pf = Join-Path $TestDrive 'bx-pf'
+            $pfx = Join-Path $TestDrive 'bx-pfx86'
+            New-TestTree $pf @('Google\Chrome\Application\chrome.exe')
+            New-TestTree $pfx @('BraveSoftware\Brave-Browser\Application\brave.exe')
+            Set-TestBrowserConfig -Tools $CETestExtTools -Browsers @'
+{ "windows": [
+  { "name": "Google Chrome", "engine": "chromium", "root": "AppData\\Local\\Google\\Chrome\\User Data", "installed": [ { "base": "programFiles", "path": "Google\\Chrome\\Application\\chrome.exe" } ] },
+  { "name": "Brave", "engine": "chromium", "root": "AppData\\Local\\BraveSoftware\\Brave-Browser\\User Data", "installed": [ { "base": "programFiles", "path": "BraveSoftware\\Brave-Browser\\Application\\brave.exe" }, { "base": "programFilesX86", "path": "BraveSoftware\\Brave-Browser\\Application\\brave.exe" } ] },
+  { "name": "Microsoft Edge", "engine": "chromium", "root": "AppData\\Local\\Microsoft\\Edge\\User Data", "installed": [ { "base": "programFiles", "path": "Microsoft\\Edge\\Application\\msedge.exe" }, { "base": "programFilesX86", "path": "Microsoft\\Edge\\Application\\msedge.exe" } ] }
+] }
+'@
+            $oldPf = $env:ProgramFiles
+            $oldPfx = ${env:ProgramFiles(x86)}
+            try {
+                $env:ProgramFiles = $pf
+                ${env:ProgramFiles(x86)} = $pfx
+                $m = @(Get-TestBrowserMatch $p)
+            }
+            finally {
+                $env:ProgramFiles = $oldPf
+                ${env:ProgramFiles(x86)} = $oldPfx
+            }
+            $found = @{}
+            foreach ($x in $m) { $found[$x.Browser] = $x.BrowserFound }
+            $found['Google Chrome'] | Should -BeTrue -Because 'chrome.exe is in Program Files'
+            $found['Brave'] | Should -BeTrue -Because 'brave.exe is in Program Files (x86)'
+            $found['Microsoft Edge'] | Should -BeFalse -Because 'msedge.exe is in neither'
+        }
+
+        It 'does not report Comet or Genspark from the profiles they leave behind when uninstalled' {
+            $p = Join-Path $TestDrive 'bx-comet'
+            New-TestTree $p @("AppData\Local\Perplexity\Comet\User Data\Default\Extensions\$($CETestExtId.Claude)\1.0.94_0",
+                'AppData\Local\GensparkSoftware\Genspark-Browser\User Data\Default')
+            # The shipped files, read directly so an admin's copy on this machine doesn't change the result.
+            Set-TestBrowserConfig -Tools (Get-Content (Join-Path $script:RepoRoot 'config\ai-tools.json') -Raw) -Browsers (Get-Content (Join-Path $script:RepoRoot 'config\browser-profiles.json') -Raw)
+            $st = Invoke-TestBrowserScan -ProfilePath $p
+            @(Get-TestToolById $st 'perplexity-comet').Count | Should -Be 0 -Because 'Comet is not installed'
+            @(Get-TestToolById $st 'genspark-browser').Count | Should -Be 0 -Because 'Genspark is not installed'
+            $claude = @(Get-TestToolById $st 'claude-in-chrome')
+            $claude[0].LeftoverOnly | Should -BeTrue
+            @($claude[0].Signals) | Should -Be @("Comet extension: $($CETestExtId.Claude) 1.0.94 (profile: Default; leftover: Comet is not installed)")
+
+            New-TestTree $p @('AppData\Local\Perplexity\Comet\Application\comet.exe')
+            $st = Invoke-TestBrowserScan -ProfilePath $p
+            @(Get-TestToolById $st 'perplexity-comet')[0].Signals | Should -Contain 'Found %USERPROFILE%\AppData\Local\Perplexity\Comet\Application'
+            @(Get-TestToolById $st 'claude-in-chrome')[0].LeftoverOnly | Should -BeFalse
+        }
+
+        It 'does not reach a skipped link through a folder name ending in a dot' {
+            # Windows drops a trailing dot from each part of a path, so 'Profile 1.\Extensions' is read as
+            # 'Profile 1\Extensions', through a link called 'Profile 1'.
+            Set-TestBrowserConfig -Tools $CETestExtTools -Browsers $CETestBrowsers
+            $links = New-Object System.Collections.ArrayList
+            $dotted = New-Object System.Collections.ArrayList
+            try {
+                $case = {
+                    param([string]$Name, [string]$Parent, [string]$LinkName, [string]$TargetTree)
+                    $root = Join-Path $TestDrive "bx-dot-$Name"
+                    New-TestTree (Join-Path $root 'profile') @($Parent)
+                    New-TestTree (Join-Path $root 'target') @($TargetTree)
+                    $l = Join-Path (Join-Path (Join-Path $root 'profile') $Parent) $LinkName
+                    New-Item -ItemType Junction -Path $l -Target (Join-Path $root 'target') | Out-Null
+                    [void]$links.Add($l)
+                    # A plain folder whose name ends in a dot, next to the link; only a \\?\ path can create it.
+                    [void][IO.Directory]::CreateDirectory('\\?\' + $l + '.')
+                    [void]$dotted.Add($l + '.')
+                    return (Join-Path $root 'profile')
+                }
+                $chrome = & $case 'c' $CETestChromeData 'Profile 1' "Extensions\$($CETestExtId.Claude)\1.0.94_0"
+                $firefox = & $case 'f' 'AppData\Roaming\Mozilla\Firefox\Profiles' 'abcd1234.default-release' 'extensions\support@wordtune.com.xpi'
+                foreach ($d in $dotted) { [IO.Directory]::Exists('\\?\' + $d) | Should -BeTrue }
+                @(Get-TestBrowserMatch $chrome).Count | Should -Be 0 -Because 'the Chrome profile link is reached only through the name ending in a dot'
+                @(Get-TestBrowserMatch $firefox).Count | Should -Be 0 -Because 'the Firefox profile link is reached only through the name ending in a dot'
+                InModuleScope CEAudit -Parameters @{ P = (Join-Path $chrome $CETestChromeData) } {
+                    param($P)
+                    $names = Get-CEPlainChildName -Path $P -Max 10
+                    @($names).Count | Should -Be 0
+                    Test-CERelativePathText 'a\b' | Should -BeTrue
+                    foreach ($bad in 'a.\b', 'a \b', 'a\b.', 'a\b ', '.', '..') { Test-CERelativePathText $bad | Should -BeFalse -Because $bad }
+                }
+            }
+            finally {
+                foreach ($d in $dotted) { if ([IO.Directory]::Exists('\\?\' + $d)) { [IO.Directory]::Delete('\\?\' + $d) } }
+                foreach ($l in $links) { if ([IO.Directory]::Exists($l)) { [IO.Directory]::Delete($l) } }
+            }
+        }
+
+        It 'does not follow links for AI tool profile folders or VS Code extensions' {
+            Set-TestBrowserConfig -Tools @'
+{ "schemaVersion": 2, "tools": [
+  { "id": "t-folder", "name": "Folder tool", "canActOnDevice": false, "windows": { "paths": [ "AppData\\Local\\Vendor\\Tool", ".toolrc" ] } },
+  { "id": "t-code", "name": "Code tool", "canActOnDevice": false, "windows": { "vscodeExtensions": [ "pub.ext-*" ] } }
+] }
+'@
+            $links = New-Object System.Collections.ArrayList
+            try {
+                $plain = Join-Path $TestDrive 'lk-plain'
+                New-TestTree $plain @('AppData\Local\Vendor\Tool', '.vscode\extensions\pub.ext-1.0.0')
+                Set-Content -LiteralPath (Join-Path $plain '.toolrc') -Value '' -Encoding ASCII
+                $st = Invoke-TestBrowserScan -ProfilePath $plain
+                @(Get-TestToolById $st 't-folder')[0].Signals | Should -Be @('Found %USERPROFILE%\AppData\Local\Vendor\Tool', 'Found %USERPROFILE%\.toolrc')
+                @(Get-TestToolById $st 't-code')[0].Signals | Should -Be @('VS Code extension: pub.ext-1.0.0')
+
+                $case = {
+                    # A profile whose Link folder is a junction to a target holding TargetTree.
+                    param([string]$Name, [string]$Link, [string]$TargetTree)
+                    $root = Join-Path $TestDrive "lk-$Name"
+                    New-Item -ItemType Directory -Force -Path (Join-Path $root 'profile') | Out-Null
+                    if (Split-Path -Parent $Link) { New-Item -ItemType Directory -Force -Path (Join-Path (Join-Path $root 'profile') (Split-Path -Parent $Link)) | Out-Null }
+                    New-TestTree (Join-Path $root 'target') @($TargetTree)
+                    $l = Join-Path (Join-Path $root 'profile') $Link
+                    New-Item -ItemType Junction -Path $l -Target (Join-Path $root 'target') | Out-Null
+                    [void]$links.Add($l)
+                    return (Join-Path $root 'profile')
+                }
+                $cases = @{
+                    'a folder on the way' = & $case 'a' 'AppData\Local\Vendor' 'Tool'
+                    'the folder itself'   = & $case 'b' 'AppData\Local\Vendor\Tool' 'x'
+                    'the VS Code folder'  = & $case 'c' '.vscode' 'extensions\pub.ext-1.0.0'
+                }
+                foreach ($k in $cases.Keys) {
+                    @((Invoke-TestBrowserScan -ProfilePath $cases[$k]).Tools).Count | Should -Be 0 -Because "$k is a junction"
+                }
+            }
+            finally {
+                foreach ($l in $links) { if ([IO.Directory]::Exists($l)) { [IO.Directory]::Delete($l) } }
+            }
+        }
+
+        It "looks for VS Code's built-in extensions under the profile through plain folders only" {
+            # Its own It: Invoke-TestBrowserScan mocks Get-CEVsCodeBuiltInExtensionDir for the rest of the one it runs in.
+            $links = New-Object System.Collections.ArrayList
+            try {
+                $vs = Join-Path $TestDrive 'lk-vscode'
+                New-TestTree $vs @('AppData\Local\Programs\Microsoft VS Code\abc\resources\app\extensions\copilot')
+                New-TestTree (Join-Path $TestDrive 'lk-vscode-target') @('resources\app\extensions\copilot')
+                $l = Join-Path $vs 'AppData\Local\Programs\Microsoft VS Code\def'
+                New-Item -ItemType Junction -Path $l -Target (Join-Path $TestDrive 'lk-vscode-target') | Out-Null
+                [void]$links.Add($l)
+                $dirs = InModuleScope CEAudit -Parameters @{ P = $vs } { param($P) $d = Get-CEVsCodeBuiltInExtensionDir -ProfilePath $P; $d }
+                @($dirs | Where-Object { $_.StartsWith($vs) }) | Should -Be @((Join-Path $vs 'AppData\Local\Programs\Microsoft VS Code\abc\resources\app\extensions'))
+            }
+            finally {
+                foreach ($l in $links) { if ([IO.Directory]::Exists($l)) { [IO.Directory]::Delete($l) } }
+            }
+        }
+
         It 'does not follow a directory symbolic link below the profile' {
             Set-TestBrowserConfig -Tools $CETestExtTools -Browsers $CETestBrowsers
             $root = Join-Path $TestDrive 'bx-symlink'
@@ -3220,7 +3408,7 @@ Describe 'AI tools (UA-07, SC-09, UA-10)' {
             @(Get-TestToolById $st 't-claude')[0].Signals | Should -Contain "Google Chrome extension: $($CETestExtId.Claude) 1.0 (profile: Profile 1)"
 
             $st = Invoke-TestBrowserScan -ProfilePath '' -System
-            $st.ProfileChecked | Should -BeFalse -Because 'no one is signed in'
+            $st.ProfileChecked | Should -BeFalse -Because 'no user signed in at the console was found'
             @($st.Tools).Count | Should -Be 0
 
             # A profile path on another machine is never listed.
@@ -3234,7 +3422,8 @@ Describe 'AI tools (UA-07, SC-09, UA-10)' {
             Set-TestAITools -Tools @() -ProfileChecked $false
             $f = @(Invoke-CEAuditCore -Id 'SC-14')
             $f[0].Status | Should -Be 'NotApplicable'
-            $f[0].Actual | Should -Be 'No recognised AI tools found. No one is signed in, so browser extensions and profile folders were not checked'
+            # Only the console user is found as SYSTEM, so someone signed in over Remote Desktop is not 'no one'.
+            $f[0].Actual | Should -Be 'No recognised AI tools found. No user signed in at the console was found, so browser extensions and profile folders were not checked'
         }
     }
 }

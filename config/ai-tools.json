@@ -617,7 +617,7 @@
           }
         ],
         "paths": [
-          "AppData\\Local\\Perplexity\\Comet"
+          "AppData\\Local\\Perplexity\\Comet\\Application"
         ],
         "vscodeExtensions": []
       },
@@ -689,7 +689,7 @@
           }
         ],
         "paths": [
-          "AppData\\Local\\GensparkSoftware\\Genspark-Browser"
+          "AppData\\Local\\GensparkSoftware\\Genspark-Browser\\Application"
         ],
         "vscodeExtensions": []
       },

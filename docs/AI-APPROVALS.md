@@ -63,9 +63,9 @@ It looks in the profiles of Chrome, Edge, Brave, Vivaldi, Opera, Arc, Comet, Gen
 Some limits:
 
 - **Installed is not the same as turned on.** An extension that has been turned off still counts, and so does one removed since the browser was last started.
-- **Leftover profiles.** When a browser has been uninstalled but its profile folder is still there, extensions in it are labelled a leftover. SC-14 then asks you to delete that folder, and UA-07 doesn't count it as a service in use.
-- **What isn't seen:** extensions loaded in developer mode, portable browsers, browsers started with their own user data folder, Opera side profiles, Opera Beta and Developer, Firefox forks, and Firefox profiles kept outside the usual `Profiles` folder.
-- **Whose profile.** An audit run as SYSTEM looks only at the signed-in user's profile, and at none when no one is signed in; SC-14 says so. Each user's own probe covers their profile.
+- **Leftover profiles.** When a browser has been uninstalled but its profile folder is still there, extensions in it are labelled a leftover. SC-14 then asks you to delete that folder, and UA-07 doesn't count it as a service in use. A browser counts as installed when one of the files in its `installed` list in `config/browser-profiles.json` exists, so if you add a browser that installs somewhere else, list that place too, or leave `installed` out.
+- **What isn't seen:** extensions loaded in developer mode, portable browsers, browsers started with their own user data folder, Opera side profiles, Opera Beta and Opera Developer (Opera Neon Developer is covered), Firefox forks, and Firefox profiles kept outside the usual `Profiles` folder.
+- **Whose profile.** An audit run as SYSTEM looks only at the profile of the user signed in at the console, and at none when it finds no one there; SC-14 says so. Someone signed in only over Remote Desktop (for example on Azure Virtual Desktop, a Windows 365 Cloud PC or a server) isn't found this way. Each user's own probe covers their profile.
 - **What an extension can do** (its permissions, or whether it can act on web pages by itself) isn't judged. Every recognised extension is listed as not able to act on the device.
 
 ### After upgrading

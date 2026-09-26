@@ -376,7 +376,7 @@ Register-CECheck -Id 'SC-14' -Category 'SecureConfiguration' -Severity 'Medium' 
         }
         if (-not $tools.Count) {
             $none = 'No recognised AI tools found'
-            if (-not (Get-CEObjectValue $state 'ProfileChecked' $true)) { $none += '. No one is signed in, so browser extensions and profile folders were not checked' }
+            if (-not (Get-CEObjectValue $state 'ProfileChecked' $true)) { $none += '. No user signed in at the console was found, so browser extensions and profile folders were not checked' }
             $results += New-CEResult -Status 'NotApplicable' -Expected $expected -Actual $none
             return $results
         }

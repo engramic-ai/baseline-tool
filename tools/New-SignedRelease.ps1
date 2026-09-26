@@ -23,6 +23,11 @@
     output is marked DO-NOT-PUBLISH.
 .PARAMETER SkipPreFlight
     Skip lint and tests. Only for iterating on this script itself.
+.PARAMETER Summary
+    Markdown opening the release notes, saying what this release means for someone downloading
+    it. Defaults to docs\releases\v<version>.md. Without one the notes say nothing about the release
+    beyond the commit subjects folded away at the bottom, which are written for the next developer
+    rather than for a customer, so the build warns.
 .PARAMETER ModulePath
     A folder holding Pester and PSScriptAnalyzer, passed to Invoke-PreFlight.ps1.
 .EXAMPLE
@@ -36,6 +41,7 @@ param(
     [string]$OutputPath,
     [switch]$AllowUntrustedChain,
     [switch]$SkipPreFlight,
+    [string]$Summary,
     # Passed straight to Invoke-PreFlight.ps1. Needed when Pester and PSScriptAnalyzer are kept in
     # a folder of their own rather than installed, which is how this repo pins the versions CI uses.
     [string]$ModulePath,
@@ -168,6 +174,7 @@ $thumb = if ($states.Count) { [string]$states[0].SignerCertificate.Thumbprint } 
 
 # What changed, taken from the commits since the last tag. Merges are left out: their subjects name
 # a branch, while the commits themselves say what was done.
+$summaryPath = if ($Summary) { $Summary } else { Join-Path $repo "docs\releases\v$version.md" }
 $prevTag = @(& git tag --list 'v*' --sort=-v:refname 2>$null |
         Where-Object { $_ -and $_ -ne "v$version" }) | Select-Object -First 1
 $changes = @()
@@ -182,10 +189,26 @@ $msi = @($artefacts | Where-Object { $_.Extension -eq '.msi' }) | Select-Object 
 $intuneName = [string](@($artefacts | Where-Object { $_.Extension -eq '.intunewin' }) |
         Select-Object -First 1 -ExpandProperty Name)
 Add-Note @("# Engramic Baseline $version", '')
-if ($changes.Count) {
-    Add-Note @("## What changed since $prevTag", '')
-    foreach ($c in $changes) { Add-Note @("- $c") }
+# Commit subjects are written for the next developer, not for someone deciding whether to download
+# this. A release says what it means for them, in a few sentences somebody wrote on purpose.
+# Blank lines around it are dropped by index: slicing an array down to nothing never empties it, so
+# a summary that is only a comment would otherwise loop for ever.
+$summary = @()
+if (Test-Path -LiteralPath $summaryPath) {
+    $lines = @(((Get-Content -LiteralPath $summaryPath -Raw) -replace '(?s)<!--.*?-->', '') -split "`r?`n")
+    $first = 0
+    while ($first -lt $lines.Count -and -not $lines[$first].Trim()) { $first++ }
+    $last = $lines.Count - 1
+    while ($last -ge $first -and -not $lines[$last].Trim()) { $last-- }
+    if ($first -le $last) { $summary = @($lines[$first..$last]) }
+}
+if ($summary.Count) {
+    Add-Note $summary
     Add-Note @('')
+}
+else {
+    Write-Warning ("No summary in $summaryPath, so these notes say nothing about the release beyond the commit " +
+        'subjects. Write a few sentences saying what this release means for someone downloading it.')
 }
 Add-Note @('## What to download', '', '| File | Use |', '|---|---|')
 if ($msi) {
@@ -202,6 +225,20 @@ Add-Note @('### On your own PC', '')
 if ($msi) {
     Add-Note @("Download ``$($msi.Name)`` and run it. It installs to Program Files and adds a Start menu",
         'entry. Windows will show Engramic Ltd as the publisher.', '')
+    # Anyone who has hardened their machine, including with this tool, will hit this and read it as a
+    # broken download unless we say otherwise.
+    Add-Note @('**If Windows refuses to run it** and offers no "Run anyway", the machine has SmartScreen in',
+        'block mode. That is a hardening setting, and one Baseline itself can apply. It blocks installers',
+        'Microsoft does not yet recognise, and recognition is earned through download volume over time, so',
+        'a new publisher is always unrecognised at first.', '',
+        'The installer is signed either way. The publisher named in that dialog is the proof: an unsigned',
+        'file shows "Unknown publisher" instead. To install it, clear the downloaded-from-the-internet',
+        'marker and run it again:', '',
+        '```powershell',
+        ("Unblock-File .\{0}" -f $msi.Name),
+        '```', '',
+        'Deploying across a fleet does not hit this at all, because nothing marks the package as',
+        'downloaded and the installation runs as SYSTEM.', '')
 }
 else {
     Add-Note @('Download `EngramicBaseline.zip`. Before extracting it, right-click the file, choose Properties,',
@@ -232,7 +269,13 @@ Add-Note @('## Verifying what you downloaded', '',
     'did not come from us.', '')
 Add-Note @('## Checksums', '', '```')
 foreach ($line in $sums) { Add-Note @($line) }
-Add-Note @('```', '', "Built from commit $commit on $(Get-Date -Format 'yyyy-MM-dd').")
+Add-Note @('```', '')
+if ($changes.Count) {
+    Add-Note @('<details>', "<summary>Every change since $prevTag ($($changes.Count) commits)</summary>", '')
+    foreach ($c in $changes) { Add-Note @("- $c") }
+    Add-Note @('', '</details>', '')
+}
+Add-Note @("Built from commit $commit on $(Get-Date -Format 'yyyy-MM-dd').")
 
 if (-not $publishable) {
     Add-Note @('', '## DO NOT PUBLISH', '',

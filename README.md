@@ -289,6 +289,8 @@ person's Azure login, not a workflow credential.
 Bump `ModuleVersion` in `CEAudit.psd1` and `$required` in `intune/Detect-CEChecker.ps1` together - a unit test and the
 package build both check they match - commit, then run `tools/New-SignedRelease.ps1`. It runs the same lint and tests CI
 runs, signs every shipped script, verifies the result, and prints the tag and upload commands without running them.
+Write `docs/releases/v<version>.md` first: a few sentences saying what the release means for someone downloading it,
+which open the release notes. The commit subjects are folded away at the bottom, and without a summary the build warns.
 Pushing a `v*` tag only checks that the tag agrees with the module version; it publishes nothing.
 
 ### Adding a check

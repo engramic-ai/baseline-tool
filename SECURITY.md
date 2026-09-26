@@ -69,6 +69,14 @@ steer). Then:
   that is found but not read, and reaching that limit, are reported in the evidence of
   SC-12 and FW-07.
 
+Nothing skipped under these rules is dropped silently: it is reported as found, not read,
+with the reason. An MCP client config behind a link, or stored online only, is listed in
+`mcpConfigsUnreadable` (its existence is read from the attributes of the link, which is
+not followed), and SC-13 is then Manual rather than Not applicable. To have these files
+read, run the audit without elevation while signed in as that user: the per-user probe
+runs SC-12 and SC-13, and a full non-elevated audit (`app\Invoke-CEAudit.ps1`, or the
+GUI without Restart as administrator) also runs FW-07.
+
 In the user's own non-elevated session (the per-user probe, or a standard user running
 the tool) it has no more rights than the user, so their links are followed as usual.
 

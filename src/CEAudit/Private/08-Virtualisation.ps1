@@ -274,20 +274,35 @@ function Read-CENamedVmFile {
         The path comes from a file the user controls, so it must be on a local fixed drive and, unless
         -FollowLinks (an audit in the user's own session), every folder on the way must be a plain
         folder and the file must be neither a link nor stored online only. A file that is there but
-        is not read is added to -Notes, so it is reported rather than dropped.
+        is not read is reported rather than dropped: in -Unread when only an audit with more rights
+        than the user skips it (a link, a file stored online only), and otherwise (too large, or it
+        could not be read) in -Notes. Without -Unread, both go to -Notes.
     #>
-    param([string]$Path, [string]$Product, [string]$ProfilePath, [int]$MaxBytes, [switch]$FollowLinks, [System.Collections.ArrayList]$Notes)
+    param([string]$Path, [string]$Product, [string]$ProfilePath, [int]$MaxBytes, [switch]$FollowLinks,
+        [System.Collections.ArrayList]$Notes, [System.Collections.ArrayList]$Unread)
     # Never open a path that points off this machine (an SMB path would coerce SYSTEM to authenticate).
     if (-not (Test-CELocalFilePath $Path)) { Write-Verbose "Skipping non-local $Product path $Path"; return $null }
     $why = ''
-    if (-not $FollowLinks) { $why = Get-CEFolderChainProblem -Path $Path -ProfilePath $ProfilePath }
+    if (-not $FollowLinks) {
+        $why = Get-CEFolderChainProblem -Path $Path -ProfilePath $ProfilePath
+        if (-not $why) {
+            try { $fi = New-Object IO.FileInfo $Path; if ($fi.Exists) { $why = Get-CEUserFileSkipReason -Item $fi } }
+            catch { $why = "its path could not be checked: $($_.Exception.Message)" }
+        }
+    }
+    # Skipped only because this audit has more rights than the user: their own session reads it.
+    $aboveUserSkip = [bool]$why
     $text = $null
     if (-not $why) {
         $reason = [ref]''
         $text = Read-CEBoundedText -Path $Path -MaxBytes $MaxBytes -FollowLinks:$FollowLinks -SkipReason $reason
         if ($null -eq $text) { $why = [string]$reason.Value }
     }
-    if ($why -and $why -ne 'missing' -and $null -ne $Notes) { [void]$Notes.Add("$Product virtual machine file $Path found, not read: $why") }
+    if ($why -and $why -ne 'missing') {
+        $note = "$Product virtual machine file $Path found, not read: $why"
+        if ($aboveUserSkip -and $null -ne $Unread) { [void]$Unread.Add($note) }
+        elseif ($null -ne $Notes) { [void]$Notes.Add($note) }
+    }
     return $text
 }
 
@@ -299,17 +314,32 @@ function Add-CEVmCapNote {
 }
 
 function Get-CEUnreadVmFileAdvice {
-    <# What to do about VM files an elevated or SYSTEM audit found and did not read (UnreadVmFiles). #>
-    return 'An elevated or SYSTEM audit does not open these files. Check them in the user''s own session: run the per-user probe (app\Invoke-CEUserProbe.ps1), or the tool without elevation while signed in as that user. Or move the virtual machine folder off the junction or symbolic link, make it available offline, or raise maxVmFilesPerInventory in virtualisation.json, as each note says.'
+    <#
+        What to do about VM files an elevated or SYSTEM audit found and did not read (UnreadVmFiles).
+        -MachineCheck for a Machine-scope check such as FW-07, which the per-user probe does not run:
+        only a full audit in the user's own session checks it.
+    #>
+    param([switch]$MachineCheck)
+    $how = if ($MachineCheck) {
+        'run the full audit without elevation while signed in as that user (app\Invoke-CEAudit.ps1 from a prompt that is not elevated, or the GUI without Restart as administrator)'
+    }
+    else { 'run the per-user probe (app\Invoke-CEUserProbe.ps1), or the tool without elevation while signed in as that user' }
+    return "An elevated or SYSTEM audit does not open these files. Check them in the user's own session: $how. Or move the virtual machine folder off the junction or symbolic link, make it available offline, or raise maxVmFilesPerInventory in virtualisation.json, as each note says."
+}
+
+function Get-CEVmFileNoteAdvice {
+    <# What to do about VM files that were found and not read for another reason (too large, or not readable). #>
+    return 'Check that each virtual machine file named can be read and is a VMware .vmx (up to 1 MB) or VirtualBox .vbox (up to 4 MB) file, then run the audit again.'
 }
 
 function Get-CEVMwareMachine {
     <#
         VMware Workstation/Player VMs from the user's inventory.vmls. Unless -FollowLinks (an audit in
         the user's own session), at most Get-CEVmFileCap files are read; VM files found but not read,
-        and the cap when it is reached, are added to -Notes.
+        and the cap when it is reached, are added to -Unread and -Notes as Read-CENamedVmFile says.
     #>
-    param([string]$ProfilePath, [switch]$FollowLinks, [System.Collections.ArrayList]$Notes)
+    param([string]$ProfilePath, [switch]$FollowLinks, [System.Collections.ArrayList]$Notes, [System.Collections.ArrayList]$Unread)
+    if ($null -eq $Unread) { $Unread = $Notes }
     if (-not $ProfilePath) { return ,@() }
     $text = Read-CEProfileText -ProfilePath $ProfilePath -Relative 'AppData\Roaming\VMware\inventory.vmls' -MaxBytes 1MB -FollowLinks:$FollowLinks
     if ($null -eq $text) { return ,@() }
@@ -322,8 +352,8 @@ function Get-CEVMwareMachine {
     $machines = New-Object System.Collections.ArrayList
     foreach ($p in $paths) {
         if (-not (Test-CELocalFilePath $p)) { Write-Verbose "Skipping non-local VMware path $p"; continue }
-        if (-not $FollowLinks -and ++$count -gt $cap) { Add-CEVmCapNote -Notes $Notes -Product 'VMware' -Cap $cap; break }
-        $vmx = Read-CENamedVmFile -Path $p -Product 'VMware' -ProfilePath $ProfilePath -MaxBytes 1MB -FollowLinks:$FollowLinks -Notes $Notes
+        if (-not $FollowLinks -and ++$count -gt $cap) { Add-CEVmCapNote -Notes $Unread -Product 'VMware' -Cap $cap; break }
+        $vmx = Read-CENamedVmFile -Path $p -Product 'VMware' -ProfilePath $ProfilePath -MaxBytes 1MB -FollowLinks:$FollowLinks -Notes $Notes -Unread $Unread
         if ($null -eq $vmx) { continue }
         $vm = ConvertFrom-CEVmxText -Lines @($vmx -split '\r?\n') -Path $p
         $vm | Add-Member -NotePropertyName Path -NotePropertyValue $p
@@ -335,9 +365,10 @@ function Get-CEVMwareMachine {
 function Get-CEVirtualBoxMachine {
     <#
         VirtualBox VMs registered in the user's VirtualBox.xml. Unless -FollowLinks, at most
-        Get-CEVmFileCap files are read; see Get-CEVMwareMachine for -Notes.
+        Get-CEVmFileCap files are read; see Get-CEVMwareMachine for -Notes and -Unread.
     #>
-    param([string]$ProfilePath, [switch]$FollowLinks, [System.Collections.ArrayList]$Notes)
+    param([string]$ProfilePath, [switch]$FollowLinks, [System.Collections.ArrayList]$Notes, [System.Collections.ArrayList]$Unread)
+    if ($null -eq $Unread) { $Unread = $Notes }
     if (-not $ProfilePath) { return ,@() }
     $registry = Join-Path $ProfilePath '.VirtualBox\VirtualBox.xml'
     $text = Read-CEProfileText -ProfilePath $ProfilePath -Relative '.VirtualBox\VirtualBox.xml' -MaxBytes 4MB -FollowLinks:$FollowLinks
@@ -354,8 +385,8 @@ function Get-CEVirtualBoxMachine {
             if (-not $src) { continue }
             if (-not [IO.Path]::IsPathRooted($src)) { $src = Join-Path (Split-Path -Parent $registry) $src }
             if (-not (Test-CELocalFilePath $src)) { Write-Verbose "Skipping non-local VirtualBox path $src"; continue }
-            if (-not $FollowLinks -and ++$count -gt $cap) { Add-CEVmCapNote -Notes $Notes -Product 'VirtualBox' -Cap $cap; break }
-            $vboxText = Read-CENamedVmFile -Path $src -Product 'VirtualBox' -ProfilePath $ProfilePath -MaxBytes 4MB -FollowLinks:$FollowLinks -Notes $Notes
+            if (-not $FollowLinks -and ++$count -gt $cap) { Add-CEVmCapNote -Notes $Unread -Product 'VirtualBox' -Cap $cap; break }
+            $vboxText = Read-CENamedVmFile -Path $src -Product 'VirtualBox' -ProfilePath $ProfilePath -MaxBytes 4MB -FollowLinks:$FollowLinks -Notes $Notes -Unread $Unread
             if ($null -eq $vboxText) { continue }
             try {
                 $vm = ConvertFrom-CEVboxXml -Xml $vboxText
@@ -503,8 +534,10 @@ function Get-CEVirtualisationListener {
 function Get-CEVirtualisationState {
     <#
         Everything SC-12 and FW-07 look at, gathered once per audit: HyperV, VMware, VirtualBox, Wsl,
-        WslNetworking, Containers, Listeners, Notes (what could not be checked) and UnreadVmFiles
-        (the Notes about VM files an elevated or SYSTEM audit found and did not read).
+        WslNetworking, Containers, Listeners, Notes (what could not be checked), VmFileNotes (the
+        Notes about VM files found and not read, and the maxVmFilesPerInventory limit) and
+        UnreadVmFiles (those of VmFileNotes that only an elevated or SYSTEM audit skips: a link, a
+        file stored online only, the limit; the user's own session reads them).
     #>
     param($Context)
     $cacheKey = "$($Context.ComputerName)|$($Context.AuditTime.Ticks)|$($Context.IsElevated)"
@@ -531,9 +564,10 @@ function Get-CEVirtualisationStateUncached {
     # Links in the user's profile are followed only in their own non-elevated session.
     $follow = -not (Test-CEAboveUserRights -Context $Context)
     $vmNotes = New-Object System.Collections.ArrayList
-    $vmware = Get-CEVMwareMachine -ProfilePath $profilePath -FollowLinks:$follow -Notes $vmNotes   # assign first: it returns ,array
-    $vbox = Get-CEVirtualBoxMachine -ProfilePath $profilePath -FollowLinks:$follow -Notes $vmNotes
-    $notes += @($vmNotes)
+    $vmUnread = New-Object System.Collections.ArrayList
+    $vmware = Get-CEVMwareMachine -ProfilePath $profilePath -FollowLinks:$follow -Notes $vmNotes -Unread $vmUnread   # assign first: it returns ,array
+    $vbox = Get-CEVirtualBoxMachine -ProfilePath $profilePath -FollowLinks:$follow -Notes $vmNotes -Unread $vmUnread
+    $notes += @($vmNotes) + @($vmUnread)
     return [pscustomobject]@{
         HyperV         = $hyperV
         VMware         = $vmware
@@ -543,8 +577,9 @@ function Get-CEVirtualisationStateUncached {
         Containers     = Get-CEContainer -Context $Context
         Listeners      = Get-CEVirtualisationListener
         Notes          = $notes
-        # VM files found but not read, and the maxVmFilesPerInventory limit, as an elevated or SYSTEM
-        # audit reports them (also in Notes). Only the user's own session reads these files.
-        UnreadVmFiles  = @($vmNotes)
+        # VM files found but not read for any reason, and the maxVmFilesPerInventory limit (also in Notes).
+        VmFileNotes    = @($vmNotes) + @($vmUnread)
+        # Those only an elevated or SYSTEM audit skips. Only the user's own session reads these files.
+        UnreadVmFiles  = @($vmUnread)
     }
 }

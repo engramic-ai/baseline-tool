@@ -136,6 +136,34 @@ function Test-CEPlainProfileItem {
     catch { return $false }
 }
 
+function Get-CEProfileFileLinkProblem {
+    <#
+        For a file Relative below ProfilePath, as an audit with more rights than the user sees it:
+        '' when it is there, every folder on the way to it is a plain folder and the file is not a
+        link; 'missing' when it (or a folder on the way) is not there; otherwise why it is not
+        looked at. Stops at the first link, so nothing below a link is looked up. Attributes only:
+        nothing is opened. Callers report a reason other than 'missing' as found, not read.
+    #>
+    param([string]$ProfilePath, [string]$Relative)
+    if (-not $ProfilePath -or -not (Test-CELocalFilePath $ProfilePath)) { return 'the profile folder is not on a local fixed drive' }
+    if (-not (Test-CERelativePathText $Relative)) { return 'missing' }
+    try {
+        $parts = @($Relative -split '[\\/]')
+        $p = $ProfilePath
+        for ($i = 0; $i -lt $parts.Count - 1; $i++) {
+            $p = Join-Path $p $parts[$i]
+            $d = New-Object IO.DirectoryInfo $p
+            if (-not $d.Exists) { return 'missing' }
+            if (Test-CELinkItem $d) { return "the folder $(@($parts[0..$i]) -join '\') on the way to it is a junction or symbolic link, which an elevated or SYSTEM audit does not follow" }
+        }
+        $f = New-Object IO.FileInfo (Join-Path $p $parts[$parts.Count - 1])
+        if (-not $f.Exists) { return 'missing' }
+        if (Test-CELinkItem $f) { return 'it is a junction or symbolic link, which an elevated or SYSTEM audit does not follow' }
+        return ''
+    }
+    catch { return "its path could not be checked: $($_.Exception.Message)" }
+}
+
 function Get-CEProgramFilesPath {
     <#
         The Program Files folder for an 'installed' base: programFiles is the 64-bit one, even in a

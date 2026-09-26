@@ -1325,6 +1325,10 @@ function Set-CEAiTab {
             $(if ([bool](Get-UiField $a 'canActOnDevice' $false)) { 'yes' } else { 'no' }), $(if ($count) { [string]$count } else { '-' }), $approval, '', ($elevated -or $asSystem))
     }
     $ui.AiAgentsGrid.ItemsSource = $at.DefaultView
+    # Saved results from before scanComplete existed count as complete.
+    $scanComplete = [bool](Get-UiField $Ai 'scanComplete' $true)
+    $notRead = @(Get-UiField $Ai 'notRead' @() | Where-Object { [string](Get-UiField $_ 'topic' '') -ne 'extension-version' })
+    $ui.AiAgentsEmpty.Text = if ($scanComplete) { 'No recognised AI tools found in this session.' } else { 'No AI tools confirmed: the scan is incomplete, as some locations were not read (see below).' }
     $ui.AiAgentsEmpty.Visibility = if ($agents.Count) { 'Collapsed' } else { 'Visible' }
     $ui.AiAgentsGrid.Visibility = if ($agents.Count) { 'Visible' } else { 'Collapsed' }
 
@@ -1365,7 +1369,15 @@ function Set-CEAiTab {
         }
         else { [void]$ui.AiEnvs.Children.Add((New-CEAiLine -Text "$(Get-UiField $env 'type' ''): $(Get-UiField $env 'name' '')")) }
     }
-    if (@(Get-UiField $Ai 'environments' @()).Count -eq 0) { [void]$ui.AiEnvs.Children.Add((New-CEAiLine -Text 'No VMs, WSL distributions or containers found.')) }
+    if (@(Get-UiField $Ai 'environments' @()).Count -eq 0 -and $scanComplete) { [void]$ui.AiEnvs.Children.Add((New-CEAiLine -Text 'No VMs, WSL distributions or containers found.')) }
+    if ($notRead.Count) {
+        $lines = @($notRead | ForEach-Object {
+                $count = [int](Get-UiField $_ 'count' 1)
+                "$(Get-UiField $_ 'location' '') ($(Get-UiField $_ 'kind' '')$(if ($count -gt 1) { ", $count times" })): $(Get-UiField $_ 'reason' '')"
+            })
+        $text = "Not read, so this may be incomplete: $($lines -join '; '). To read them, run the audit without elevation while signed in as that user (not with Restart as administrator)."
+        [void]$ui.AiEnvs.Children.Add((New-CEAiLine -Text $text -Bad))
+    }
 
     $userChecks = @($Findings | Where-Object { [string](Get-UiField $_ 'Scope' 'Machine') -eq 'User' } | ForEach-Object { $_.CheckId } | Sort-Object -Unique).Count
     Set-UiRichText -Block $ui.AiControlsLink -Parts @(@{ Text = "$userChecks AI-related control$(if ($userChecks -ne 1) { 's' }) in Controls " + [char]0x2192 })

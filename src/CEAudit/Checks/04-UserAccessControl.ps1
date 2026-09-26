@@ -184,9 +184,17 @@ Register-CECheck -Id 'UA-07' -Category 'UserAccessControl' -Severity 'Critical' 
         $services = @{}
         foreach ($svc in $cfg.services) { $services[$svc.name] = $svc }
         if ($ctx.EntraJoined -and -not $detected.ContainsKey('Microsoft 365 / Entra ID')) { $detected['Microsoft 365 / Entra ID'] = 'Device is Entra ID joined' }
-        # A tool found only in a leftover browser profile doesn't show the service is in use.
-        foreach ($tool in @((Get-CEAIToolState -Context $ctx).Tools | Where-Object { $_.Service -and -not (Get-CEObjectValue $_ 'LeftoverOnly' $false) })) {
+        # A tool found only in a leftover browser profile doesn't show the service is in use. One whose browser
+        # could not be checked still counts (LeftoverOnly is false then).
+        $aiState = Get-CEAIToolState -Context $ctx
+        foreach ($tool in @($aiState.Tools | Where-Object { $_.Service -and -not (Get-CEObjectValue $_ 'LeftoverOnly' $false) })) {
             if (-not $detected.ContainsKey($tool.Service)) { $detected[$tool.Service] = $tool.Name }
+        }
+        # Places in the user's profile that could not be read may hold an AI tool whose service is not listed here.
+        $notRead = Select-CENotRead -Records @(Get-CEObjectValue $aiState 'NotRead' @()) -Topics (Get-CEAIDetectionTopic)   # assign first: it returns ,array
+        if ($notRead.Count) {
+            New-CENotReadResult -Records $notRead -Scope Machine -Expected 'MFA enforced for all users and admins of every cloud service' `
+                -Consequence 'a cloud service an AI tool uses may be missing from this list'
         }
 
         $names = @(@($detected.Keys) + @($services.Keys | Where-Object { $null -ne $services[$_].mfaEnforced }) | Sort-Object -Unique)
@@ -262,8 +270,12 @@ Register-CECheck -Id 'UA-10' -Category 'UserAccessControl' -Severity 'High' -Sco
         $st = Get-CEAIToolState -Context $ctx
         $agents = @($st.Tools | Where-Object { $_.CanActOnDevice })
         $hidden = @($st.UninspectedProcesses)
+        # This check judges running processes, which are found whatever could be read in the profile, so
+        # places not read there are listed in the evidence and do not change the status.
+        $notRead = Select-CENotRead -Records @(Get-CEObjectValue $st 'NotRead' @()) -Topics (Get-CEAIDetectionTopic)   # assign first: it returns ,array
+        $notReadLines = @($notRead | ForEach-Object { "Not read in the profile: $(Format-CENotRead $_)" })
         if ($agents.Count -eq 0 -and $hidden.Count -eq 0) {
-            return New-CEResult -Status 'NotApplicable' -Actual 'No AI agents that can act on this device were found'
+            return New-CEResult -Status 'NotApplicable' -Actual 'No AI agent that can act on this device is running or was found; this check looks at running processes' -Evidence $notReadLines
         }
         $expected = 'AI agents run as a standard user, without elevation'
         $admin = @()
@@ -278,6 +290,7 @@ Register-CECheck -Id 'UA-10' -Category 'UserAccessControl' -Severity 'High' -Sco
             }
         }
         $unknown += @($hidden | ForEach-Object { "Possible AI agent $_ (path not readable)" })
+        $evidence += $notReadLines
         $running = @($agents | Where-Object { @($_.Processes).Count }).Count
 
         if ($admin.Count) {

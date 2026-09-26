@@ -151,7 +151,7 @@ function Get-CEMcpConfigCatalogue {
 
 function ConvertTo-CEMcpServers {
     <# Extracts normalised server records from one parsed config object. Reads no credential values into output. #>
-    param($Config, [string]$Root, [string]$ToolId, [string]$RelPath, [string]$AclIssue, $Patterns)
+    param($Config, [string]$Root, [string]$ToolId, [string]$RelPath, [string]$AclIssue, $Patterns, [bool]$AclUnread = $false)
 
     $records = New-Object System.Collections.ArrayList
     $rootObj = Get-CEObjectValue $Config $Root
@@ -229,9 +229,24 @@ function ConvertTo-CEMcpServers {
                 credentialCount = @($creds).Count
                 credentials     = @($creds)
                 configAclIssue  = $AclIssue
+                aclUnread       = $AclUnread
             })
     }
     return , $records.ToArray()
+}
+
+function Get-CEMcpConfigAcl {
+    <#
+        The permissions problems of an MCP config at Full, shown by its path relative to the profile
+        (Rel), never the absolute path. Unread is true when the permissions could not be read; then
+        Issue is '' (not "other users can modify it"), and no error text is kept.
+    #>
+    param([string]$Full, [string]$Rel)
+    $problems = @(Get-CEPathAclProblem -Path $Full)
+    $unread = [bool]@($problems | Where-Object { ([string]$_).StartsWith("$Full permissions could not be read", [StringComparison]::OrdinalIgnoreCase) }).Count
+    if ($unread) { return [pscustomobject]@{ Issue = ''; Unread = $true } }
+    $issue = (@($problems | ForEach-Object { ([string]$_).Replace($Full, $Rel) }) -join '; ')
+    return [pscustomobject]@{ Issue = $issue; Unread = $false }
 }
 
 function Get-CEMcpInventory {
@@ -239,11 +254,14 @@ function Get-CEMcpInventory {
         Per-user MCP inventory. In a machine / SYSTEM context, records presence,
         path and ACL only (never opens a file). Otherwise parses each config and
         classifies its credentials, storing nothing derived from a credential value.
-        When the audit has more rights than the user (SYSTEM, or elevated; see
-        Test-CEAboveUserRights), only files reached through plain folders that are
-        not links themselves are looked at, and a file stored online only is not
-        downloaded. Such a file, or a link met on the way to it, is counted as found and
-        listed in mcpConfigsUnreadable with the reason and needsUserSession = true.
+        Configs are found and read through the profile read layer (15-ProfileReads.ps1).
+        mcpConfigsUnreadable lists what could not be read, never dropped: a config
+        found and not read (kind file-content: the file is a link, a junction is on
+        the way, it is stored online only, too large, unreadable or not parseable),
+        a config whose existence could not be checked (kind existence: a symbolic
+        link on the way, which is not counted as found), and a missing or non-local
+        profile. Reasons are fixed strings, so no error text (which can quote a
+        credential) is ever recorded.
     #>
     [CmdletBinding()]
     param($Context)
@@ -253,62 +271,93 @@ function Get-CEMcpInventory {
     if ($script:CEMcpCache -and $script:CEMcpCache.Key -eq $cacheKey) { return $script:CEMcpCache.Value }
 
     $servers = New-Object System.Collections.ArrayList
-    $unreadable = New-Object System.Collections.ArrayList
+    $log = New-CENotReadLog
+    $meta = @{}
     $parsed = 0
     $found = 0
     $patterns = Get-CECredentialPatterns
     $profilePath = Get-CEUserProfilePath -Context $Context
     $machineContext = [bool]$Context.IsSystem
-    $aboveUser = Test-CEAboveUserRights -Context $Context
+    $above = Test-CEAboveUserRights -Context $Context
 
-    if ($profilePath) {
+    if (-not $profilePath) {
+        Add-CENotRead -Log $log -Location '%USERPROFILE%' -Kind 'existence' -Reason $script:CENotReadText.NoProfile -Topic 'profile' `
+            -Remedy 'Run the audit while the person who uses this device is signed in at the console.'
+    }
+    elseif (-not (Test-CEProfileReady $profilePath)) {
+        # One record for the profile, not one per catalog entry.
+        Add-CENotRead -Log $log -Location '%USERPROFILE%' -Kind 'folder-listing' -Reason $script:CENotReadText.NotLocal -Topic 'mcp' `
+            -Remedy 'Check the MCP client configs in this profile by hand.'
+    }
+    else {
         foreach ($entry in (Get-CEMcpConfigCatalogue)) {
             if (-not $entry.RelPath) { continue }
-            # With more rights than the user, reach the file through plain folders only, and not through
-            # a link, so its presence, permissions and contents are never looked up elsewhere. A link
-            # met on the way is reported as found, not read, so SC-13 does not say there is no config.
-            if ($aboveUser) {
-                $linkWhy = Get-CEProfileFileLinkProblem -ProfilePath $profilePath -Relative $entry.RelPath
-                if ($linkWhy -eq 'missing') { continue }
-                if ($linkWhy) {
-                    $found++
-                    [void]$unreadable.Add([ordered]@{ path = $entry.RelPath; toolId = $entry.ToolId; reason = "not read: $linkWhy"; needsUserSession = $true })
-                    continue
-                }
+            $rel = [string]$entry.RelPath
+            $loc = Get-CEProfileLocation $rel
+            $meta[$loc] = @{ path = $rel; toolId = [string]$entry.ToolId }
+            if (-not (Test-CERelativePathText $rel)) {
+                Add-CENotRead -Log $log -Location $loc -Kind 'existence' -Reason $script:CENotReadText.Malformed -Topic 'mcp' -Remedy 'Fix the mcpConfigs path in ai-tools.json.'
+                continue
             }
-            $full = Join-Path $profilePath $entry.RelPath
-            if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { continue }
+            $full = [IO.Path]::Combine($profilePath, $rel)
+            $parent = Split-Path -Parent $rel
+            # Existence, as for a listing: a symbolic link on the way leaves it unknown (not counted as found);
+            # a junction that passes the check lets it be seen, but its contents are never read through it.
+            $viaJunction = $false
+            if ($parent) {
+                $why = Get-CEPathChainProblem -Base $profilePath -Relative $parent -Mode Listing -Log $log -Above $above
+                if ($why -eq 'missing') { continue }
+                if ($why) { Add-CENotRead -Log $log -Location $loc -Kind 'existence' -Reason $why -Topic 'mcp' -NeedsUserSession $true; continue }
+                $viaJunction = ($above -and (Get-CEPathChainProblem -Base $profilePath -Relative $parent -Mode Content -Log $log -Above $above) -ne '')
+            }
+            $fi = New-Object IO.FileInfo $full
+            if (-not $fi.Exists) { continue }
             $found++
-            $aclIssue = ((@(Get-CEPathAclProblem -Path $full)) -join '; ')
+            $kind = if ($above) { Get-CEReparseKind -Item $fi } else { 'none' }
+            if ($viaJunction -or @('junction', 'symlink', 'surrogate', 'unreadable') -contains $kind) {
+                $reason = if ($viaJunction) { $script:CENotReadText.LinkForContent } else { $script:CENotReadText.ItemIsLink }
+                Add-CENotRead -Log $log -Location $loc -Kind 'file-content' -Reason $reason -Topic 'mcp' -NeedsUserSession $true
+                continue
+            }
 
             if ($machineContext) {
-                # Presence, path and ACL only. Do not open the file.
+                # Presence, path and ACL only. Do not open the file (a file stored online only is not downloaded either).
+                $acl = Get-CEMcpConfigAcl -Full $full -Rel $rel
                 [void]$servers.Add([ordered]@{
-                        toolId = $entry.ToolId; configPath = $entry.RelPath; serverName = ''
+                        toolId = $entry.ToolId; configPath = $rel; serverName = ''
                         transport = 'not-read'; command = ''; argsSummary = ''; endpoint = ''
-                        credentialCount = 0; credentials = @(); configAclIssue = $aclIssue
+                        credentialCount = 0; credentials = @(); configAclIssue = $acl.Issue; aclUnread = $acl.Unread
                     })
                 continue
             }
 
-            if ($aboveUser) {
-                $skip = Get-CEUserFileSkipReason -Item (New-Object IO.FileInfo $full)
-                if ($skip) { [void]$unreadable.Add([ordered]@{ path = $entry.RelPath; toolId = $entry.ToolId; reason = "not read: $skip"; needsUserSession = $true }); continue }
-            }
-            try {
-                $raw = Get-Content -LiteralPath $full -Raw -ErrorAction Stop
-                $cfg = ConvertFrom-CEJsonc -Text $raw
-                $parsed++
-                foreach ($rec in (ConvertTo-CEMcpServers -Config $cfg -Root $entry.Root -ToolId $entry.ToolId -RelPath $entry.RelPath -AclIssue $aclIssue -Patterns $patterns)) {
-                    [void]$servers.Add($rec)
-                }
-            }
+            $raw = Read-CEProfileFile -ProfilePath $profilePath -Relative $rel -MaxBytes 16MB -Log $log -Above $above -Topic 'mcp' `
+                -FileRemedy 'Check that the config file can be read, then run the audit again.'
+            if ($null -eq $raw) { continue }
+            $cfg = $null
+            try { $cfg = ConvertFrom-CEJsonc -Text $raw }
             catch {
-                [void]$unreadable.Add([ordered]@{ path = $entry.RelPath; toolId = $entry.ToolId; reason = ([string]$_.Exception.Message); needsUserSession = $false })
+                # The parser's message can quote the text it choked on, which may be a credential: only its type is kept.
+                Write-Verbose "An MCP config for $($entry.ToolId) could not be parsed ($(Get-CEErrorTypeName $_))"
+                Add-CENotRead -Log $log -Location $loc -Kind 'file-content' -Reason $script:CENotReadText.Parse -Topic 'mcp' `
+                    -Remedy 'Check that each config file named is valid JSON (the audit also accepts comments and trailing commas), then run the audit again.'
+                continue
+            }
+            $parsed++
+            $acl = Get-CEMcpConfigAcl -Full $full -Rel $rel
+            foreach ($rec in (ConvertTo-CEMcpServers -Config $cfg -Root $entry.Root -ToolId $entry.ToolId -RelPath $rel -AclIssue $acl.Issue -AclUnread $acl.Unread -Patterns $patterns)) {
+                [void]$servers.Add($rec)
             }
         }
     }
 
+    $unreadable = @(foreach ($r in (Get-CENotReadRecordArray $log)) {
+            $m = if ($meta.ContainsKey($r.Location)) { $meta[$r.Location] } else { @{ path = ''; toolId = '' } }
+            [ordered]@{
+                path = $m.path; toolId = $m.toolId; reason = $r.Reason; needsUserSession = [bool]$r.NeedsUserSession
+                location = $r.Location; kind = $r.Kind; remedy = $r.Remedy; topic = $r.Topic; count = [int]$r.Count
+            }
+        })
     $allCreds = @(@($servers) | ForEach-Object { @($_.credentials) })
     $bounds = if ($machineContext) { 'machine context: config contents not read; run per-user for parsing' }
     else { 'profile config files only; workspace .mcp.json / WSL configs not scanned' }

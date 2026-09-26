@@ -3171,6 +3171,32 @@ Describe 'Elevated audits cannot be steered by the environment or PATH' {
             }
         }
 
+        It 'runs dsregcmd only from System32 (or Sysnative), signed by Microsoft Windows' {
+            $text = Get-Content (Join-Path (Join-Path (Join-Path (Join-Path $script:RepoRoot 'src') 'CEAudit') 'Private') '02-DeviceContext.ps1') -Raw
+            $text | Should -Not -Match "-FilePath\s+'dsregcmd(\.exe)?'" -Because 'never through PATH'
+            InModuleScope CEAudit {
+                $system = [Environment]::GetFolderPath('System')
+                $sysnative = Join-Path ([Environment]::GetFolderPath('Windows')) 'Sysnative'
+                foreach ($c in @(Get-CEDsregCandidate)) {
+                    [IO.Path]::IsPathRooted($c) | Should -BeTrue
+                    (Split-Path -Parent $c) | Should -BeIn @($system, $sysnative)
+                    (Split-Path -Leaf $c) | Should -Be 'dsregcmd.exe'
+                }
+
+                Mock Resolve-CETrustedTool { [pscustomobject]@{ Path = $null; Refused = @('C:\Windows\System32\dsregcmd.exe') } }
+                (Get-CEDsregStatus).Count | Should -Be 0
+                Should -Invoke Invoke-CENative -Times 0 -Exactly
+                Should -Invoke Resolve-CETrustedTool -Times 1 -Exactly -ParameterFilter { $Publisher -contains 'Microsoft Windows' -and @($Candidate | Where-Object { $_ -notmatch 'dsregcmd\.exe$' }).Count -eq 0 }
+
+                Mock Resolve-CETrustedTool { [pscustomobject]@{ Path = 'C:\Windows\System32\dsregcmd.exe'; Refused = @() } }
+                Mock Invoke-CENative { [pscustomobject]@{ ExitCode = 0; Output = @('             AzureAdJoined : YES', '          DomainJoined : NO') } }
+                $r = Get-CEDsregStatus
+                $r['AzureAdJoined'] | Should -Be 'YES'
+                $r['DomainJoined'] | Should -Be 'NO'
+                Should -Invoke Invoke-CENative -Times 1 -Exactly -ParameterFilter { $FilePath -eq 'C:\Windows\System32\dsregcmd.exe' }
+            }
+        }
+
         It 'does not run a docker on PATH that is not signed by Docker, and notes it' {
             $savedPf = $env:ProgramFiles
             $env:ProgramFiles = Join-Path $TestDrive 'no-program-files'

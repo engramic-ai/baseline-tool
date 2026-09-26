@@ -4,12 +4,33 @@
 # likely to be overwritten by Group Policy or Intune.
 # ---------------------------------------------------------------------------
 
+function Get-CEDsregCandidate {
+    <#
+        Where dsregcmd.exe may be: System32 only, never PATH. A 32-bit process on 64-bit Windows
+        sees SysWOW64 there, which has no dsregcmd, so it also tries Sysnative.
+    #>
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param()
+    $candidates = @(Join-Path ([Environment]::GetFolderPath('System')) 'dsregcmd.exe')
+    if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess) {
+        $candidates += Join-Path (Join-Path ([Environment]::GetFolderPath('Windows')) 'Sysnative') 'dsregcmd.exe'
+    }
+    return $candidates
+}
+
 function Get-CEDsregStatus {
     [CmdletBinding()]
     param()
     $result = @{}
     try {
-        $native = Invoke-CENative -FilePath 'dsregcmd.exe' -ArgumentList @('/status')
+        # Only a copy signed by Microsoft Windows: an elevated or SYSTEM audit must not run a planted one.
+        $tool = Resolve-CETrustedTool -Candidate @(Get-CEDsregCandidate) -Publisher 'Microsoft Windows'
+        if (-not $tool.Path) {
+            Write-Verbose 'dsregcmd.exe was not found in System32 with a valid Microsoft Windows signature; join state not read.'
+            return $result
+        }
+        $native = Invoke-CENative -FilePath $tool.Path -ArgumentList @('/status')
         foreach ($line in $native.Output) {
             if ($line -match '^\s*([A-Za-z0-9]+)\s*:\s*(.+?)\s*$') {
                 if (-not $result.ContainsKey($Matches[1])) { $result[$Matches[1]] = $Matches[2] }

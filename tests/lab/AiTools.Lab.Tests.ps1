@@ -126,7 +126,7 @@ Describe 'Tool: <_>' -Tag Lab -Skip:(-not $script:lab) -ForEach $script:labToolL
         $script:row.Detected = if ($signals.Count) { 'yes' } else { 'NO' }
         $script:row.Signal = if ($signals.Count) { [string]$signals[0] } else { '-' }
         Write-Host "    signals: $($signals -join ' | ')"
-        if ($signals.Count -eq 0 -and @($script:rule[0].vscodeExtensions).Count) {
+        if ($signals.Count -eq 0 -and @($script:rule[0].windows.vscodeExtensions).Count) {
             # Say what is actually on disk for extension-based rules: user extensions and VS Code's built-ins.
             $userExt = @(Get-ChildItem -LiteralPath (Join-Path $env:USERPROFILE '.vscode\extensions') -Directory -ErrorAction SilentlyContinue | ForEach-Object Name)
             $builtIn = @(Get-ChildItem -LiteralPath (Join-Path $env:LOCALAPPDATA 'Programs\Microsoft VS Code') -Recurse -Depth 4 -Directory -Filter '*copilot*' -ErrorAction SilentlyContinue | ForEach-Object FullName)
@@ -162,7 +162,7 @@ Describe 'Tool: <_>' -Tag Lab -Skip:(-not $script:lab) -ForEach $script:labToolL
 
     It 'finds a seeded MCP config and classifies its credentials (layer 3)' {
         # ($null | ForEach-Object) still runs once, so test for the property before enumerating it.
-        $mcpProp = $script:rule[0].PSObject.Properties['mcpConfigs']
+        $mcpProp = $script:rule[0].windows.PSObject.Properties['mcpConfigs']
         $mcp = @(if ($mcpProp -and $null -ne $mcpProp.Value) { $mcpProp.Value } else { @() })
         if ($mcp.Count -eq 0) { $script:row.Mcp = 'n/a (no config rule)'; Set-ItResult -Skipped -Because 'tool has no mcpConfigs rule'; return }
         $cfg = $mcp[0]

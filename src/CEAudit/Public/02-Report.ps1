@@ -169,15 +169,24 @@ function Export-CEMarkdown {
         & $w '## AI on this device'
         & $w ''
         & $w "**$($ai.agentsFound) AI tool(s) found** - $(if ($ai.contained) { 'contained (none running as administrator, no root distribution)' } else { "$($ai.deviations) deviation(s)" })."
+        $approvals = Get-CEAIApprovalSummary -Posture $ai
+        if ($approvals) {
+            & $w ''
+            & $w "Approval (config/ai-approvals.json, SC-14): $approvals."
+        }
         & $w ''
         foreach ($a in @($ai.agents)) {
             $how = if ($a.elevated -or $a.asSystem) { '**running as administrator**' } elseif ($a.running) { 'running, standard user' } else { 'present' }
-            & $w "- $($a.name) - $how"
+            $label = Get-CEAIApprovalLabel $a.approval
+            if ($a.approval -ne 'approved') { $label = "**$label**" }
+            & $w "- $($a.name) - $how - $label"
         }
         foreach ($env in @($ai.environments)) {
             if ($env.type -eq 'wsl') { & $w "- WSL $($env.wslVersion): $($env.name) - $(if ($env.defaultUidRoot) { '**defaults to root**' } else { 'non-root' })" }
             else { & $w "- $($env.type): $($env.name)" }
         }
+        & $w ''
+        & $w 'Baseline finds AI installed on this device. It can''t see AI used in a browser tab.'
         & $w ''
         & $w '## Frameworks'
         & $w ''
@@ -387,7 +396,8 @@ function Export-CEHtml {
 
     $agentsLi = (@($aiPosture.agents) | ForEach-Object {
             $how = if ($_.elevated -or $_.asSystem) { "<span class='agent-admin'>running as administrator</span>" } elseif ($_.running) { 'running, standard user' } else { 'present' }
-            "<li>$(& $e $_.name) &mdash; $how</li>"
+            $apprCls = switch ($_.approval) { 'approved' { 'ok' } 'not-approved' { 'bad' } default { 'due' } }
+            "<li>$(& $e $_.name) &mdash; $how <span class='appr $apprCls' title='$(& $e $_.approvalDetail)'>$(Get-CEAIApprovalLabel $_.approval)</span></li>"
         }) -join ''
     $envLi = (@($aiPosture.environments) | ForEach-Object {
             if ($_.type -eq 'wsl') {
@@ -408,7 +418,9 @@ function Export-CEHtml {
     $aiDevCls = if ($aiPosture.contained) { 'ok' } else { 'bad' }
     $aiDevTxt = if ($aiPosture.contained) { 'contained' } else { "$($aiPosture.deviations) deviation(s)" }
     $aiEmpty = if ($aiPosture.agentsFound -eq 0) { "<p class='ref'>No AI tools detected in this session.$(if ($Context.IsSystem) { ' Shadow AI is collected per user; run as the signed-in user for the full picture.' })</p>" } else { '' }
-    $aiHtml = "<h2 id='ai'>AI on this device</h2><div class='aibox'><div class='h'><strong>$($aiPosture.agentsFound) AI tool(s) found</strong><span class='dev0 $aiDevCls'>$aiDevTxt</span></div>$aiEmpty$(if ($agentsLi) { "<ul>$agentsLi</ul>" })$(if ($envLi) { "<div class='ref' style='margin-top:8px'>Where AI runs</div><ul>$envLi</ul>" })$(if ($mcpLi) { "<div class='ref' style='margin-top:8px'>MCP servers</div><ul>$mcpLi</ul>" })</div>"
+    $aiApprovals = Get-CEAIApprovalSummary -Posture $aiPosture
+    $aiApprHtml = if ($aiApprovals) { "<div class='ref'>Approval (config/ai-approvals.json, SC-14): $(& $e $aiApprovals)</div>" } else { '' }
+    $aiHtml = "<h2 id='ai'>AI on this device</h2><div class='aibox'><div class='h'><strong>$($aiPosture.agentsFound) AI tool(s) found</strong><span class='dev0 $aiDevCls'>$aiDevTxt</span></div>$aiApprHtml$aiEmpty$(if ($agentsLi) { "<ul>$agentsLi</ul>" })$(if ($envLi) { "<div class='ref' style='margin-top:8px'>Where AI runs</div><ul>$envLi</ul>" })$(if ($mcpLi) { "<div class='ref' style='margin-top:8px'>MCP servers</div><ul>$mcpLi</ul>" })<p class='ref' style='margin:10px 0 0'>Baseline finds AI installed on this device. It can't see AI used in a browser tab.</p></div>"
 
     $applyCmd = & $e ".\app\Apply-CEChangeset.ps1 -Path '$ChangesetPath' -WhatIf"
 
@@ -484,6 +496,8 @@ footer { margin-top:40px; color:var(--muted); font-size:.82rem; }
 .aibox .dev0.ok { color:var(--pass); } .aibox .dev0.bad { color:var(--fail); }
 .aibox ul { margin:8px 0 0; padding-left:18px; } .aibox li { margin:2px 0; font-size:.9rem; }
 .agent-admin { color:var(--fail); font-weight:600; }
+.appr { display:inline-block; white-space:nowrap; margin-left:6px; font-size:.72rem; font-weight:600; padding:0 6px; border-radius:4px; border:1px solid currentColor; }
+.appr.ok { color:var(--pass); } .appr.bad { color:var(--fail); } .appr.due { color:var(--warn); }
 @media (max-width:640px) { .fwbar { grid-template-columns:1fr 58px; } .fwbar .frac, .fwbar .track { grid-column:1 / -1; } }
 </style>
 </head>

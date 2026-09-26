@@ -1,0 +1,5 @@
+{
+  "notes": "Your organisation's decisions on the AI tools Baseline recognises (SC-14, SC-09). Each entry: id (a tool id from ai-tools.json), decision (approved or not-approved), decidedBy, decidedOn (yyyy-MM-dd) and reason. Tools that are found but not listed are 'not reviewed'. An approval older than maxApprovalAgeDays, or without decidedBy and decidedOn, is due for review. Decisions apply to everyone on the device; to decide differently for some devices, deploy a different copy of this file to them. Put your copy in %ProgramData%\\EngramicBaseline\\config, where it replaces this one. See docs/AI-APPROVALS.md.",
+  "maxApprovalAgeDays": 365,
+  "tools": []
+}

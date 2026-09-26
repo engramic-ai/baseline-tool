@@ -10,7 +10,7 @@ Sources:
 
 **Auto-fail** marks the v3.3 questions that fail an assessment outright: MFA on cloud services, and OS/firmware (A6.4) and application (A6.5) updates within 14 days. SU-01 is also flagged because an unsupported OS cannot receive those updates.
 
-57 checks, 49 automated remediations.
+58 checks, 49 automated remediations.
 
 ## 1. Firewalls
 
@@ -41,6 +41,7 @@ Sources:
 | SC-11 | Remote Assistance and Remote Registry disabled | Low |  |  | CE v3.3, NCSC | CE v3.3 Secure configuration: remove or disable unnecessary network services. |
 | SC-12 | Virtual machines, WSL distributions and containers are treated as in-scope devices | Medium |  |  | CE v3.3, NCSC | CE v3.3 scope: virtual devices, such as virtual machines and virtual desktops, that can access organisational data or services are in scope and need the same controls as physical devices. |
 | SC-13 | AI agent credentials are not stored in plaintext configuration | High |  |  | NCSC | NCSC device security guidance (secure configuration): secrets such as API tokens should not be held in plaintext in user-writable configuration. A credential stored in clear text in an AI agent config is a secure-configuration weakness, more so when the file can be modified by other users. |
+| SC-14 | AI tools on the device have been approved | Medium |  |  | NCSC | NCSC device security guidance: control which applications can be installed and used on a device. An AI tool the organisation has not approved can send its data to a service nobody has assessed. Decisions are recorded in config/ai-approvals.json. |
 
 ## 3. Security update management
 

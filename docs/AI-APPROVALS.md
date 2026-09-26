@@ -53,6 +53,7 @@ Put your copy in `%ProgramData%\EngramicBaseline\config\ai-approvals.json`, wher
   - the counts `approved`, `approvalStale`, `unapproved` and `unreviewed`.
 
   These are separate from `contained` and `deviations`: an unapproved tool isn't a containment failure. Key a remediation or compliance rule off them deliberately.
+- **What could not be looked at:** when the audit runs as SYSTEM or elevated it doesn't follow a symbolic link in the user's profile, or open a file stored online only (see [SECURITY.md](../SECURITY.md)). Each place it skips is listed in `ai.notRead` (where, what, why and how to read it), and `ai.scanComplete` is `false` when one of them could hide an AI tool, a virtual machine or an MCP config. SC-14 is then Manual, never *Not applicable*, and the report says the list may be incomplete. `agentsFound`, `contained` and the approval counts describe only what was seen, so rely on them when `scanComplete` is `true`.
 
 ## AI browser extensions and AI browsers
 

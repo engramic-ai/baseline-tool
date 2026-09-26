@@ -5341,4 +5341,20 @@ Describe 'Profile read layer (15-ProfileReads)' {
             $script:CEVirtualisationCache = $null
         }
     }
+
+    It 'SECURITY.md says what the read layer does, and no longer what it did' {
+        $text = (Get-Content (Join-Path $script:RepoRoot 'SECURITY.md') -Raw) -replace '\s+', ' '
+        foreach ($claim in @(
+                'only after reading the junction''s target without following it',
+                'Symbolic links, other name-surrogate reparse points, and reparse points whose tag cannot be read are not followed, even for listing',
+                'are never opened through any junction or symbolic link anywhere on the path',
+                'MCP configs 16 MB',
+                'In the user''s own non-elevated session, links are followed as usual',
+                'Nothing skipped is dropped silently',
+                'more rights than the account that owns the profile')) {
+            $text | Should -Match ([regex]::Escape($claim)) -Because $claim
+        }
+        $text | Should -Not -Match 'a standard user''s links could otherwise steer'
+        $text | Should -Not -Match 'must be a plain folder, not a junction or symbolic link'
+    }
 }

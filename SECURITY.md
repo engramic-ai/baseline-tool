@@ -42,48 +42,54 @@ Chat, whose folder is just `copilot`, from the others), the VMware, VirtualBox a
 settings files (`inventory.vmls`, `VirtualBox.xml`, `.wslconfig`), and the virtual
 machine files those settings name, which are read only when they are on a local fixed
 drive. Each is read only up to a size limit (2 MB for `package.json`, with 32 MB in
-all; 1 MB or 4 MB for the others), and nothing in it is run.
+all; 1 MB or 4 MB for the others; 16 MB for an MCP client config), and nothing in it is run.
 
 ### Links in the user's profile
 
-The user controls their own profile, so the tool does not follow their links when it
-reads the profile with more rights than they have: when it runs as SYSTEM or elevated
-(including "Restart as administrator", which a standard user's links could otherwise
-steer). Then:
+The user controls their own profile, so the tool reads it under stricter rules when it
+has more rights than the account that owns the profile: when it runs as SYSTEM, or
+elevated. All of these reads go through one layer (`src/CEAudit/Private/15-ProfileReads.ps1`):
 
-- every folder on the way to a browser profile, an AI tool's folder, a VS Code
-  extensions folder, one of the files above or an MCP client config must be a plain
-  folder, not a junction or symbolic link. For the virtual machine files named in the
-  VMware and VirtualBox settings, that is every folder from the drive root, or from the
-  profile folder when the file is below it (the profile folder itself may be a link, as
-  profile containers and moved profiles are);
-- a file that is opened, or an MCP client config whose presence and permissions are
-  recorded, must not be a link itself. An AI tool's folder is found by its own
-  attributes, and a link there is not followed;
-- a file stored online only (a cloud file that is not downloaded) is not opened, so the
-  audit never makes OneDrive or another sync app download it. A cloud file that is
-  already downloaded is read as usual: only reparse points that are name surrogates
-  (junctions, symbolic links) count as links;
-- at most 64 virtual machine files named in one inventory are read
-  (`maxVmFilesPerInventory` in `config/virtualisation.json`). A virtual machine file
-  that is found but not read, and reaching that limit, are reported in the evidence of
-  SC-12 and FW-07.
-
-Nothing skipped under these rules is dropped silently: it is reported as found, not read,
-with the reason. An MCP client config behind a link, or stored online only, is listed in
-`mcpConfigsUnreadable` (its existence is read from the attributes of the link, which is
-not followed), and SC-13 is then Manual rather than Not applicable. To have these files
-read, run the audit without elevation while signed in as that user: the per-user probe
-runs SC-12 and SC-13, and a full non-elevated audit (`app\Invoke-CEAudit.ps1`, or the
-GUI without Restart as administrator) also runs FW-07.
-
-In the user's own non-elevated session (the per-user probe, or a standard user running
-the tool) it has no more rights than the user, so their links are followed as usual.
+1. It may list folder names, and check that a file or folder exists, through a
+   **junction** only after reading the junction's target without following it. The
+   target must be on a local fixed drive or a local volume, and no folder on the way to
+   it may be a symbolic link or another link the tool does not recognise. A junction can
+   only name a local volume: one whose target names a network path, directly or through
+   a drive letter mapped to one, fails to resolve ("the data present in the reparse
+   point buffer is invalid") and never connects. Listing names there shows only whether
+   folders named after catalog ids exist.
+2. **Symbolic links, other name-surrogate reparse points, and reparse points whose tag
+   cannot be read are not followed, even for listing.** With Developer Mode on, a
+   standard user can point a symbolic link at `\\server\share` and make SYSTEM, or the
+   computer account, authenticate to it. A link's own attributes are still read, so a
+   tool folder that is itself a link counts as found.
+3. **File contents** (`package.json`, `inventory.vmls`, `VirtualBox.xml`, `.wslconfig`,
+   `.vmx` and `.vbox` files, MCP client configs) are never opened through any junction or
+   symbolic link anywhere on the path, from the profile folder down (or from the drive
+   root, for a virtual machine file outside the profile), or when the file is a link
+   itself. A file or folder stored online only (a cloud file that is not downloaded) is
+   never opened or listed, so the tool never makes OneDrive or another sync app download
+   it. A cloud file that is already downloaded is read as usual.
+4. The existing limits stay: listings are capped, each file is read only up to a size
+   limit (MCP configs 16 MB), at most 64 virtual machine files named in one inventory are
+   read (`maxVmFilesPerInventory` in `config/virtualisation.json`), and a virtual machine
+   file that is not on a local fixed drive is never opened, in any session.
+5. In the user's own non-elevated session, links are followed as usual: the tool has no
+   more rights than the user there.
+6. **Nothing skipped is dropped silently.** Each location that is not read is recorded
+   with where it is (relative to the profile, as `%USERPROFILE%\...`, and a browser
+   profile by its label, never a name the person chose), what was not read, why, and how
+   to read it. The checks that depend on it (SC-09, SC-12, SC-13, SC-14, FW-07 and
+   UA-07) are then Manual, never Pass or Not applicable, and the records appear in the
+   report, the GUI and the `ai.notRead` block of `user-status.json` (with
+   `ai.scanComplete`). Machine-scope checks name a full audit without elevation, signed
+   in as that user; User-scope checks name the per-user probe. A reason is a fixed
+   string: it never contains file contents or error text.
 
 These checks are made by path, so a user who can create symbolic links (for example with
-Developer Mode on) could swap a folder or file for a link between the check and the read;
-a SYSTEM audit could then connect to a network share. Blocking local-to-remote symbolic
-link evaluation by policy prevents this.
+Developer Mode on) could swap a folder, or a folder on the way to a junction's target,
+for a link between the check and the read; a SYSTEM audit could then connect to a network
+share. Blocking local-to-remote symbolic link evaluation by policy prevents this.
 
 ### Credentials
 
@@ -96,5 +102,9 @@ referenced from an environment variable or credential manager. It never records:
 - another user's secrets from a SYSTEM / machine audit - that context records only that
   a config file is present, its path and its permissions, and never opens it. Parsing
   and credential classification happen only in the user's own session.
+
+When a config can't be parsed, only that is recorded ("it could not be parsed by the
+audit"), never the parser's message, which can quote the text it stopped at. Its
+permissions are recorded by the config's path relative to the profile.
 
 No credential is validated or sent anywhere; there are no network calls in this path.

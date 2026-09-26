@@ -1,5 +1,5 @@
 {
-  "notes": "Used by SC-12 and FW-07. toolingDistributions: WSL distributions created by container tools, listed but not warned about. portProcesses: processes that publish ports for virtual machines and containers; a listening socket they own on a non-loopback address is reported as a published port. maxVmFilesPerInventory: how many virtual machine files named in one user's VMware or VirtualBox inventory an audit run as SYSTEM or elevated reads (1 to 10000); the evidence says when it stops there.",
+  "notes": "Used by SC-12 and FW-07. toolingDistributions: WSL distributions created by container tools, listed but not warned about. portProcesses: processes that publish ports for virtual machines and containers; a listening socket they own on a non-loopback address is reported as a published port. maxVmFilesPerInventory: how many virtual machine files named in one user's VMware or VirtualBox inventory an audit run as SYSTEM or elevated reads (1 to 10000); the rest are reported in SC-12 and FW-07, which are then Manual.",
   "maxVmFilesPerInventory": 64,
   "toolingDistributions": [ "docker-desktop*", "rancher-desktop*", "podman-machine*" ],
   "portProcesses": [

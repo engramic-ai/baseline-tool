@@ -149,6 +149,80 @@ function Get-CEMcpConfigCatalogue {
     return , $out.ToArray()
 }
 
+function Get-CEUrlEndpoint {
+    <# scheme://host[:port] of an absolute URL, dropping userinfo, path, query and fragment; '' when it is not one. #>
+    param([string]$Url)
+    $parsed = $null
+    if (-not [Uri]::TryCreate($Url, [UriKind]::Absolute, [ref]$parsed)) { return '' }
+    $endpoint = '{0}://{1}' -f $parsed.Scheme, $parsed.Host
+    if ($parsed.Port -gt 0 -and -not $parsed.IsDefaultPort) { $endpoint += ':' + $parsed.Port }
+    return $endpoint
+}
+
+function Get-CEArgumentCredentialClass {
+    <#
+        Get-CECredentialClass for one command-line value. Key is the name it was given under (a
+        flag such as --api-key before it, or the KEY of KEY=value), or '' for a bare value. A name
+        is matched as _NAME with '-' and '.' read as '_', so --api-key and token=... match the key
+        names an environment variable would (*API*KEY*, *_TOKEN). The class keeps the name as written.
+    #>
+    param([string]$Key, [string]$Value, $Patterns)
+    if (-not $Key) { return (Get-CECredentialClass -Key '(argument)' -Value $Value -Patterns $Patterns) }
+    $cls = Get-CECredentialClass -Key ('_' + ($Key -replace '[-.]', '_')) -Value $Value -Patterns $Patterns
+    if ($cls) { $cls.key = $Key }
+    return $cls
+}
+
+function Get-CEMcpArgumentText {
+    <#
+        What the inventory may show of one word of an MCP server's command line, never a credential.
+        '(redacted)' for: a user name or password in it (a URL with :// then @, or user:password@host);
+        a value the classifier recognises by its prefix or by the flag it is given under (Key); a
+        KEY=value, or a ;- or &-separated part of one, whose KEY is a credential name; and anything
+        shaped like a bare token (long, without the separators a package name or a path has). A URL
+        is cut to scheme://host[:port], and any other KEY=value shows its value by the same rules.
+    #>
+    param([string]$Text, [string]$Key = '', $Patterns)
+    $sep = $Text.IndexOf('://')
+    if ($sep -ge 0 -and $Text.IndexOf('@', $sep) -gt $sep) { return '(redacted)' }
+    if ($Text -match '^[^\s/@:]+:[^\s@]*@') { return '(redacted)' }
+    if (Get-CEArgumentCredentialClass -Key $Key -Value $Text -Patterns $Patterns) { return '(redacted)' }
+    if ($Text -match '^[A-Za-z][A-Za-z0-9+.-]*://') {
+        $endpoint = Get-CEUrlEndpoint $Text
+        if ($endpoint) { return $endpoint }
+        return '(unreadable url)'
+    }
+    foreach ($part in @($Text -split '[;&]')) {
+        if ($part -match '^\s*([A-Za-z_][A-Za-z0-9_. -]*?)\s*=(.*)$' -and
+            (Get-CEArgumentCredentialClass -Key ($Matches[1] -replace ' ', '_') -Value $Matches[2] -Patterns $Patterns)) { return '(redacted)' }
+    }
+    if ($Text -match '^([A-Za-z_][A-Za-z0-9_.-]*)=(.*)$') {
+        $k = $Matches[1]; $v = $Matches[2]
+        return ('{0}={1}' -f $k, (Get-CEMcpArgumentText -Text $v -Patterns $Patterns))
+    }
+    if ($Text.Length -ge 20 -and $Text -notmatch '[\\/@.:]') { return '(redacted)' }
+    return $Text
+}
+
+function Get-CEMcpCommandName {
+    <#
+        The program an MCP server runs, by its file name only (npx, node.exe): a full path names the
+        user, and a command line written into 'command' can carry a token after the program. The
+        program is the quoted part, else the text up to the first .exe/.cmd/.bat/... (so an unquoted
+        path with spaces is kept whole), else the first word; its name goes through the same rules
+        as an argument.
+    #>
+    param([string]$Command, $Patterns)
+    $c = $Command.Trim()
+    if (-not $c) { return '' }
+    if ($c -match '^"([^"]*)"') { $prog = $Matches[1] }
+    elseif ($c -match '^(.*?\.(exe|cmd|bat|com|ps1|sh|py|js|mjs|cjs))(\s|$)') { $prog = $Matches[1] }
+    else { $prog = ($c -split '\s+', 2)[0] }
+    $leaf = ($prog.TrimEnd('\', '/') -split '[\\/]')[-1]
+    if (-not $leaf) { return '' }
+    return (Get-CEMcpArgumentText -Text $leaf -Patterns $Patterns)
+}
+
 function ConvertTo-CEMcpServers {
     <# Extracts normalised server records from one parsed config object. Reads no credential values into output. #>
     param($Config, [string]$Root, [string]$ToolId, [string]$RelPath, [string]$AclIssue, $Patterns, [bool]$AclUnread = $false)
@@ -162,37 +236,39 @@ function ConvertTo-CEMcpServers {
         $srv = $prop.Value
         if ($null -eq $srv) { continue }
 
-        $command = [string](Get-CEObjectValue $srv 'command' '')
+        $rawCommand = [string](Get-CEObjectValue $srv 'command' '')
         $url = [string](Get-CEObjectValue $srv 'url' '')
         $declared = [string](Get-CEObjectValue $srv 'type' (Get-CEObjectValue $srv 'transport' ''))
-        $transport = if ($declared) { $declared.ToLowerInvariant() } elseif ($command) { 'stdio' } elseif ($url) { 'http' } else { 'unknown' }
+        $transport = if ($declared) { $declared.ToLowerInvariant() } elseif ($rawCommand) { 'stdio' } elseif ($url) { 'http' } else { 'unknown' }
+        $command = Get-CEMcpCommandName -Command $rawCommand -Patterns $Patterns
 
-        $srvArgs = @(Get-CEObjectValue $srv 'args' @())
+        # Each argument with the name it is given under: the flag before it (--api-key VALUE) or its own
+        # KEY= (KEY=VALUE, --key=VALUE), so a credential passed either way is classified and never shown.
+        $srvArgs = @(@(Get-CEObjectValue $srv 'args' @()) | ForEach-Object { [string]$_ })
+        $argItems = New-Object System.Collections.ArrayList
+        $flag = ''
+        foreach ($a in $srvArgs) {
+            $key = ''; $value = $a
+            if ($a -match '^-{1,2}([A-Za-z0-9][A-Za-z0-9_.-]*)=(.*)$' -or $a -match '^([A-Za-z_][A-Za-z0-9_.-]*)=(.*)$') { $key = $Matches[1]; $value = $Matches[2] }
+            elseif ($flag -and -not $a.StartsWith('-')) { $key = $flag }
+            [void]$argItems.Add([pscustomobject]@{ Text = $a; Key = $key; Value = $value; FlagValue = ($key -and $key -eq $flag) })
+            $flag = if ($a -match '^-{1,2}([A-Za-z0-9][A-Za-z0-9_.-]*)$') { $Matches[1] } else { '' }
+        }
         # The summary names the package a server runs, and must never carry the secret next to it:
         # "npx -y @scope/server sk-live-..." would otherwise put the token in status.json and the report.
-        # Anything the classifier recognises is redacted, as is anything shaped like a bare token
-        # (long, and without the separators a package name or a path would have).
-        $pkg = @($srvArgs |
-            Where-Object { $_ -and -not ([string]$_).StartsWith('-') } |
+        $pkg = @($argItems |
+            Where-Object { $_.Text -and -not $_.Text.StartsWith('-') } |
             Select-Object -First 2 |
-            ForEach-Object {
-                $a = [string]$_
-                if (Get-CECredentialClass -Key '(argument)' -Value $a -Patterns $Patterns) { '(redacted)' }
-                elseif ($a.Length -ge 20 -and $a -notmatch '[\\/@.:]') { '(redacted)' }
-                else { $a }
-            })
+            ForEach-Object { Get-CEMcpArgumentText -Text $_.Text -Key $(if ($_.FlagValue) { $_.Key } else { '' }) -Patterns $Patterns })
         $argsSummary = ($pkg -join ' ')
         # Keep scheme, host and port only. Userinfo is a credential, and a path segment is a common
         # place to put a session token, so neither is recorded.
         $endpoint = ''
         if ($url) {
+            $endpoint = Get-CEUrlEndpoint $url
             $parsed = $null
-            if ([Uri]::TryCreate($url, [UriKind]::Absolute, [ref]$parsed)) {
-                $endpoint = '{0}://{1}' -f $parsed.Scheme, $parsed.Host
-                if (-not $parsed.IsDefaultPort) { $endpoint += ':' + $parsed.Port }
-                if ($parsed.AbsolutePath -and $parsed.AbsolutePath -ne '/') { $endpoint += '/...' }
-            }
-            else { $endpoint = '(unreadable url)' }
+            if (-not $endpoint) { $endpoint = '(unreadable url)' }
+            elseif ([Uri]::TryCreate($url, [UriKind]::Absolute, [ref]$parsed) -and $parsed.AbsolutePath -and $parsed.AbsolutePath -ne '/') { $endpoint += '/...' }
         }
 
         $creds = New-Object System.Collections.ArrayList
@@ -212,9 +288,9 @@ function ConvertTo-CEMcpServers {
                 if ($cls) { [void]$creds.Add($cls) }
             }
         }
-        # argument values that are themselves credential-shaped
-        foreach ($a in $srvArgs) {
-            $cls = Get-CECredentialClass -Key '(argument)' -Value ([string]$a) -Patterns $Patterns
+        # argument values that are credentials: by their prefix, or by the flag or KEY= they are given under
+        foreach ($item in $argItems) {
+            $cls = Get-CEArgumentCredentialClass -Key $item.Key -Value $item.Value -Patterns $Patterns
             if ($cls) { [void]$creds.Add($cls) }
         }
 

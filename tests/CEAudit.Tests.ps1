@@ -33,7 +33,7 @@ BeforeAll {
         [CmdletBinding()]
         param(
             [Parameter(Position = 0)]$Name, $ClassName, $Namespace, $FeatureName, $PolicyStore, $MountPoint,
-            $Direction, $Enabled, $Action, $SID, $ListLog, $TaskPath, $TaskName, $VMName, $State, [switch]$Online, [switch]$Effective, [switch]$Xml,
+            $Direction, $Enabled, $Action, $SID, $ListLog, $TaskPath, $TaskName, $VMName, $VM, $State, [switch]$Online, [switch]$Effective, [switch]$Xml,
             [Parameter(ValueFromPipeline)]$InputObject,
             [Parameter(ValueFromRemainingArguments)]$Rest
         )
@@ -2541,18 +2541,110 @@ Describe 'Virtual machines, WSL and containers (SC-12, FW-07)' {
 
         It 'Hyper-V: needs elevation, and reports VMs on external switches and NAT mappings' {
             InModuleScope CEAudit {
+                Mock Get-Service { [pscustomobject]@{ Name = 'vmms'; Status = 'Running' } }
                 Mock Get-Command { [pscustomobject]@{ Name = $Name } } -ParameterFilter { $Name -in 'Get-VM', 'Get-NetNatStaticMapping' }
                 (Get-CEHyperVMachine -Context ([pscustomobject]@{ IsElevated = $false })).Readable | Should -BeFalse
                 Mock Get-VMSwitch { @([pscustomobject]@{ Name = 'External LAN'; SwitchType = 'External' }, [pscustomobject]@{ Name = 'Default Switch'; SwitchType = 'Internal' }) }
                 Mock Get-VM { @([pscustomobject]@{ Name = 'Server'; State = 'Running' }, [pscustomobject]@{ Name = 'Test'; State = 'Off' }) }
-                Mock Get-VMNetworkAdapter { if ($VMName -eq 'Server') { [pscustomobject]@{ SwitchName = 'External LAN' } } else { [pscustomobject]@{ SwitchName = 'Default Switch' } } }
+                # -RemoveParameterType: where the Hyper-V module is installed, -VM takes only its VirtualMachine objects.
+                Mock Get-VMNetworkAdapter { if ($VM.Name -eq 'Server') { [pscustomobject]@{ SwitchName = 'External LAN' } } else { [pscustomobject]@{ SwitchName = 'Default Switch' } } } -RemoveParameterType 'VM'
                 Mock Get-NetNatStaticMapping { [pscustomobject]@{ Protocol = 'TCP'; ExternalIPAddress = '0.0.0.0'; ExternalPort = 3389; InternalIPAddress = '172.20.0.5'; InternalPort = 3389 } }
                 $h = Get-CEHyperVMachine -Context ([pscustomobject]@{ IsElevated = $true })
                 $h.Readable | Should -BeTrue
                 ($h.Machines | Where-Object Name -eq 'Server').ExternalSwitches | Should -Be @('External LAN')
                 @(($h.Machines | Where-Object Name -eq 'Test').ExternalSwitches).Count | Should -Be 0
                 $h.NatMappings | Should -Be @('TCP 0.0.0.0:3389 -> 172.20.0.5:3389')
+                @($h.NotRead).Count | Should -Be 0
+                # Each VM's adapters are asked for by the VM itself, not by a name that is a wildcard pattern.
+                Should -Invoke Get-VMNetworkAdapter -Times 2 -Exactly -ParameterFilter { $null -ne $VM -and $null -eq $VMName }
             }
+        }
+
+        It 'Hyper-V: is listed only where the platform is, whether or not its PowerShell module is' {
+            # Every branch: the platform is the vmms service; the module is Get-VM. Nothing else is a Pass without looking.
+            $r = InModuleScope CEAudit {
+                $elevated = [pscustomobject]@{ IsElevated = $true }
+                $script:hvCmds = @()
+                Mock Get-Command { if ($script:hvCmds -contains $Name) { [pscustomobject]@{ Name = $Name } } }
+                Mock Get-VMSwitch { @() }
+                Mock Get-VM { @([pscustomobject]@{ Name = 'Server'; State = 'Running' }) }
+                Mock Get-VMNetworkAdapter { [pscustomobject]@{ SwitchName = 'Default Switch' } } -RemoveParameterType 'VM'
+                $out = [ordered]@{}
+                # No module, no platform: nothing to list.
+                Mock Get-Service { throw [System.Management.Automation.ErrorRecord]::new([Exception]::new('no such service'), 'NoServiceFoundForGivenName,Microsoft.PowerShell.Commands.GetServiceCommand', 'ObjectNotFound', 'vmms') }
+                $out.NoneNone = Get-CEHyperVMachine -Context $elevated
+                # Module, no platform (an admin workstation with the management tools): nothing to list, even if listing would throw.
+                $script:hvCmds = @('Get-VM')
+                Mock Get-VMSwitch { throw 'The Hyper-V Virtual Machine Management service is not running' }
+                $out.ModuleOnly = Get-CEHyperVMachine -Context $elevated
+                $out.ModuleOnlyUser = Get-CEHyperVMachine -Context ([pscustomobject]@{ IsElevated = $false })
+                # Platform, no module (Server installed without its management tools): not read, never none.
+                Mock Get-Service { [pscustomobject]@{ Name = 'vmms'; Status = 'Running' } }
+                $script:hvCmds = @()
+                $out.PlatformOnly = Get-CEHyperVMachine -Context $elevated
+                # Platform and module, listing throws: not read.
+                $script:hvCmds = @('Get-VM')
+                $out.Throws = Get-CEHyperVMachine -Context $elevated
+                # Platform and module, listing works: the machines.
+                Mock Get-VMSwitch { @() }
+                $out.Lists = Get-CEHyperVMachine -Context $elevated
+                # A service manager that can't be asked counts as the platform being there.
+                Mock Get-Service { throw 'Access is denied' }
+                $script:hvCmds = @()
+                $out.Unknown = Get-CEHyperVMachine -Context $elevated
+                $out.Records = @(foreach ($k in 'NoneNone', 'ModuleOnly', 'ModuleOnlyUser', 'PlatformOnly', 'Throws', 'Lists') {
+                        $log = New-CENotReadLog
+                        Add-CEHyperVNotRead -Log $log -HyperV $out[$k]
+                        $recs = Get-CENotReadRecordArray $log   # assign first: it returns ,array
+                        "${k}:" + (@($recs | ForEach-Object { "$($_.Topic)|$($_.Reason)" }) -join ',')
+                    })
+                $out
+            }
+            foreach ($k in 'NoneNone', 'ModuleOnly', 'ModuleOnlyUser') {
+                $r[$k].Readable | Should -BeTrue -Because $k
+                @($r[$k].Machines).Count | Should -Be 0 -Because $k
+            }
+            $r.PlatformOnly.Readable | Should -BeFalse
+            $r.PlatformOnly.Reason | Should -Match 'without its PowerShell module'
+            $r.PlatformOnly.Remedy | Should -Match 'Install the Hyper-V PowerShell module'
+            $r.PlatformOnly.Remedy | Should -Match 'list the VMs by hand'
+            $r.PlatformOnly.Message | Should -Match 'could not be listed'
+            $r.Throws.Readable | Should -BeFalse
+            $r.Throws.Reason | Should -Be 'it could not be read (RuntimeException)'
+            $r.Lists.Readable | Should -BeTrue
+            @($r.Lists.Machines | ForEach-Object Name) | Should -Be @('Server')
+            $r.Unknown.Readable | Should -BeFalse -Because 'a platform that could not be ruled out is not passed over'
+            $r.Records | Should -Be @(
+                'NoneNone:', 'ModuleOnly:', 'ModuleOnlyUser:',
+                'PlatformOnly:hyperv|Hyper-V is installed without its PowerShell module, so the audit cannot list them',
+                'Throws:hyperv|it could not be read (RuntimeException)',
+                'Lists:')
+        }
+
+        It 'Hyper-V: records a VM whose adapters, and NAT mappings that, could not be read' {
+            $h = InModuleScope CEAudit {
+                Mock Get-Service { [pscustomobject]@{ Name = 'vmms'; Status = 'Running' } }
+                Mock Get-Command { [pscustomobject]@{ Name = $Name } } -ParameterFilter { $Name -in 'Get-VM', 'Get-NetNatStaticMapping' }
+                Mock Get-VMSwitch { @([pscustomobject]@{ Name = 'External LAN'; SwitchType = 'External' }) }
+                Mock Get-VM { @([pscustomobject]@{ Name = 'Web[1]'; State = 'Running' }, [pscustomobject]@{ Name = 'Lab'; State = 'Off' }) }
+                Mock Get-VMNetworkAdapter { if ($VM.Name -eq 'Web[1]') { throw 'Access denied on C:\ProgramData\Microsoft\Windows\Hyper-V' } else { [pscustomobject]@{ SwitchName = 'Default Switch' } } } -RemoveParameterType 'VM'
+                Mock Get-NetNatStaticMapping { throw 'WinNAT failed' }
+                $hv = Get-CEHyperVMachine -Context ([pscustomobject]@{ IsElevated = $true })
+                $log = New-CENotReadLog
+                Add-CEHyperVNotRead -Log $log -HyperV $hv
+                $recs = Get-CENotReadRecordArray $log   # assign first: it returns ,array
+                [pscustomobject]@{ HyperV = $hv; Records = $recs }
+            }
+            $h.HyperV.Readable | Should -BeTrue
+            @($h.HyperV.Machines | ForEach-Object Name) | Should -Be @('Web[1]', 'Lab')
+            @($h.Records | ForEach-Object { "$($_.Topic)|$($_.Location)|$($_.Reason)" }) | Should -Be @(
+                "hyperv|Hyper-V virtual machine 'Web[1]'|its network adapters could not be read (RuntimeException)",
+                'hyperv|NAT port mappings|they could not be read (RuntimeException)')
+            ($h | ConvertTo-Json -Depth 6) | Should -Not -Match 'ProgramData|WinNAT'
+            # FW-07 is then Manual, not a Pass, with nothing found exposed.
+            $st = New-TestVirtState -HyperV @($h.HyperV.Machines) -NotRead @($h.Records)
+            Set-TestVirt $st
+            @(& $script:run 'FW-07' | ForEach-Object Status) | Should -Be @('Manual')
         }
 
         It 'listening ports: only known publishing processes, flagged when not on loopback' {
@@ -2683,6 +2775,7 @@ Describe 'Virtual machines, WSL and containers (SC-12, FW-07)' {
                 Mock Get-CEWslDistribution { , @() }
                 Mock Get-CEContainer { , @() }
                 Mock Get-CEVirtualisationListener { , @() }
+                Mock Get-Service { [pscustomobject]@{ Name = 'vmms'; Status = 'Running' } }
                 Mock Get-Command { [pscustomobject]@{ Name = 'Get-VM' } }
                 Mock Get-VMSwitch { throw 'The operation failed on C:\ProgramData\Microsoft\Windows\Hyper-V' }
                 $ctx = { param([bool]$Elevated) [pscustomobject]@{ ComputerName = 'HV'; AuditTime = (Get-Date); IsElevated = $Elevated; IsSystem = $false; ConsoleUserSid = $null } }
@@ -4668,6 +4761,72 @@ Describe 'MCP inventory never records a credential value' {
             $cfg = ConvertFrom-CEJsonc -Text '{ "mcpServers": { "s": { "command": "run", "args": ["QWERTYUIOPASDFGHJKLZXCVBNM123456"] } } }'
             $recs = @(ConvertTo-CEMcpServers -Config $cfg -Root 'mcpServers' -ToolId 't' -RelPath 'x' -AclIssue '' -Patterns (Get-CECredentialPatterns))
             $recs[0].argsSummary | Should -Be '(redacted)'
+        }
+    }
+
+    Context 'credentials in arguments and the command' {
+        BeforeAll {
+            # Each secret is a canary no output may contain: connection strings with passwords, a
+            # credential-named KEY=value, a value after a credential-named flag, and a token in the command.
+            $global:CETestMcpSecrets = @('S3cretPG', 'R3disPass', 'M0ngoPass', 'kvS3cretTok', 'fl4gS3cret', 'Qu3ryPass', 'CmdT0ken', 'C0nnStrPass', 'alice')
+            $servers = [ordered]@{
+                leakpg    = @{ command = 'npx'; args = @('-y', '@pkg/server-postgres', 'postgresql://app:S3cretPG@db.internal/prod') }
+                leakredis = @{ command = 'npx'; args = @('-y', '@pkg/redis', 'redis://:R3disPass@cache.internal:6380') }
+                leakmongo = @{ command = 'npx'; args = @('mongodb+srv://user:M0ngoPass@cluster0.example.net/db?retryWrites=true', '@pkg/mongo') }
+                leakkv    = @{ command = 'uvx'; args = @('serve', 'API_TOKEN=kvS3cretTok') }
+                leakflag  = @{ command = 'node'; args = @('--api-key', 'fl4gS3cret', 'server.js') }
+                leakquery = @{ command = 'npx'; args = @('@pkg/pg', 'postgresql://db.internal:5433/prod?password=Qu3ryPass') }
+                leakcmd   = @{ command = 'C:\Users\alice\tools\mcp-server.exe --token ghp_CmdT0ken0000000000000000000000000000' }
+                leakconn  = @{ command = 'dotnet'; args = @('Mcp.dll', 'Server=db;Password=C0nnStrPass') }
+            }
+            $global:CETestMcpLeakJson = ([ordered]@{ mcpServers = $servers } | ConvertTo-Json -Depth 5)
+            $global:CETestMcpLeakDir = Join-Path $TestDrive 'mcp-leak-profile'
+            New-Item -ItemType Directory -Force -Path $global:CETestMcpLeakDir | Out-Null
+            $global:CETestMcpLeakJson | Set-Content -LiteralPath (Join-Path $global:CETestMcpLeakDir '.claude.json') -Encoding ascii
+        }
+
+        It 'shows no password, token or user name, only the program and scheme://host[:port]' {
+            $recs = InModuleScope CEAudit -Parameters @{ J = $global:CETestMcpLeakJson } {
+                param($J)
+                @(ConvertTo-CEMcpServers -Config (ConvertFrom-CEJsonc -Text $J) -Root 'mcpServers' -ToolId 't' -RelPath 'x' -AclIssue '' -Patterns (Get-CECredentialPatterns))
+            }
+            $json = $recs | ConvertTo-Json -Depth 6
+            foreach ($c in $global:CETestMcpSecrets) { $json | Should -Not -Match $c -Because "'$c' is a credential or names the user" }
+            $by = @{}; foreach ($r in $recs) { $by[$r.serverName] = $r }
+            $by.leakpg.argsSummary | Should -Be '@pkg/server-postgres (redacted)'
+            $by.leakredis.argsSummary | Should -Be '@pkg/redis (redacted)'
+            $by.leakmongo.argsSummary | Should -Be '(redacted) @pkg/mongo'
+            $by.leakkv.argsSummary | Should -Be 'serve (redacted)'
+            $by.leakflag.argsSummary | Should -Be '(redacted) server.js'
+            $by.leakquery.argsSummary | Should -Be '@pkg/pg postgresql://db.internal:5433'
+            $by.leakconn.argsSummary | Should -Be 'Mcp.dll (redacted)'
+            $by.leakcmd.command | Should -Be 'mcp-server.exe'
+            $by.leakpg.command | Should -Be 'npx'
+            # A credential given under its name is classified as one, by that name.
+            @($by.leakkv.credentials | ForEach-Object { "$($_.key)|$($_.storage)" }) | Should -Be @('API_TOKEN|plaintext-config')
+            @($by.leakflag.credentials | ForEach-Object { "$($_.key)|$($_.type)" }) | Should -Be @('api-key|api-key')
+        }
+
+        It 'keeps them out of user-status data and the report' {
+            $inv = InModuleScope CEAudit -Parameters @{ P = $global:CETestMcpLeakDir } {
+                param($P)
+                $script:testMcpLeakDir = $P
+                Mock Get-CEUserProfilePath { $script:testMcpLeakDir }
+                Get-CEMcpInventory -Context ([pscustomobject]@{ ComputerName = 'LEAK'; AuditTime = (Get-Date); IsElevated = $false; IsSystem = $false; ConsoleUserSid = $null })
+            }
+            @($inv.mcpServers).Count | Should -Be 8
+            $global:CETestMcpLeakInv = $inv
+            Set-TestDevice 'Secure'
+            Mock -ModuleName CEAudit Get-CEMcpInventory { $global:CETestMcpLeakInv }
+            $out = Join-Path $TestDrive 'mcp-leak-report'
+            $r = Export-CEReport -Findings @(Invoke-CEAuditCore -Id 'SC-14') -Context (New-TestContext) -OutputPath $out
+            $ai = InModuleScope CEAudit { Get-CEAiPosture -Context (Get-CEDeviceContext) }
+            $texts = @(($inv | ConvertTo-Json -Depth 12), ($ai | ConvertTo-Json -Depth 12)) +
+                @(Get-ChildItem -LiteralPath $out -Recurse -File | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw })
+            (Get-Content -LiteralPath $r.Paths.Html -Raw) | Should -Match 'leakpg' -Because 'the report lists the MCP servers'
+            foreach ($t in $texts) {
+                foreach ($c in $global:CETestMcpSecrets) { $t | Should -Not -Match $c -Because "'$c' is a credential or names the user" }
+            }
         }
     }
 }

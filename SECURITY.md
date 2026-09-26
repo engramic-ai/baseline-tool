@@ -109,6 +109,15 @@ referenced from an environment variable or credential manager. It never records:
   a config file is present, its path and its permissions, and never opens it. Parsing
   and credential classification happen only in the user's own session.
 
+Beside each server it records what the server runs, and never a credential passed to it
+there: the program's file name only (`npx`, `node.exe`, not its path or anything after
+it), and at most two of its arguments. A URL among them is cut to scheme, host and port.
+An argument is replaced by `(redacted)` when it holds a user name or password (a URL with
+`://` then `@`, or `user:password@host`), when the classifier recognises it by its prefix
+or by the credential name it is given under (`--api-key VALUE`, `API_TOKEN=VALUE`, or a
+`Password=` part of a connection string), or when it is shaped like a bare token. An
+endpoint URL is recorded the same way: scheme, host and port, with `/...` for a path.
+
 When a config can't be parsed, only that is recorded ("it could not be parsed by the
 audit"), never the parser's message, which can quote the text it stopped at. Its
 permissions are recorded by the config's path relative to the profile.

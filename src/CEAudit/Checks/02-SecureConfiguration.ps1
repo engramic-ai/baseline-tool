@@ -286,8 +286,14 @@ Register-CECheck -Id 'SC-12' -Category 'SecureConfiguration' -Severity 'Medium' 
 
         if ($items.Count -eq 0) {
             if (@($st.Notes).Count) {
+                # VM files skipped because this audit has more rights than the user are read only in the
+                # user's own session; rerunning elevated would skip them again.
+                $unread = @($st.UnreadVmFiles)
+                $advice = @()
+                if (@($st.Notes | Where-Object { $unread -notcontains $_ }).Count) { $advice += 'Run the audit again from an elevated prompt while signed in to check everything.' }
+                if ($unread.Count) { $advice += Get-CEUnreadVmFileAdvice }
                 New-CEResult -Status 'Info' -Expected $expected -Actual "None found, but not everything could be checked: $(@($st.Notes) -join '; ')" -Evidence $evidence `
-                    -Recommendation 'Run the audit again from an elevated prompt while signed in to check everything.'
+                    -Recommendation ($advice -join ' ')
             }
             else {
                 New-CEResult -Status 'Pass' -Expected $expected -Actual 'No virtual machines, WSL distributions or containers found' -Evidence $evidence

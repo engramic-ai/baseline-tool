@@ -294,7 +294,7 @@ BeforeAll {
         # No virtual machines, WSL or containers unless a test sets them up (keeps this machine's real WSL out of the results).
         Mock -ModuleName CEAudit Get-CEVirtualisationState {
             [pscustomobject]@{ HyperV = [pscustomobject]@{ Readable = $true; Message = ''; Machines = @(); NatMappings = @() }
-                VMware = @(); VirtualBox = @(); Wsl = @(); WslNetworking = ''; Containers = @(); Listeners = @(); Notes = @() }
+                VMware = @(); VirtualBox = @(); Wsl = @(); WslNetworking = ''; Containers = @(); Listeners = @(); Notes = @(); UnreadVmFiles = @() }
         }
         # No AI tools unless a test sets them up (keeps this machine's real apps out of the results).
         Mock -ModuleName CEAudit Get-CEAIToolState { [pscustomobject]@{ Tools = @(); UninspectedProcesses = @() } }
@@ -2319,9 +2319,11 @@ Describe 'Virtual machines, WSL and containers (SC-12, FW-07)' {
     BeforeAll {
         function global:New-TestVirtState {
             param([object[]]$HyperV = @(), [object[]]$Nat = @(), [object[]]$VMware = @(), [object[]]$VirtualBox = @(), [object[]]$Wsl = @(),
-                [string]$WslNetworking = '', [object[]]$Containers = @(), [object[]]$Listeners = @(), [string[]]$Notes = @(), [bool]$HyperVReadable = $true)
+                [string]$WslNetworking = '', [object[]]$Containers = @(), [object[]]$Listeners = @(), [string[]]$Notes = @(), [bool]$HyperVReadable = $true,
+                [string[]]$UnreadVmFiles = @())
             [pscustomobject]@{ HyperV = [pscustomobject]@{ Readable = $HyperVReadable; Message = ''; Machines = $HyperV; NatMappings = $Nat }
-                VMware = $VMware; VirtualBox = $VirtualBox; Wsl = $Wsl; WslNetworking = $WslNetworking; Containers = $Containers; Listeners = $Listeners; Notes = $Notes }
+                VMware = $VMware; VirtualBox = $VirtualBox; Wsl = $Wsl; WslNetworking = $WslNetworking; Containers = $Containers; Listeners = $Listeners
+                Notes = @($Notes) + @($UnreadVmFiles); UnreadVmFiles = $UnreadVmFiles }
         }
         function global:Set-TestVirt {
             param($State)
@@ -2399,7 +2401,8 @@ Describe 'Virtual machines, WSL and containers (SC-12, FW-07)' {
     Context 'collection' {
         It 'finds VMware and VirtualBox machines from the user profile' {
             $profileDir = Join-Path $TestDrive 'profile'
-            $vmDir = Join-Path $TestDrive 'vms'
+            # Below the profile, so the folders checked on the way are the fixture's, not those of this machine's TEMP.
+            $vmDir = Join-Path $profileDir 'VMs'
             New-Item -ItemType Directory -Force -Path (Join-Path $profileDir 'AppData\Roaming\VMware'), (Join-Path $profileDir '.VirtualBox'), $vmDir | Out-Null
             $vmx = Join-Path $vmDir 'lab.vmx'
             Set-Content -LiteralPath $vmx -Value @('displayName = "Lab"', 'ethernet0.present = "TRUE"', 'ethernet0.connectionType = "bridged"')
@@ -2493,6 +2496,20 @@ Describe 'Virtual machines, WSL and containers (SC-12, FW-07)' {
             $f[0].Actual | Should -Match 'need elevation'
         }
 
+        It 'sends VM files an elevated audit skipped to the user''s own session, not to another elevated run' {
+            $note = 'VMware virtual machine file C:\VMs\lab\lab.vmx found, not read: the folder C:\VMs on the way to it is a junction or symbolic link'
+            Set-TestVirt (New-TestVirtState -UnreadVmFiles @($note))
+            $f = @(& $script:run 'SC-12')
+            $f[0].Status | Should -Be 'Info'
+            $f[0].Actual | Should -Be "None found, but not everything could be checked: $note"
+            $f[0].Recommendation | Should -Match 'Invoke-CEUserProbe'
+            $f[0].Recommendation | Should -Not -Match 'elevated prompt' -Because 'an elevated run skips the same files'
+            Set-TestVirt (New-TestVirtState -Notes @('Hyper-V virtual machines need elevation to list') -UnreadVmFiles @($note))
+            $f = @(& $script:run 'SC-12')
+            $f[0].Recommendation | Should -Match 'elevated prompt'
+            $f[0].Recommendation | Should -Match 'Invoke-CEUserProbe'
+        }
+
         It 'lists everything found as in scope, and warns about shared folders and WSL drive mounting' {
             Set-TestVirt (New-TestVirtState `
                 -HyperV @([pscustomobject]@{ Name = 'Server'; State = 'Running'; ExternalSwitches = @() }) `
@@ -2524,6 +2541,28 @@ Describe 'Virtual machines, WSL and containers (SC-12, FW-07)' {
             $f = @(& $script:run 'FW-07')
             $f[0].Status | Should -Be 'Pass'
             @($f[0].Evidence) | Should -Contain 'Listener: WSL (wslrelay) 127.0.0.1:3000'
+        }
+
+        It 'reports VM files it found but did not read, rather than no virtual machines' {
+            # As a SYSTEM or elevated audit reports a VM behind a junction, or over maxVmFilesPerInventory.
+            $note = 'VMware virtual machine file C:\VMs\lab\lab.vmx found, not read: the folder C:\VMs on the way to it is a junction or symbolic link'
+            $cap = 'The VirtualBox inventory names more than 64 virtual machine files; an elevated or SYSTEM audit reads only the first 64 (maxVmFilesPerInventory in virtualisation.json), so the rest were not checked'
+            Set-TestVirt (New-TestVirtState -UnreadVmFiles @($note, $cap))
+            $f = @(& $script:run 'FW-07')
+            $f.Count | Should -Be 1
+            $f[0].Status | Should -Be 'Info'
+            $f[0].Actual | Should -Be "Virtual machine files found but not checked: $note; $cap"
+            @($f[0].Evidence) | Should -Be @($note, $cap)
+            $f[0].Recommendation | Should -Match 'Invoke-CEUserProbe'
+            # Next to a VM that was read and is not exposed it is not a Pass either: the unread one may be bridged.
+            Set-TestVirt (New-TestVirtState -VMware @([pscustomobject]@{ Name = 'Dev'; Networks = @('nat'); SharedFolders = @() }) -UnreadVmFiles @($note))
+            $f = @(& $script:run 'FW-07')
+            $f[0].Status | Should -Be 'Info'
+            # A bridged VM that was read is still a warning.
+            Set-TestVirt (New-TestVirtState -VMware @([pscustomobject]@{ Name = 'Dev'; Networks = @('bridged'); SharedFolders = @() }) -UnreadVmFiles @($note))
+            $warn = & $script:sub (& $script:run 'FW-07') 'Bridged networking'
+            $warn.Status | Should -Be 'Warn'
+            @($warn.Evidence) | Should -Contain $note
         }
 
         It 'warns about bridged networking from every source' {
@@ -3275,6 +3314,37 @@ Describe 'AI tools (UA-07, SC-09, UA-10)' {
             }
         }
 
+        It 'looks for browser extensions through a cloud-synced folder, a reparse point that is not a link' {
+            # Every folder under a OneDrive or Proton Drive sync root is a reparse point with a cloud tag.
+            # A test can't make one, so junctions stand in for them, with Get-CEReparseTag giving their tag.
+            Set-TestBrowserConfig -Tools $CETestExtTools -Browsers $CETestBrowsers
+            $root = Join-Path $TestDrive 'bx-cloudfolder'
+            $p = Join-Path $root 'profile'
+            New-TestTree $p @('AppData\Local\Google')
+            New-TestTree (Join-Path $root 'chrome') @("User Data\Profile 1\Extensions\$($CETestExtId.Claude)\1.0_0")
+            New-TestTree (Join-Path $root 'profile2') @("Extensions\$($CETestExtId.Claude)\2.0_0")
+            $chrome = Join-Path $p 'AppData\Local\Google\Chrome'
+            $profile2 = Join-Path $root 'chrome\User Data\Profile 2'
+            New-Item -ItemType Junction -Path $chrome -Target (Join-Path $root 'chrome') | Out-Null
+            New-Item -ItemType Junction -Path $profile2 -Target (Join-Path $root 'profile2') | Out-Null
+            try {
+                $global:CETestReparseTag = [Convert]::ToInt64('9000601A', 16)
+                Mock -ModuleName CEAudit Get-CEReparseTag { $global:CETestReparseTag }
+                $claude = @(Get-TestToolById (Invoke-TestBrowserScan -ProfilePath $p -Elevated) 't-claude')
+                $claude.Count | Should -Be 1
+                @($claude[0].Signals | Sort-Object) | Should -Be @(
+                    "Google Chrome extension: $($CETestExtId.Claude) 1.0 (profile: Profile 1)",
+                    "Google Chrome extension: $($CETestExtId.Claude) 2.0 (profile: Profile 2)")
+                # The same folders as real junctions are not followed.
+                $global:CETestReparseTag = [Convert]::ToInt64('A0000003', 16)
+                @(Get-TestToolById (Invoke-TestBrowserScan -ProfilePath $p -Elevated) 't-claude').Count | Should -Be 0
+            }
+            finally {
+                Remove-Variable -Name CETestReparseTag -Scope Global -ErrorAction SilentlyContinue
+                foreach ($l in @($profile2, $chrome)) { if ([IO.Directory]::Exists($l)) { [IO.Directory]::Delete($l) } }
+            }
+        }
+
         It 'knows a browser is installed from Program Files and Program Files (x86)' {
             $p = Join-Path $TestDrive 'bx-programfiles'
             New-TestTree $p @("$CETestChromeData\Default\Extensions\$($CETestExtId.Claude)\1.0_0",
@@ -3376,6 +3446,31 @@ Describe 'AI tools (UA-07, SC-09, UA-10)' {
                 @(Get-CEInstalledSoftware | ForEach-Object { $_.Name }) | Should -Be @('Old 32-bit tool', 'Opera Neon 1.0')
                 Should -Invoke Get-CEUninstallRegistryEntry -Times 1 -Exactly -ParameterFilter { $View -eq 'Registry64' }
                 Should -Invoke Get-CEUninstallRegistryEntry -Times 1 -Exactly -ParameterFilter { $View -eq 'Registry32' }
+            }
+        }
+
+        It 'skips an Uninstall subkey it may not read and keeps reading the ones after it' {
+            InModuleScope CEAudit {
+                (Get-Command Get-CEUninstallRegistryEntry -CommandType Function).ScriptBlock.ToString() | Should -Match 'ConvertFrom-CEUninstallKey'
+                # RegistryKey.OpenSubKey throws SecurityException for a key whose ACL denies this account.
+                $key = [pscustomobject]@{ Names = @('A', 'Denied', 'Gone', 'BadValue', 'B') }
+                $key | Add-Member -MemberType ScriptMethod -Name GetSubKeyNames -Value { $this.Names }
+                $key | Add-Member -MemberType ScriptMethod -Name OpenSubKey -Value {
+                    param($n)
+                    if ($n -eq 'Denied') { throw (New-Object System.Security.SecurityException 'Requested registry access is not allowed.') }
+                    if ($n -eq 'Gone') { return $null }
+                    $sub = [pscustomobject]@{ N = $n }
+                    $sub | Add-Member -MemberType ScriptMethod -Name GetValue -Value {
+                        param($v)
+                        if ($this.N -eq 'BadValue') { throw (New-Object System.UnauthorizedAccessException 'denied') }
+                        if ($v -eq 'DisplayName') { "App $($this.N)" }
+                    }
+                    $sub | Add-Member -MemberType ScriptMethod -Name Close -Value { }
+                    $sub
+                }
+                $entries = ConvertFrom-CEUninstallKey -Key $key -View 'Registry64'
+                @($entries | ForEach-Object { $_.DisplayName }) | Should -Be @('App A', 'App B')
+                @($entries | ForEach-Object { $_.PSChildName }) | Should -Be @('A', 'B')
             }
         }
 
@@ -3693,13 +3788,13 @@ Describe 'Security review fixes' {
         }
 
         It 'reads VM inventories only through plain folders and up to a size limit' {
-            $vmx = Join-Path $TestDrive 'vm-limits\lab.vmx'
-            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $vmx) | Out-Null
+            # A plain inventory is read. Its VM file is below the profile, so the folders checked on the
+            # way are the fixture's, not those of this machine's TEMP.
+            $plain = Join-Path $TestDrive 'vm-plain'
+            $vmx = Join-Path $plain 'VMs\lab.vmx'
+            New-Item -ItemType Directory -Force -Path (Join-Path $plain 'AppData\Roaming\VMware'), (Split-Path -Parent $vmx) | Out-Null
             Set-Content -LiteralPath $vmx -Value 'displayName = "Lab"'
             $line = "vmlist1.config = `"$vmx`""
-            # A plain inventory is read.
-            $plain = Join-Path $TestDrive 'vm-plain'
-            New-Item -ItemType Directory -Force -Path (Join-Path $plain 'AppData\Roaming\VMware') | Out-Null
             Set-Content -LiteralPath (Join-Path $plain 'AppData\Roaming\VMware\inventory.vmls') -Value $line
             # One reached through a junction the user made is not.
             $linked = Join-Path $TestDrive 'vm-linked'
@@ -3777,10 +3872,11 @@ Describe 'Security review fixes' {
             New-Item -ItemType Directory -Force -Path $real | Out-Null
             Set-Content -LiteralPath (Join-Path $real 'lab.vmx') -Value @('displayName = "Lab"', 'ethernet0.present = "TRUE"', 'ethernet0.connectionType = "bridged"')
             Set-Content -LiteralPath (Join-Path $real 'Win.vbox') -Value '<VirtualBox xmlns="http://www.virtualbox.org/"><Machine name="Win"/></VirtualBox>'
-            $via = Join-Path $TestDrive 'vm-chain-via'
-            New-Item -ItemType Junction -Path $via -Target $real | Out-Null
             $prof = Join-Path $TestDrive 'vm-chain-profile'
             New-Item -ItemType Directory -Force -Path (Join-Path $prof 'AppData\Roaming\VMware'), (Join-Path $prof '.VirtualBox') | Out-Null
+            # The junction is below the profile, so only the fixture's folders are checked on the way to it.
+            $via = Join-Path $prof 'vm-chain-via'
+            New-Item -ItemType Junction -Path $via -Target $real | Out-Null
             Set-Content -LiteralPath (Join-Path $prof 'AppData\Roaming\VMware\inventory.vmls') -Value "vmlist1.config = `"$via\lab.vmx`""
             Set-Content -LiteralPath (Join-Path $prof '.VirtualBox\VirtualBox.xml') -Value "<VirtualBox xmlns=`"http://www.virtualbox.org/`"><Global><MachineRegistry><MachineEntry uuid=`"{1}`" src=`"$via\Win.vbox`"/></MachineRegistry></Global></VirtualBox>"
             try {
@@ -3792,8 +3888,9 @@ Describe 'Security review fixes' {
                     $vbox = Get-CEVirtualBoxMachine -ProfilePath $P -Notes $notes
                     @($vbox).Count | Should -Be 0 -Because 'a folder on the way to the .vbox is a junction'
                     @($notes).Count | Should -Be 2
-                    $notes[0] | Should -BeLike "VMware virtual machine file $V\lab.vmx found, not read: the folder *vm-chain-via on the way to it is a junction or symbolic link"
-                    $notes[1] | Should -BeLike "VirtualBox virtual machine file $V\Win.vbox found, not read: the folder *vm-chain-via on the way to it is a junction or symbolic link"
+                    @($notes) | Should -Be @(
+                        "VMware virtual machine file $V\lab.vmx found, not read: the folder $V on the way to it is a junction or symbolic link",
+                        "VirtualBox virtual machine file $V\Win.vbox found, not read: the folder $V on the way to it is a junction or symbolic link")
                     # In the user's own session their links are followed.
                     $vms = Get-CEVMwareMachine -ProfilePath $P -FollowLinks
                     @($vms | ForEach-Object { $_.Name }) | Should -Be @('Lab')
@@ -3808,15 +3905,21 @@ Describe 'Security review fixes' {
         }
 
         It 'reads at most maxVmFilesPerInventory VM files as SYSTEM or elevated, and says so' {
-            $dir = Join-Path $TestDrive 'vm-cap'
             $prof = Join-Path $TestDrive 'vm-cap-profile'
-            New-Item -ItemType Directory -Force -Path $dir, (Join-Path $prof 'AppData\Roaming\VMware') | Out-Null
+            $dir = Join-Path $prof 'VMs'
+            New-Item -ItemType Directory -Force -Path $dir, (Join-Path $prof 'AppData\Roaming\VMware'), (Join-Path $prof '.VirtualBox') | Out-Null
             $lines = foreach ($i in 1..3) {
                 $f = Join-Path $dir "vm$i.vmx"
                 Set-Content -LiteralPath $f -Value "displayName = `"VM$i`""
                 "vmlist$i.config = `"$f`""
             }
             Set-Content -LiteralPath (Join-Path $prof 'AppData\Roaming\VMware\inventory.vmls') -Value $lines
+            $entries = foreach ($i in 1..3) {
+                $f = Join-Path $dir "box$i.vbox"
+                Set-Content -LiteralPath $f -Value "<VirtualBox xmlns=`"http://www.virtualbox.org/`"><Machine name=`"Box$i`"/></VirtualBox>"
+                "<MachineEntry uuid=`"{$i}`" src=`"$f`"/>"
+            }
+            Set-Content -LiteralPath (Join-Path $prof '.VirtualBox\VirtualBox.xml') -Value "<VirtualBox xmlns=`"http://www.virtualbox.org/`"><Global><MachineRegistry>$($entries -join '')</MachineRegistry></Global></VirtualBox>"
             InModuleScope CEAudit -Parameters @{ P = $prof } {
                 param($P)
                 $orig = (Get-CEConfig)['virtualisation']
@@ -3828,6 +3931,12 @@ Describe 'Security review fixes' {
                     @($notes) | Should -Be @('The VMware inventory names more than 2 virtual machine files; an elevated or SYSTEM audit reads only the first 2 (maxVmFilesPerInventory in virtualisation.json), so the rest were not checked')
                     $vms = Get-CEVMwareMachine -ProfilePath $P -FollowLinks
                     @($vms).Count | Should -Be 3 -Because "the limit is for audits with more rights than the user"
+                    $notes = New-Object System.Collections.ArrayList
+                    $vbox = Get-CEVirtualBoxMachine -ProfilePath $P -Notes $notes
+                    @($vbox | ForEach-Object { $_.Name }) | Should -Be @('Box1', 'Box2')
+                    @($notes) | Should -Be @('The VirtualBox inventory names more than 2 virtual machine files; an elevated or SYSTEM audit reads only the first 2 (maxVmFilesPerInventory in virtualisation.json), so the rest were not checked')
+                    $vbox = Get-CEVirtualBoxMachine -ProfilePath $P -FollowLinks
+                    @($vbox).Count | Should -Be 3
                     (Get-CEConfig)['virtualisation'] = [pscustomobject]@{}
                     Get-CEVmFileCap | Should -Be 64
                 }
@@ -3837,8 +3946,8 @@ Describe 'Security review fixes' {
         }
 
         It 'reports a VM file stored online only as found, not read, when elevated' {
-            $dir = Join-Path $TestDrive 'vm-cloud'
             $prof = Join-Path $TestDrive 'vm-cloud-profile'
+            $dir = Join-Path $prof 'VMs'
             New-Item -ItemType Directory -Force -Path $dir, (Join-Path $prof 'AppData\Roaming\VMware') | Out-Null
             $cloud = Join-Path $dir 'cloud.vmx'
             $local = Join-Path $dir 'local.vmx'
@@ -3858,11 +3967,59 @@ Describe 'Security review fixes' {
                 $st = Get-CEVirtualisationStateUncached -Context ([pscustomobject]@{ IsSystem = $false; IsElevated = $true })
                 @($st.VMware | ForEach-Object { $_.Name }) | Should -Be @('Local')
                 @($st.Notes) | Should -Contain "VMware virtual machine file $C found, not read: it is stored online only, and an elevated or SYSTEM audit does not download it"
+                @($st.UnreadVmFiles) | Should -Be @("VMware virtual machine file $C found, not read: it is stored online only, and an elevated or SYSTEM audit does not download it")
                 # The user's own session reads it (their sync app downloads it for them, as it would anyway).
                 $st = Get-CEVirtualisationStateUncached -Context ([pscustomobject]@{ IsSystem = $false; IsElevated = $false })
                 @($st.VMware | ForEach-Object { $_.Name } | Sort-Object) | Should -Be @('Cloud', 'Local')
                 @($st.Notes).Count | Should -Be 0
+                @($st.UnreadVmFiles).Count | Should -Be 0
             }
+        }
+
+        It 'reads VM files through a cloud-synced folder, a reparse point that is not a link' {
+            # With Known Folder Move, Documents\Virtual Machines is below a OneDrive folder, and every folder
+            # there is a reparse point with a cloud tag. A test can't make one, so a junction stands in for
+            # it, with Get-CEReparseTag giving its tag.
+            $prof = Join-Path $TestDrive 'vm-cloudfolder-profile'
+            $real = Join-Path $TestDrive 'vm-cloudfolder-real'
+            New-Item -ItemType Directory -Force -Path $real, (Join-Path $prof 'AppData\Roaming\VMware'), (Join-Path $prof '.VirtualBox') | Out-Null
+            Set-Content -LiteralPath (Join-Path $real 'lab.vmx') -Value 'displayName = "Lab"'
+            Set-Content -LiteralPath (Join-Path $real 'Win.vbox') -Value '<VirtualBox xmlns="http://www.virtualbox.org/"><Machine name="Win"/></VirtualBox>'
+            $cloud = Join-Path $prof 'Documents'
+            New-Item -ItemType Junction -Path $cloud -Target $real | Out-Null
+            Set-Content -LiteralPath (Join-Path $prof 'AppData\Roaming\VMware\inventory.vmls') -Value "vmlist1.config = `"$cloud\lab.vmx`""
+            Set-Content -LiteralPath (Join-Path $prof '.VirtualBox\VirtualBox.xml') -Value "<VirtualBox xmlns=`"http://www.virtualbox.org/`"><Global><MachineRegistry><MachineEntry uuid=`"{1}`" src=`"$cloud\Win.vbox`"/></MachineRegistry></Global></VirtualBox>"
+            try {
+                InModuleScope CEAudit -Parameters @{ P = $prof } {
+                    param($P)
+                    $script:testTag = [Convert]::ToInt64('9000601A', 16)
+                    Mock Get-CEReparseTag { $script:testTag }
+                    $notes = New-Object System.Collections.ArrayList
+                    $vms = Get-CEVMwareMachine -ProfilePath $P -Notes $notes
+                    @($vms | ForEach-Object { $_.Name }) | Should -Be @('Lab')
+                    $vbox = Get-CEVirtualBoxMachine -ProfilePath $P -Notes $notes
+                    @($vbox | ForEach-Object { $_.Name }) | Should -Be @('Win')
+                    @($notes).Count | Should -Be 0
+                    # The same folder as a real junction is not followed.
+                    $script:testTag = [Convert]::ToInt64('A0000003', 16)
+                    $vms = Get-CEVMwareMachine -ProfilePath $P -Notes $notes
+                    @($vms).Count | Should -Be 0
+                    @($notes).Count | Should -Be 1
+                }
+            }
+            finally { [IO.Directory]::Delete($cloud) }
+        }
+
+        It 'decides what is a link only in Test-CELinkItem' {
+            # Any reparse point counting as a link dropped VM files and extensions in cloud-synced folders.
+            # A file stored online only can't be made in a test, so this is the guard for Read-CEBoundedText.
+            $problems = foreach ($file in Get-ChildItem (Join-Path (Join-Path $script:RepoRoot 'src') 'CEAudit') -Filter *.ps1 -Recurse) {
+                $ast = [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$null, [ref]$null)
+                foreach ($fn in $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) {
+                    if ($fn.Name -ne 'Test-CELinkItem' -and $fn.Body.Extent.Text -match 'ReparsePoint') { "$($file.Name): $($fn.Name)" }
+                }
+            }
+            @($problems) -join "`n" | Should -BeNullOrEmpty
         }
     }
 

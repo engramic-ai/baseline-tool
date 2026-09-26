@@ -298,6 +298,11 @@ function Add-CEVmCapNote {
     }
 }
 
+function Get-CEUnreadVmFileAdvice {
+    <# What to do about VM files an elevated or SYSTEM audit found and did not read (UnreadVmFiles). #>
+    return 'An elevated or SYSTEM audit does not open these files. Check them in the user''s own session: run the per-user probe (app\Invoke-CEUserProbe.ps1), or the tool without elevation while signed in as that user. Or move the virtual machine folder off the junction or symbolic link, make it available offline, or raise maxVmFilesPerInventory in virtualisation.json, as each note says.'
+}
+
 function Get-CEVMwareMachine {
     <#
         VMware Workstation/Player VMs from the user's inventory.vmls. Unless -FollowLinks (an audit in
@@ -496,7 +501,11 @@ function Get-CEVirtualisationListener {
 }
 
 function Get-CEVirtualisationState {
-    <# Everything SC-12 and FW-07 look at, gathered once per audit. #>
+    <#
+        Everything SC-12 and FW-07 look at, gathered once per audit: HyperV, VMware, VirtualBox, Wsl,
+        WslNetworking, Containers, Listeners, Notes (what could not be checked) and UnreadVmFiles
+        (the Notes about VM files an elevated or SYSTEM audit found and did not read).
+    #>
     param($Context)
     $cacheKey = "$($Context.ComputerName)|$($Context.AuditTime.Ticks)|$($Context.IsElevated)"
     if ($script:CEVirtualisationCache -and $script:CEVirtualisationCache.Key -eq $cacheKey) { return $script:CEVirtualisationCache.State }
@@ -534,5 +543,8 @@ function Get-CEVirtualisationStateUncached {
         Containers     = Get-CEContainer -Context $Context
         Listeners      = Get-CEVirtualisationListener
         Notes          = $notes
+        # VM files found but not read, and the maxVmFilesPerInventory limit, as an elevated or SYSTEM
+        # audit reports them (also in Notes). Only the user's own session reads these files.
+        UnreadVmFiles  = @($vmNotes)
     }
 }

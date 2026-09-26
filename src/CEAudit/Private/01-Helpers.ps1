@@ -153,6 +153,34 @@ function ConvertTo-CEDate {
     return [datetime]::ParseExact([string]$Value, 'yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture)
 }
 
+function ConvertFrom-CEUninstallKey {
+    <#
+        The values Get-CEInstalledSoftware uses from each subkey of an open Uninstall key (a
+        RegistryKey, or an object with the same methods in tests). A subkey that can't be read is
+        skipped on its own: RegistryKey.OpenSubKey throws SecurityException, rather than returning
+        $null, for a key whose ACL denies this account, and that must not hide the programs after it.
+    #>
+    param([Parameter(Mandatory)]$Key, [string]$View)
+    $out = New-Object System.Collections.ArrayList
+    foreach ($name in @($Key.GetSubKeyNames())) {
+        try {
+            $sub = $Key.OpenSubKey($name)
+            if (-not $sub) { continue }
+            try {
+                $entry = [ordered]@{ PSChildName = $name }
+                foreach ($v in 'DisplayName', 'DisplayVersion', 'Publisher', 'InstallDate', 'SystemComponent') {
+                    $value = $sub.GetValue($v)
+                    if ($null -ne $value) { $entry[$v] = $value }
+                }
+                [void]$out.Add([pscustomobject]$entry)
+            }
+            finally { $sub.Close() }
+        }
+        catch { Write-Verbose "Could not read the $View Uninstall subkey ${name}: $($_.Exception.Message)" }
+    }
+    return , $out.ToArray()
+}
+
 function Get-CEUninstallRegistryEntry {
     <#
         The values Get-CEInstalledSoftware uses from each subkey of the machine's Uninstall key in one
@@ -163,34 +191,20 @@ function Get-CEUninstallRegistryEntry {
     #>
     [CmdletBinding()]
     param([Parameter(Mandatory)][ValidateSet('Registry64', 'Registry32')][string]$View)
-    $out = New-Object System.Collections.ArrayList
+    $entries = @()
     try {
         $hive = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine, [Microsoft.Win32.RegistryView]$View)
         try {
             $key = $hive.OpenSubKey('SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall')
             if ($key) {
-                try {
-                    foreach ($name in $key.GetSubKeyNames()) {
-                        $sub = $key.OpenSubKey($name)
-                        if (-not $sub) { continue }
-                        try {
-                            $entry = [ordered]@{ PSChildName = $name }
-                            foreach ($v in 'DisplayName', 'DisplayVersion', 'Publisher', 'InstallDate', 'SystemComponent') {
-                                $value = $sub.GetValue($v)
-                                if ($null -ne $value) { $entry[$v] = $value }
-                            }
-                            [void]$out.Add([pscustomobject]$entry)
-                        }
-                        finally { $sub.Close() }
-                    }
-                }
+                try { $entries = ConvertFrom-CEUninstallKey -Key $key -View $View }
                 finally { $key.Close() }
             }
         }
         finally { $hive.Close() }
     }
     catch { Write-Verbose "Could not read the $View Uninstall key: $($_.Exception.Message)" }
-    return , $out.ToArray()
+    return , $entries
 }
 
 function Get-CEInstalledSoftware {

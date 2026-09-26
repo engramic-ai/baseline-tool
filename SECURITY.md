@@ -29,6 +29,17 @@ Windows settings, and - in the per-user probe, in the signed-in user's own sessi
 the configuration files of recognised AI tools (for example MCP client configs) to
 inventory the servers each agent is wired to.
 
+To find AI browser extensions it lists folder and file names in the browser profile
+folders named in `config/browser-profiles.json`, including when it runs as SYSTEM over
+the signed-in user's profile. It never opens a file there, so it never reads browsing
+history, cookies, browser settings or extension data, and it records only extensions
+listed in `config/ai-tools.json`. It skips folders below the profile folder that are
+junctions or symbolic links. These checks are made by path, so a user who can create
+symbolic links (for example with Developer Mode on) could swap a folder for a link
+between the check and the read; a SYSTEM audit could then connect to a network share.
+The same applies to the profile folders and VS Code extensions it already lists.
+Blocking local-to-remote symbolic link evaluation by policy prevents this.
+
 When it finds a credential in one of those files it records **only a classification**:
 the provider, the credential type, and whether the value is held in plaintext or
 referenced from an environment variable or credential manager. It never records:

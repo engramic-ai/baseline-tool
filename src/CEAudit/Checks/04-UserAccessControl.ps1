@@ -184,7 +184,8 @@ Register-CECheck -Id 'UA-07' -Category 'UserAccessControl' -Severity 'Critical' 
         $services = @{}
         foreach ($svc in $cfg.services) { $services[$svc.name] = $svc }
         if ($ctx.EntraJoined -and -not $detected.ContainsKey('Microsoft 365 / Entra ID')) { $detected['Microsoft 365 / Entra ID'] = 'Device is Entra ID joined' }
-        foreach ($tool in @((Get-CEAIToolState -Context $ctx).Tools | Where-Object { $_.Service })) {
+        # A tool found only in a leftover browser profile doesn't show the service is in use.
+        foreach ($tool in @((Get-CEAIToolState -Context $ctx).Tools | Where-Object { $_.Service -and -not (Get-CEObjectValue $_ 'LeftoverOnly' $false) })) {
             if (-not $detected.ContainsKey($tool.Service)) { $detected[$tool.Service] = $tool.Name }
         }
 

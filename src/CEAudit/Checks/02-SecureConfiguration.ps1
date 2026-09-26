@@ -363,7 +363,8 @@ Register-CECheck -Id 'SC-14' -Category 'SecureConfiguration' -Severity 'Medium' 
     -Reference 'NCSC device security guidance: control which applications can be installed and used on a device. An AI tool the organisation has not approved can send its data to a service nobody has assessed. Decisions are recorded in config/ai-approvals.json.' `
     -Test {
         param($ctx)
-        $tools = @((Get-CEAIToolState -Context $ctx).Tools)
+        $state = Get-CEAIToolState -Context $ctx
+        $tools = @($state.Tools)
         $register = Get-CEAIApprovalRegister
         $today = ([datetime]$ctx.AuditTime).Date
         $expected = 'Every AI tool on the device has been approved by the organisation'
@@ -374,12 +375,17 @@ Register-CECheck -Id 'SC-14' -Category 'SecureConfiguration' -Severity 'Medium' 
                 -Recommendation 'Fix these entries in config/ai-approvals.json. Until then, the tools they name count as not reviewed.'
         }
         if (-not $tools.Count) {
-            $results += New-CEResult -Status 'NotApplicable' -Expected $expected -Actual 'No recognised AI tools found'
+            $none = 'No recognised AI tools found'
+            if (-not (Get-CEObjectValue $state 'ProfileChecked' $true)) { $none += '. No one is signed in, so browser extensions and profile folders were not checked' }
+            $results += New-CEResult -Status 'NotApplicable' -Expected $expected -Actual $none
             return $results
         }
         foreach ($tool in $tools) {
             $a = Get-CEAIApproval -ToolId $tool.Id -Register $register -Today $today
             $mfa = if ($tool.Service) { " and make sure its $($tool.Service) account uses MFA (UA-07)" } else { '' }
+            # Found only in the profile folder of a browser that has since been uninstalled: removing the tool means deleting that folder.
+            $leftover = [bool](Get-CEObjectValue $tool 'LeftoverOnly' $false)
+            $leftoverText = "$($tool.Name) is only in the profile folder of a browser that is no longer installed. Delete that folder (see the evidence)"
             switch ($a.State) {
                 'approved' {
                     $results += New-CEResult -Status 'Pass' -Subject $tool.Name -Expected $expected -Actual $a.Detail -Evidence @($tool.Signals)
@@ -390,12 +396,12 @@ Register-CECheck -Id 'SC-14' -Category 'SecureConfiguration' -Severity 'Medium' 
                 }
                 'not-approved' {
                     $results += New-CEResult -Status 'Fail' -Subject $tool.Name -Expected $expected -Actual $a.Detail -Evidence @($tool.Signals) `
-                        -Recommendation "Remove $($tool.Name) from this device. If it is now needed, change the decision in config/ai-approvals.json instead."
+                        -Recommendation $(if ($leftover) { "$leftoverText. If the tool is now needed, change the decision in config/ai-approvals.json instead." } else { "Remove $($tool.Name) from this device. If it is now needed, change the decision in config/ai-approvals.json instead." })
                 }
                 default {
                     $results += New-CEResult -Status 'Warn' -Subject $tool.Name -Expected $expected `
                         -Actual "Not reviewed: $($tool.Name) is on this device, and config/ai-approvals.json has no decision for it" -Evidence @($tool.Signals) `
-                        -Recommendation "Decide whether $($tool.Name) is needed. If it is, add it to config/ai-approvals.json as approved, with who decided, when and why$mfa. If it isn't, remove it."
+                        -Recommendation $(if ($leftover) { "$leftoverText, or record a decision for it in config/ai-approvals.json." } else { "Decide whether $($tool.Name) is needed. If it is, add it to config/ai-approvals.json as approved, with who decided, when and why$mfa. If it isn't, remove it." })
                 }
             }
         }

@@ -212,7 +212,7 @@ Register-CECheck -Id 'SC-09' -Category 'SecureConfiguration' -Severity 'Medium' 
                 -Recommendation "Remove it if it isn't needed. If it is: record the approval in config/ai-approvals.json (SC-14), make sure its account uses MFA (UA-07), don't run it with administrator rights (UA-10), and keep it asking before it runs commands or changes files. $($tool.Notes)".Trim()
         }
         # Places in the user's profile that could not be read may hold an agent that was not seen.
-        $notRead = Select-CENotRead -Records @(Get-CEObjectValue $aiState 'NotRead' @()) -Topics (Get-CEAIDetectionTopic)   # assign first: it returns ,array
+        $notRead = Select-CENotRead -Records @(Get-CEObjectValue $aiState 'NotRead' @()) -Topics (Get-CEAIDetectionTopic -HidesTool)   # assign first: it returns ,array
         if ($notRead.Count) {
             $results += New-CENotReadResult -Records $notRead -Scope Machine -Expected 'Remote access tools and AI agents only where approved and protected with MFA' `
                 -Consequence 'an AI agent that can act on this device may not have been seen'
@@ -355,11 +355,10 @@ Register-CECheck -Id 'SC-13' -Category 'SecureConfiguration' -Severity 'High' -S
         $unreadText = ''
         if ($foundNotRead.Count) { $unreadText += "; MCP config file(s) found, not read: $($foundNotRead -join '; ')" }
         if ($notChecked.Count) { $unreadText += "; MCP config location(s) that could not be checked: $($notChecked -join '; ')" }
-        $advice = @()
+        $advice = Get-CENotReadAdvice -Records $records -Scope User   # assign first: it returns ,array
         if (@($records | Where-Object { [bool](& $field $_ 'needsUserSession' $false) }).Count) {
-            $advice += "An elevated or SYSTEM audit does not follow the user's symbolic links (or junctions it can't verify), never reads a file's contents through a link, and does not download files stored online only. To read these, $(Get-CENotReadRemedy -Scope User) (the per-user probe runs this check; so do app\Invoke-CEAudit.ps1 and the GUI when not run as administrator)."
+            $advice += '(The per-user probe runs this check; so do app\Invoke-CEAudit.ps1 and the GUI when not run as administrator.)'
         }
-        $advice += @($records | ForEach-Object { [string](& $field $_ 'remedy' '') } | Where-Object { $_ } | Select-Object -Unique)
         if (-not $servers.Count) {
             if ($unread.Count) {
                 $parts = @()
@@ -432,7 +431,10 @@ Register-CECheck -Id 'SC-14' -Category 'SecureConfiguration' -Severity 'Medium' 
         }
         # Places in the user's profile that could not be read may hold a tool that was not seen: never Not applicable then.
         $notRead = Select-CENotRead -Records @(Get-CEObjectValue $state 'NotRead' @()) -Topics (Get-CEAIDetectionTopic)   # assign first: it returns ,array
-        $notReadResult = if ($notRead.Count) { New-CENotReadResult -Records $notRead -Scope Machine -Expected $expected -Consequence 'an AI tool may be installed that was not seen' }
+        # A browser whose installed marker could not be checked hides no tool: its tools are reported, never as leftovers.
+        $consequence = if (@($notRead | Where-Object { [string](Get-CENotReadField $_ 'Topic' (Get-CENotReadField $_ 'topic' '')) -ne 'browser-installed' }).Count) { 'an AI tool may be installed that was not seen' }
+        else { 'whether a browser holding an AI extension is still installed is not known, so its AI tools are reported as installed' }
+        $notReadResult = if ($notRead.Count) { New-CENotReadResult -Records $notRead -Scope Machine -Expected $expected -Consequence $consequence }
         if (-not $tools.Count) {
             if ($notRead.Count) { $results += $notReadResult }
             else { $results += New-CEResult -Status 'NotApplicable' -Expected $expected -Actual 'No recognised AI tools found' }

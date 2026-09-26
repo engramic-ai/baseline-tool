@@ -53,7 +53,10 @@ elevated. All of these reads go through one layer (`src/CEAudit/Private/15-Profi
 1. It may list folder names, and check that a file or folder exists, through a
    **junction** only after reading the junction's target without following it. The
    target must be on a local fixed drive or a local volume, and no folder on the way to
-   it may be a symbolic link or another link the tool does not recognise. A junction can
+   it may be a symbolic link or another link the tool does not recognise. The target's
+   names are checked as the kernel follows them, not as Windows' path rules would rewrite
+   them (a name ending in a dot or a space is refused), and a folder on the way whose
+   attributes the tool may not read is refused, not taken as missing. A junction can
    only name a local volume: one whose target names a network path, directly or through
    a drive letter mapped to one, fails to resolve ("the data present in the reparse
    point buffer is invalid") and never connects. Listing names there shows only whether
@@ -65,9 +68,9 @@ elevated. All of these reads go through one layer (`src/CEAudit/Private/15-Profi
    tool folder that is itself a link counts as found.
 3. **File contents** (`package.json`, `inventory.vmls`, `VirtualBox.xml`, `.wslconfig`,
    `.vmx` and `.vbox` files, MCP client configs) are never opened through any junction or
-   symbolic link anywhere on the path, from the profile folder down (or from the drive
-   root, for a virtual machine file outside the profile), or when the file is a link
-   itself. A file or folder stored online only (a cloud file that is not downloaded) is
+   symbolic link anywhere on the path below the profile folder (the profile folder itself
+   may be a link, as profile containers and moved profiles are), or from the drive root
+   for a virtual machine file outside the profile, or when the file is a link itself. A file or folder stored online only (a cloud file that is not downloaded) is
    never opened or listed, so the tool never makes OneDrive or another sync app download
    it. A cloud file that is already downloaded is read as usual.
 4. The existing limits stay: listings are capped, each file is read only up to a size
@@ -78,8 +81,10 @@ elevated. All of these reads go through one layer (`src/CEAudit/Private/15-Profi
    more rights than the user there.
 6. **Nothing skipped is dropped silently.** Each location that is not read is recorded
    with where it is (relative to the profile, as `%USERPROFILE%\...`, and a browser
-   profile by its label, never a name the person chose), what was not read, why, and how
-   to read it. The checks that depend on it (SC-09, SC-12, SC-13, SC-14, FW-07 and
+   profile by its label, never a name the person chose; a virtual machine file outside
+   the profile is shown as the inventory names it), what was not read, why, and how to
+   read it. Only what Windows says is not there counts as missing: a folder or file the
+   tool may not look at (for example because of its permissions) is recorded too. The checks that depend on it (SC-09, SC-12, SC-13, SC-14, FW-07 and
    UA-07) are then Manual, never Pass or Not applicable, and the records appear in the
    report, the GUI and the `ai.notRead` block of `user-status.json` (with
    `ai.scanComplete`). Machine-scope checks name a full audit without elevation, signed

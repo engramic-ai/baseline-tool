@@ -23,7 +23,13 @@ function Get-CEAIToolSignal {
 }
 
 function Get-CEAIDetectionTopic {
-    <# The not-read topics (15-ProfileReads.ps1) that can hide an AI tool: what SC-09, SC-14 and UA-07 depend on. #>
+    <#
+        The not-read topics (15-ProfileReads.ps1) that SC-14 depends on. -HidesTool leaves out
+        'browser-installed': a browser whose installed marker could not be checked still has its
+        tool reported, and its service kept, so SC-09 and UA-07 miss nothing because of it.
+    #>
+    param([switch]$HidesTool)
+    if ($HidesTool) { return , @('profile', 'vscode', 'vscode-builtin', 'paths', 'browser') }
     return , @('profile', 'vscode', 'vscode-builtin', 'paths', 'browser', 'browser-installed')
 }
 

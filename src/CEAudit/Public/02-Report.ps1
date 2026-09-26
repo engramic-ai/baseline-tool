@@ -173,9 +173,10 @@ function Export-CEMarkdown {
             & $w ''
             & $w 'Some locations were not read, so this list may be incomplete:'
             & $w ''
-            foreach ($r in @($ai.notRead | Where-Object { $_.topic -ne 'extension-version' })) { & $w "- $(Format-CENotRead $r)" }
+            $shown = @($ai.notRead | Where-Object { $_.topic -ne 'extension-version' })
+            foreach ($r in $shown) { & $w "- $(Format-CENotRead $r)" }
             & $w ''
-            & $w "To read them, $(Get-CENotReadRemedy -Scope Machine)."
+            & $w ((Get-CENotReadAdvice -Records $shown -Scope Machine) -join ' ')
         }
         $approvals = Get-CEAIApprovalSummary -Posture $ai
         if ($approvals) {
@@ -427,8 +428,9 @@ function Export-CEHtml {
     $aiDevTxt = if ($aiPosture.contained) { 'contained' } else { "$($aiPosture.deviations) deviation(s)" }
     $aiEmpty = if ($aiPosture.agentsFound -eq 0 -and -not $aiPosture.scanComplete) { "<p class='ref'>No AI tools confirmed; scan incomplete: some locations were not read (below).</p>" }
     elseif ($aiPosture.agentsFound -eq 0) { "<p class='ref'>No AI tools detected in this session.$(if ($Context.IsSystem) { ' Shadow AI is collected per user; run as the signed-in user for the full picture.' })</p>" } else { '' }
-    $notReadLi = (@($aiPosture.notRead) | Where-Object { $_.topic -ne 'extension-version' } | ForEach-Object { "<li>$(& $e (Format-CENotRead $_))</li>" }) -join ''
-    $aiNotRead = if ($notReadLi) { "<div class='ref' style='margin-top:8px'>Not read, so this may be incomplete. To read these, $(& $e (Get-CENotReadRemedy -Scope Machine)).</div><ul>$notReadLi</ul>" } else { '' }
+    $notReadShown = @(@($aiPosture.notRead) | Where-Object { $_.topic -ne 'extension-version' })
+    $notReadLi = ($notReadShown | ForEach-Object { "<li>$(& $e (Format-CENotRead $_))</li>" }) -join ''
+    $aiNotRead = if ($notReadLi) { "<div class='ref' style='margin-top:8px'>Not read, so this may be incomplete. $(& $e ((Get-CENotReadAdvice -Records $notReadShown -Scope Machine) -join ' '))</div><ul>$notReadLi</ul>" } else { '' }
     $aiApprovals = Get-CEAIApprovalSummary -Posture $aiPosture
     $aiApprHtml = if ($aiApprovals) { "<div class='ref'>Approval (config/ai-approvals.json, SC-14): $(& $e $aiApprovals)</div>" } else { '' }
     $aiHtml = "<h2 id='ai'>AI on this device</h2><div class='aibox'><div class='h'><strong>$($aiPosture.agentsFound) AI tool(s) found</strong><span class='dev0 $aiDevCls'>$aiDevTxt</span></div>$aiApprHtml$aiEmpty$(if ($agentsLi) { "<ul>$agentsLi</ul>" })$(if ($envLi) { "<div class='ref' style='margin-top:8px'>Where AI runs</div><ul>$envLi</ul>" })$(if ($mcpLi) { "<div class='ref' style='margin-top:8px'>MCP servers</div><ul>$mcpLi</ul>" })$aiNotRead<p class='ref' style='margin:10px 0 0'>Baseline finds recognised AI apps and browser extensions installed on this device. It can't see AI websites used in a browser tab.</p></div>"

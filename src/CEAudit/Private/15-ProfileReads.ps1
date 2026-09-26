@@ -10,6 +10,8 @@
 #   * symbolic links and other links are never followed, even to list names;
 #   * file contents are never read through any link, and a file stored online only
 #     is never downloaded.
+# Whether something is there is read with Get-CEItemPresence, which tells "Windows says
+# nothing is there" apart from "the audit may not look": only the first is missing.
 # Nothing skipped is dropped: each primitive writes a record to a not-read log
 # (New-CENotReadLog), which the state builders return as NotRead and the checks
 # report as Manual (New-CENotReadResult). Reasons are fixed strings: no error
@@ -56,8 +58,8 @@ function Get-CEReparseTag {
         followed and a cloud file is not downloaded. Tests mock this.
     #>
     param([string]$Path)
-    # FindFirstFileW treats * and ? as wildcards, which would name another item.
-    if (-not $Path -or $Path -match '[*?]' -or -not (Test-CEIsWindows)) { return [long]-1 }
+    # FindFirstFileW treats * and ? as wildcards, which would name another item (the ? of a \\?\ prefix is not one).
+    if (-not $Path -or ($Path -replace '^\\\\\?\\', '') -match '[*?]' -or -not (Test-CEIsWindows)) { return [long]-1 }
     try {
         if (-not ('CEAudit.ReparseTag' -as [type])) {
             Add-Type -TypeDefinition @'
@@ -128,6 +130,29 @@ function Get-CEReparseKind {
     return 'none'
 }
 
+function Get-CEItemPresence {
+    <#
+        What is at Path, from its attributes only (GetFileAttributesEx: a link is not followed, a
+        file stored online only is not downloaded, nothing is opened):
+          State 'present'     with Attributes, FullName, Name and IsFolder (Get-CEReparseKind takes it)
+          State 'missing'     only when Windows says nothing is there (file or path not found)
+          State 'unreadable'  anything else, with Reason, a fixed string naming the error's type
+        DirectoryInfo.Exists and FileInfo.Exists are also false when the audit may not read an
+        item's attributes, which a user can arrange on folders they own, so the layer never uses them.
+    #>
+    param([string]$Path)
+    $name = ([string]$Path).TrimEnd('\', '/') -replace '^.*[\\/]', ''
+    try {
+        $a = [IO.File]::GetAttributes($Path)
+        return [pscustomobject]@{ State = 'present'; Attributes = $a; FullName = $Path; Name = $name; IsFolder = (($a -band [IO.FileAttributes]::Directory) -ne 0); Reason = '' }
+    }
+    catch {
+        $t = Get-CEErrorTypeName $_
+        $state = if ($t -eq 'FileNotFoundException' -or $t -eq 'DirectoryNotFoundException') { 'missing' } else { 'unreadable' }
+        return [pscustomobject]@{ State = $state; Attributes = -1; FullName = $Path; Name = $name; IsFolder = $false; Reason = $(if ($state -eq 'missing') { '' } else { "it could not be read ($t)" }) }
+    }
+}
+
 function Test-CERelativePathText {
     <#
         A relative path with no empty, '.', '..', drive or wildcard parts, and no part ending in '.' or
@@ -169,15 +194,16 @@ function Read-CEBoundedText {
         than the size of the opened file, so a file that grows after that is not read in full
         either. Opened for reading only; nothing in it is run. The only function that opens a
         user's file. -SkipReason receives why the file was not read, as a fixed string ('missing'
-        when it isn't there); -ByteCount the number of bytes read.
+        only when Windows says no file is there, see Get-CEItemPresence); -ByteCount the number of bytes read.
     #>
     param([string]$Path, [int]$MaxBytes, [switch]$FollowLinks, [ref]$SkipReason, [ref]$ByteCount)
     if ($null -ne $SkipReason) { $SkipReason.Value = '' }
     if (-not $Path -or $MaxBytes -le 0) { return $null }
     $why = ''
     try {
-        $fi = New-Object IO.FileInfo $Path
-        if (-not $fi.Exists) { $why = 'missing' }
+        $fi = Get-CEItemPresence -Path $Path
+        if ($fi.State -eq 'missing' -or ($fi.State -eq 'present' -and $fi.IsFolder)) { $why = 'missing' }
+        elseif ($fi.State -ne 'present') { $why = $fi.Reason }
         elseif (-not $FollowLinks) {
             $kind = Get-CEReparseKind -Item $fi
             if ($kind -eq 'cloud') { $why = $script:CENotReadText.Cloud }
@@ -276,6 +302,25 @@ function Get-CENotReadReason {
     }
 }
 
+function Test-CELinkReason {
+    <# Whether Reason is one the layer gives for a link or a file stored online only: skips that only an audit above the user's rights makes. #>
+    param([string]$Reason)
+    $t = $script:CENotReadText
+    return (@($t.SymlinkOnWay, $t.JunctionOnWay, $t.LinkForContent, $t.ItemIsLink, $t.Cloud, $t.UnknownReparse) -contains $Reason)
+}
+
+function Add-CEWayNotRead {
+    <#
+        Records Location as not read for Reason, from Get-CEPathChainProblem or Get-CEItemPresence.
+        A link or a file stored online only can be read in the user's own session (NeedsUserSession);
+        anything else (the audit may not read a folder's attributes) needs its permissions checked.
+    #>
+    param($Log, [string]$Location, [string]$Kind, [string]$Reason, [string]$Topic,
+        [string]$Remedy = 'Check the permissions on this folder, then run the audit again.')
+    if (Test-CELinkReason $Reason) { Add-CENotRead -Log $Log -Location $Location -Kind $Kind -Reason $Reason -Topic $Topic -NeedsUserSession $true }
+    else { Add-CENotRead -Log $Log -Location $Location -Kind $Kind -Reason $Reason -Topic $Topic -Remedy $Remedy }
+}
+
 # --- Junctions ---------------------------------------------------------------
 
 function Get-CEJunctionTarget {
@@ -332,16 +377,20 @@ function Get-CEJunctionProblem {
     <#
         '' when an audit with more rights than the user may list names and check existence
         through the junction at Path; otherwise the fixed reason why not. Its target, read without
-        following it, must be \??\X:\... on a local fixed drive or \??\Volume{GUID}\..., and every
-        folder on the way to that target, walked from the top, must be a plain folder, a reparse
-        point that is not a link and not stored online only, or a junction that passes the same
-        test (at most 8 deep). A folder is only looked at once every folder above it is cleared.
+        following it, must be \??\X:\... on a local fixed drive or \??\Volume{GUID}\..., its names
+        must be ones Windows' path rules leave as they are (no part ending in '.' or a space, no
+        '.' or '..'), and every folder on the way to that target, walked from the top, must be a
+        plain folder, a reparse point that is not a link and not stored online only, or a junction
+        that passes the same test (at most 8 deep). The walk uses \\?\ paths, so it looks at the
+        names the kernel follows, not ones Windows would rewrite. A folder is only looked at once
+        every folder above it is cleared. The walk stops early, passing, only where Windows says
+        nothing is there (Get-CEItemPresence): a folder the audit may not look at could hide a link.
         Results are kept in the log per junction.
     #>
     param([string]$Path, $Log, [int]$Depth = 0, [hashtable]$Visited)
     $bad = $script:CENotReadText.JunctionOnWay
     if ($null -eq $Visited) { $Visited = @{} }
-    $key = ([string]$Path).TrimEnd('\').ToLowerInvariant()
+    $key = (([string]$Path) -replace '^\\\\\?\\', '').TrimEnd('\').ToLowerInvariant()
     if ($null -ne $Log -and $Log.JunctionCache.ContainsKey($key)) { return $Log.JunctionCache[$key] }
     if ($Depth -ge 8 -or $Visited.ContainsKey($key)) { return $bad }
     $Visited[$key] = $true
@@ -352,26 +401,27 @@ function Get-CEJunctionProblem {
         $rest = ''
         if ($target -match '^\\\?\?\\([A-Za-z]:)(\\.*)?$') {
             $drive = $Matches[1] + '\'
-            $rest = if ($Matches[2]) { $Matches[2].TrimStart('\') } else { '' }
-            if (Test-CELocalFilePath $drive) { $root = $drive }
+            $rest = if ($Matches[2]) { $Matches[2].Trim('\') } else { '' }
+            if (Test-CELocalFilePath $drive) { $root = '\\?\' + $drive }
         }
         elseif ($target -match '^\\\?\?\\(Volume\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\})(\\.*)?$') {
             $root = '\\?\' + $Matches[1] + '\'
-            $rest = if ($Matches[2]) { $Matches[2].TrimStart('\') } else { '' }
+            $rest = if ($Matches[2]) { $Matches[2].Trim('\') } else { '' }
         }
+        # A name Windows would rewrite (foo. read as foo) names another folder than the one the kernel follows.
+        if ($rest -and -not (Test-CERelativePathText $rest)) { $root = $null }
         if ($null -ne $root) {
             $result = ''
             $p = $root
             foreach ($seg in @($rest -split '\\' | Where-Object { $_ })) {
-                if ($seg -eq '.' -or $seg -eq '..') { $result = $bad; break }
                 $p = $p.TrimEnd('\') + '\' + $seg
-                $d = New-Object IO.DirectoryInfo $p
-                if (-not $d.Exists) { break }   # nothing there to follow into
-                $kind = Get-CEReparseKind -Item $d
-                if ($kind -eq 'none' -or $kind -eq 'reparse') { continue }
+                $item = Get-CEItemPresence -Path $p
+                if ($item.State -eq 'missing') { break }   # Windows says nothing is there: nothing to follow into
+                if ($item.State -ne 'present') { $result = $bad; break }
+                $kind = Get-CEReparseKind -Item $item
                 if ($kind -eq 'junction' -and (Get-CEJunctionProblem -Path $p -Log $Log -Depth ($Depth + 1) -Visited $Visited) -eq '') { continue }
-                $result = $bad
-                break
+                if ($kind -ne 'none' -and $kind -ne 'reparse') { $result = $bad; break }
+                if (-not $item.IsFolder) { break }   # a plain file: nothing is followed through it
             }
         }
     }
@@ -383,12 +433,13 @@ function Get-CEJunctionProblem {
 function Get-CEPathChainProblem {
     <#
         Walks the folders Base\Relative from the top, as the rule table in SECURITY.md says:
-        returns '' when every folder is there and may be passed, 'missing' when one is not there,
-        and otherwise the fixed reason the walk stopped (and the relative path it stopped at in
+        returns '' when every folder is there and may be passed, 'missing' when Windows says one is
+        not there (or it is a plain file), and otherwise the fixed reason the walk stopped, which
+        includes a folder the audit may not look at (and the relative path it stopped at in
         -StoppedAt). Mode Listing (names and existence): plain folders, reparse points that are not
         links and junctions that pass Get-CEJunctionProblem may be passed. Mode Content (file
         contents): only plain folders and reparse points that are not links. Not -Above (the
-        user's own session): every folder only has to be there. Base itself is not judged.
+        user's own session): every folder only has to be there and readable. Base itself is not judged.
     #>
     param([string]$Base, [string]$Relative, [ValidateSet('Listing', 'Content')][string]$Mode, $Log, [bool]$Above = $true, [ref]$StoppedAt)
     if (-not $Relative) { return '' }
@@ -397,14 +448,21 @@ function Get-CEPathChainProblem {
     foreach ($seg in @($Relative -split '[\\/]' | Where-Object { $_ })) {
         $p = $p.TrimEnd('\', '/') + '\' + $seg
         $sofar = if ($sofar) { "$sofar\$seg" } else { $seg }
-        $d = New-Object IO.DirectoryInfo $p
-        if (-not $d.Exists) { return 'missing' }
-        if (-not $Above) { continue }
-        $kind = Get-CEReparseKind -Item $d
-        if ($kind -eq 'none' -or $kind -eq 'reparse') { continue }
-        if ($Mode -eq 'Listing' -and $kind -eq 'junction' -and (Get-CEJunctionProblem -Path $p -Log $Log) -eq '') { continue }
-        if ($null -ne $StoppedAt) { $StoppedAt.Value = $sofar }
-        return (Get-CENotReadReason -Kind $kind -Mode $Mode)
+        $item = Get-CEItemPresence -Path $p
+        if ($item.State -eq 'missing') { return 'missing' }
+        if ($item.State -ne 'present') {
+            if ($null -ne $StoppedAt) { $StoppedAt.Value = $sofar }
+            return $item.Reason
+        }
+        if ($Above) {
+            $kind = Get-CEReparseKind -Item $item
+            $pass = ($kind -eq 'none' -or $kind -eq 'reparse' -or ($Mode -eq 'Listing' -and $kind -eq 'junction' -and (Get-CEJunctionProblem -Path $p -Log $Log) -eq ''))
+            if (-not $pass) {
+                if ($null -ne $StoppedAt) { $StoppedAt.Value = $sofar }
+                return (Get-CENotReadReason -Kind $kind -Mode $Mode)
+            }
+        }
+        if (-not $item.IsFolder) { return 'missing' }   # a plain file: nothing is below it
     }
     return ''
 }
@@ -413,15 +471,17 @@ function Test-CEProfileReady {
     <# Whether ProfilePath can be read through this layer: an existing folder on a local fixed drive. #>
     param([string]$ProfilePath)
     if (-not $ProfilePath -or -not (Test-CELocalFilePath $ProfilePath)) { return $false }
-    try { return (New-Object IO.DirectoryInfo $ProfilePath).Exists } catch { return $false }
+    $item = Get-CEItemPresence -Path $ProfilePath
+    return ($item.State -eq 'present' -and $item.IsFolder)
 }
 
 # --- Primitives ---------------------------------------------------------------
 
 function Test-CEProfileItem {
     <#
-        Whether Relative names a file or folder below ProfilePath: $true, $false, or $null when a
-        folder on the way could not be passed (a not-read record is written). The item itself is
+        Whether Relative names a file or folder below ProfilePath: $true, $false (Windows says it is
+        not there), or $null when a folder on the way could not be passed or the item could not be
+        looked at (a not-read record is written). The item itself is
         judged by its own attributes, whatever it is, and never followed: a tool folder that is a
         link still counts as found. Attributes only: nothing is opened.
     #>
@@ -434,13 +494,15 @@ function Test-CEProfileItem {
             $why = Get-CEPathChainProblem -Base $ProfilePath -Relative $parent -Mode Listing -Log $Log -Above $Above
             if ($why -eq 'missing') { return $false }
             if ($why) {
-                Add-CENotRead -Log $Log -Location $Location -Kind 'existence' -Reason $why -Topic $Topic -NeedsUserSession $true
+                Add-CEWayNotRead -Log $Log -Location $Location -Kind 'existence' -Reason $why -Topic $Topic
                 return $null
             }
         }
-        $full = [IO.Path]::Combine($ProfilePath, $Relative)
-        if ((New-Object IO.DirectoryInfo $full).Exists) { return $true }
-        return [bool](New-Object IO.FileInfo $full).Exists
+        $item = Get-CEItemPresence -Path ([IO.Path]::Combine($ProfilePath, $Relative))
+        if ($item.State -eq 'present') { return $true }
+        if ($item.State -eq 'missing') { return $false }
+        Add-CEWayNotRead -Log $Log -Location $Location -Kind 'existence' -Reason $item.Reason -Topic $Topic
+        return $null
     }
     catch {
         Add-CENotRead -Log $Log -Location $Location -Kind 'existence' -Reason "it could not be read ($(Get-CEErrorTypeName $_))" -Topic $Topic `
@@ -469,7 +531,7 @@ function Get-CEProfileChildName {
     $why = Get-CEPathChainProblem -Base $ProfilePath -Relative $Relative -Mode Listing -Log $Log -Above $Above
     if ($why -eq 'missing') { return , $names.ToArray() }
     if ($why) {
-        Add-CENotRead -Log $Log -Location $Location -Kind 'folder-listing' -Reason $why -Topic $Topic -NeedsUserSession $true
+        Add-CEWayNotRead -Log $Log -Location $Location -Kind 'folder-listing' -Reason $why -Topic $Topic
         return , $names.ToArray()
     }
     $seen = 0
@@ -514,8 +576,8 @@ function Read-CEProfileFile {
         the way and the file itself must be plain (reparse points that are not links are fine) and
         not stored online only; then Read-CEBoundedText reads at most MaxBytes. -Budget, a byte
         count shared by several reads, lowers the limit and takes off the bytes read. Anything
-        there and not read is recorded under -Location (default %USERPROFILE%\Relative); a missing
-        file is not.
+        there and not read is recorded under -Location (default %USERPROFILE%\Relative); a file
+        Windows says is not there is not.
     #>
     param([string]$ProfilePath, [string]$Relative, [int]$MaxBytes, [ref]$ByteCount, [ref]$Budget, $Log, [bool]$Above = $true,
         [string]$Topic, [string]$Location, [string]$FileRemedy = 'Check that the file can be read, then run the audit again.')
@@ -527,7 +589,7 @@ function Read-CEProfileFile {
     if ($parent) {
         $why = Get-CEPathChainProblem -Base $ProfilePath -Relative $parent -Mode Content -Log $Log -Above $Above
         if ($why -eq 'missing') { return $null }
-        if ($why) { & $add $why $true ''; return $null }
+        if ($why) { Add-CEWayNotRead -Log $Log -Location $Location -Kind 'file-content' -Reason $why -Topic $Topic; return $null }
     }
     $full = [IO.Path]::Combine($ProfilePath, $Relative)
     $max = [long]$MaxBytes
@@ -535,7 +597,7 @@ function Read-CEProfileFile {
     if ($null -ne $Budget) {
         if ([long]$Budget.Value -lt $max) { $max = [long]$Budget.Value; $byBudget = $true }
         if ($max -le 0) {
-            if ((New-Object IO.FileInfo $full).Exists) { & $add $script:CENotReadText.Budget $false 'Check the rest by hand.' }
+            if ((Get-CEItemPresence -Path $full).State -ne 'missing') { & $add $script:CENotReadText.Budget $false 'Check the rest by hand.' }
             return $null
         }
     }
@@ -587,7 +649,7 @@ function Read-CENamedFile {
     if ($parent) {
         $why = Get-CEPathChainProblem -Base $base -Relative $parent -Mode Content -Log $Log -Above $Above
         if ($why -eq 'missing') { return $null }
-        if ($why) { & $add $why $true ''; return $null }
+        if ($why) { Add-CEWayNotRead -Log $Log -Location $location -Kind 'file-content' -Reason $why -Topic $Topic; return $null }
     }
     $reason = [ref]''
     $text = Read-CEBoundedText -Path $full -MaxBytes $MaxBytes -FollowLinks:(-not $Above) -SkipReason $reason
@@ -670,6 +732,26 @@ function Format-CENotRead {
     return "$loc ($what$times): $reason"
 }
 
+function Get-CENotReadAdvice {
+    <#
+        What to do about Records, as sentences: why an elevated or SYSTEM audit skips links and
+        files stored online only (when a record was skipped for that), where to read what needs the
+        user's own session (only when a record needs it; Scope is the check's scope), then each
+        record's own remedy, once each. The report, SC-13 and New-CENotReadResult use it.
+    #>
+    param([object[]]$Records, [ValidateSet('Machine', 'User')][string]$Scope)
+    $recs = @($Records | Where-Object { $null -ne $_ })
+    $advice = @()
+    if (@($recs | Where-Object { Test-CELinkReason ([string](Get-CENotReadField $_ 'Reason' (Get-CENotReadField $_ 'reason' ''))) }).Count) {
+        $advice += "An elevated or SYSTEM audit does not follow the user's symbolic links (or junctions whose target it can't verify), never reads a file's contents through a junction or symbolic link, and does not download files stored online only."
+    }
+    $user = @($recs | Where-Object { [bool](Get-CENotReadField $_ 'NeedsUserSession' (Get-CENotReadField $_ 'needsUserSession' $false)) })
+    if ($user.Count -eq $recs.Count -and $user.Count) { $advice += "To read these, $(Get-CENotReadRemedy -Scope $Scope)." }
+    elseif ($user.Count) { $advice += "To read those skipped because the audit ran with more rights than the user, $(Get-CENotReadRemedy -Scope $Scope)." }
+    $advice += @($recs | ForEach-Object { [string](Get-CENotReadField $_ 'Remedy' (Get-CENotReadField $_ 'remedy' '')) } | Where-Object { $_ } | Select-Object -Unique)
+    return , @($advice)
+}
+
 function New-CENotReadResult {
     <#
         One Manual result for the records a check depends on: what was not read, why, what that
@@ -679,11 +761,7 @@ function New-CENotReadResult {
     param([object[]]$Records, [ValidateSet('Machine', 'User')][string]$Scope, [string]$Expected, [string]$Consequence = 'this result may be incomplete')
     $recs = @($Records | Where-Object { $null -ne $_ })
     $lines = @($recs | ForEach-Object { Format-CENotRead $_ })
-    $advice = @()
-    if (@($recs | Where-Object { [bool](Get-CENotReadField $_ 'NeedsUserSession' (Get-CENotReadField $_ 'needsUserSession' $false)) }).Count) {
-        $advice += "An elevated or SYSTEM audit does not follow the user's symbolic links (or junctions it can't verify) and does not download files stored online only. To read these, $(Get-CENotReadRemedy -Scope $Scope)."
-    }
-    $advice += @($recs | ForEach-Object { [string](Get-CENotReadField $_ 'Remedy' (Get-CENotReadField $_ 'remedy' '')) } | Where-Object { $_ } | Select-Object -Unique)
+    $advice = Get-CENotReadAdvice -Records $recs -Scope $Scope   # assign first: it returns ,array
     return New-CEResult -Status 'Manual' -Subject 'Not read' -Expected $Expected `
         -Actual "$($recs.Count) location(s) could not be read, so ${Consequence}: $($lines -join '; ')" `
         -Recommendation ($advice -join ' ') -Evidence $lines

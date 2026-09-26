@@ -191,7 +191,7 @@ Register-CECheck -Id 'UA-07' -Category 'UserAccessControl' -Severity 'Critical' 
             if (-not $detected.ContainsKey($tool.Service)) { $detected[$tool.Service] = $tool.Name }
         }
         # Places in the user's profile that could not be read may hold an AI tool whose service is not listed here.
-        $notRead = Select-CENotRead -Records @(Get-CEObjectValue $aiState 'NotRead' @()) -Topics (Get-CEAIDetectionTopic)   # assign first: it returns ,array
+        $notRead = Select-CENotRead -Records @(Get-CEObjectValue $aiState 'NotRead' @()) -Topics (Get-CEAIDetectionTopic -HidesTool)   # assign first: it returns ,array
         if ($notRead.Count) {
             New-CENotReadResult -Records $notRead -Scope Machine -Expected 'MFA enforced for all users and admins of every cloud service' `
                 -Consequence 'a cloud service an AI tool uses may be missing from this list'

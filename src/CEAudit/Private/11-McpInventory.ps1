@@ -259,7 +259,8 @@ function Get-CEMcpInventory {
         found and not read (kind file-content: the file is a link, a junction is on
         the way, it is stored online only, too large, unreadable or not parseable),
         a config whose existence could not be checked (kind existence: a symbolic
-        link on the way, which is not counted as found), and a missing or non-local
+        link on the way, or a folder or file the audit may not look at, which is not
+        counted as found), and a missing or non-local
         profile. Reasons are fixed strings, so no error text (which can quote a
         credential) is ever recorded.
     #>
@@ -307,11 +308,13 @@ function Get-CEMcpInventory {
             if ($parent) {
                 $why = Get-CEPathChainProblem -Base $profilePath -Relative $parent -Mode Listing -Log $log -Above $above
                 if ($why -eq 'missing') { continue }
-                if ($why) { Add-CENotRead -Log $log -Location $loc -Kind 'existence' -Reason $why -Topic 'mcp' -NeedsUserSession $true; continue }
+                if ($why) { Add-CEWayNotRead -Log $log -Location $loc -Kind 'existence' -Reason $why -Topic 'mcp'; continue }
                 $viaJunction = ($above -and (Get-CEPathChainProblem -Base $profilePath -Relative $parent -Mode Content -Log $log -Above $above) -ne '')
             }
-            $fi = New-Object IO.FileInfo $full
-            if (-not $fi.Exists) { continue }
+            # Only what Windows says is not there is missing; a config the audit may not look at is recorded, not counted.
+            $fi = Get-CEItemPresence -Path $full
+            if ($fi.State -eq 'missing' -or ($fi.State -eq 'present' -and $fi.IsFolder)) { continue }
+            if ($fi.State -ne 'present') { Add-CEWayNotRead -Log $log -Location $loc -Kind 'existence' -Reason $fi.Reason -Topic 'mcp'; continue }
             $found++
             $kind = if ($above) { Get-CEReparseKind -Item $fi } else { 'none' }
             if ($viaJunction -or @('junction', 'symlink', 'surrogate', 'unreadable') -contains $kind) {

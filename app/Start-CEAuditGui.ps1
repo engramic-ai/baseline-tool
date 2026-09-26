@@ -1375,7 +1375,18 @@ function Set-CEAiTab {
                 $count = [int](Get-UiField $_ 'count' 1)
                 "$(Get-UiField $_ 'location' '') ($(Get-UiField $_ 'kind' '')$(if ($count -gt 1) { ", $count times" })): $(Get-UiField $_ 'reason' '')"
             })
-        $text = "Not read, so this may be incomplete: $($lines -join '; '). To read them, run the audit without elevation while signed in as that user (not with Restart as administrator)."
+        # The same advice as the report: why links were skipped, and the user's session, only where a record needs them; then each record's own fix.
+        $linkReasons = @('a symbolic link on the way', 'a junction on the way', 'a junction or symbolic link', 'it is a junction or symbolic link', 'it is stored online only', 'a reparse point of a kind')
+        $advice = @()
+        if (@($notRead | Where-Object { $reason = [string](Get-UiField $_ 'reason' ''); @($linkReasons | Where-Object { $reason.StartsWith($_) }).Count }).Count) {
+            $advice += "An elevated or SYSTEM audit does not follow the user's symbolic links (or junctions whose target it can't verify), never reads a file's contents through a junction or symbolic link, and does not download files stored online only."
+        }
+        $user = @($notRead | Where-Object { [bool](Get-UiField $_ 'needsUserSession' $false) }).Count
+        $toRead = 'run the audit without elevation while signed in as that user (not with Restart as administrator)'
+        if ($user -and $user -eq $notRead.Count) { $advice += "To read these, $toRead." }
+        elseif ($user) { $advice += "To read those skipped because the audit ran with more rights than the user, $toRead." }
+        $advice += @($notRead | ForEach-Object { [string](Get-UiField $_ 'remedy' '') } | Where-Object { $_ } | Select-Object -Unique)
+        $text = "Not read, so this may be incomplete: $($lines -join '; '). $($advice -join ' ')".TrimEnd()
         [void]$ui.AiEnvs.Children.Add((New-CEAiLine -Text $text -Bad))
     }
 

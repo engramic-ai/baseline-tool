@@ -2990,16 +2990,21 @@ Describe 'AI tools (UA-07, SC-09, UA-10)' {
                 }
             }
             function global:Invoke-TestBrowserScan {
-                # Get-CEAIToolStateUncached over a fixture profile; nothing else on this machine is looked at.
-                param([string]$ProfilePath, [switch]$System)
-                InModuleScope CEAudit -Parameters @{ P = $ProfilePath; S = [bool]$System } {
-                    param($P, $S)
+                # Get-CEAIToolStateUncached over a fixture profile; nothing else on this machine is looked at
+                # (the Program Files variables point at an empty folder, see BeforeEach).
+                param([string]$ProfilePath, [switch]$System, [object[]]$Processes, [object[]]$Software)
+                $procs = if ($Processes) { @($Processes) } else { @() }
+                $sw = if ($Software) { @($Software) } else { @() }
+                InModuleScope CEAudit -Parameters @{ P = $ProfilePath; S = [bool]$System; Pr = $procs; Sw = $sw } {
+                    param($P, $S, $Pr, $Sw)
                     $script:testBrowserProfile = $P
+                    $script:testBrowserProcs = @($Pr | Where-Object { $null -ne $_ })
+                    $script:testBrowserSoftware = @($Sw | Where-Object { $null -ne $_ })
                     Mock Get-CEUserProfilePath { $script:testBrowserProfile }
-                    Mock Get-CEInstalledSoftware { @() }
+                    Mock Get-CEInstalledSoftware { $script:testBrowserSoftware }
                     Mock Get-CEStorePackageName { , @() }
                     Mock Get-CEVsCodeBuiltInExtensionDir { , @() }
-                    Mock Get-CEProcessList { , @() }
+                    Mock Get-CEProcessList { , $script:testBrowserProcs }
                     Get-CEAIToolStateUncached -Context ([pscustomobject]@{ IsSystem = $S; ConsoleUserSid = 'S-1-5-21-1-2-3-1001' })
                 }
             }
@@ -3015,8 +3020,26 @@ Describe 'AI tools (UA-07, SC-09, UA-10)' {
                 }
             }
             function global:Get-TestToolById { param($State, [string]$Id) @($State.Tools | Where-Object { $_.Id -eq $Id }) }
+            function global:Set-TestProgramFiles {
+                # Program Files as the module sees it: ProgramW6432 is the 64-bit folder in 32-bit and 64-bit
+                # processes alike; ProgramFiles is the x86 folder in a 32-bit process.
+                param([string]$W6432, [string]$ProgramFiles, [string]$X86)
+                foreach ($d in @($W6432, $ProgramFiles, $X86) | Where-Object { $_ }) { New-Item -ItemType Directory -Force -Path $d | Out-Null }
+                $env:ProgramW6432 = $W6432
+                $env:ProgramFiles = $ProgramFiles
+                ${env:ProgramFiles(x86)} = $X86
+            }
+        }
+        BeforeEach {
+            # Browsers installed on this machine must not change a result, so Program Files starts empty.
+            $global:CEOrigProgramFiles = @{ W6432 = $env:ProgramW6432; Pf = $env:ProgramFiles; X86 = ${env:ProgramFiles(x86)} }
+            $none = Join-Path $TestDrive 'no-program-files'
+            Set-TestProgramFiles -W6432 $none -ProgramFiles $none -X86 $none
         }
         AfterEach {
+            $env:ProgramW6432 = $global:CEOrigProgramFiles.W6432
+            $env:ProgramFiles = $global:CEOrigProgramFiles.Pf
+            ${env:ProgramFiles(x86)} = $global:CEOrigProgramFiles.X86
             InModuleScope CEAudit -Parameters @{ O = $global:CEOrigBrowserConfig } {
                 param($O)
                 (Get-CEConfig)['ai-tools'] = $O.Tools
@@ -3118,9 +3141,9 @@ Describe 'AI tools (UA-07, SC-09, UA-10)' {
 
             $chatgpt = @(Get-TestToolById $st 't-chatgpt')
             @($chatgpt[0].Signals) | Should -Be @("Microsoft Edge extension: $($CETestExtId.ChatGptEdge) 1.26.901.11451 (profile: Default)") -Because 'a folder named like an id at the Brave root is not a profile'
+            $chatgpt[0].Signals.GetType().IsArray | Should -BeTrue -Because 'one signal is still a list on Windows PowerShell 5.1'
 
             $wordtune = @(Get-TestToolById $st 't-wordtune')
-            $wordtune[0].Signals.GetType().IsArray | Should -BeTrue -Because 'one signal is still a list on Windows PowerShell 5.1'
             @($wordtune[0].Signals).Count | Should -Be 2
             @($wordtune[0].Signals) | Should -Contain 'Mozilla Firefox add-on: support@wordtune.com (profile: default-release)'
             @($wordtune[0].Signals) | Should -Contain 'Mozilla Firefox add-on: support@wordtune.com (profile: other)'
@@ -3166,11 +3189,36 @@ Describe 'AI tools (UA-07, SC-09, UA-10)' {
             @($mfa | Where-Object Subject -eq 'Cursor').Count | Should -Be 1
         }
 
+        It 'does not call a tool a leftover when it is also found another way or is running' {
+            $p = Join-Path $TestDrive 'bx-leftover-both'
+            New-TestTree $p @("$CETestChromeData\Profile 1\Extensions\$($CETestExtId.Claude)\1.0.94_0")
+            # An override that joins a desktop app with its browser extension; Chrome is not installed.
+            Set-TestBrowserConfig -Tools @"
+{ "schemaVersion": 2, "tools": [ { "id": "t-both", "name": "Both test", "service": "Both", "canActOnDevice": false,
+  "windows": { "paths": [ ".bothtool" ], "processes": [ { "image": "bothtool.exe" } ] },
+  "browserExtensions": [ { "store": "chrome", "id": "$($CETestExtId.Claude)" } ] } ] }
+"@ -Browsers @'
+{ "windows": [ { "name": "Google Chrome", "engine": "chromium", "root": "AppData\\Local\\Google\\Chrome\\User Data",
+  "installed": [ { "base": "profile", "path": "AppData\\Local\\Google\\Chrome\\Application\\chrome.exe" } ] } ] }
+'@
+            @(Get-TestToolById (Invoke-TestBrowserScan -ProfilePath $p) 't-both')[0].LeftoverOnly | Should -BeTrue -Because 'the extension is its only signal'
+
+            $run = [pscustomobject]@{ Name = 'bothtool.exe'; ProcessId = 4242; Path = 'C:\Apps\bothtool.exe'; CommandLine = 'bothtool'; Cim = $null }
+            $both = @(Get-TestToolById (Invoke-TestBrowserScan -ProfilePath $p -Processes @($run)) 't-both')
+            $both[0].LeftoverOnly | Should -BeFalse -Because 'the tool is running'
+            $both[0].Signals | Should -Contain 'Running: bothtool.exe (pid 4242)'
+
+            New-TestTree $p @('.bothtool')
+            $both = @(Get-TestToolById (Invoke-TestBrowserScan -ProfilePath $p) 't-both')
+            $both[0].LeftoverOnly | Should -BeFalse -Because 'its profile folder is there too'
+            $both[0].Signals | Should -Contain 'Found %USERPROFILE%\.bothtool'
+        }
+
         It 'the browser extension collector reads folder and file names only' {
             InModuleScope CEAudit {
                 $names = 'Get-CEBrowserExtensionList', 'Get-CEPlainChildName', 'Get-CEChromiumExtensionVersion', 'Test-CEPlainDirectory', 'Test-CEPlainDirectoryChain',
                     'Test-CERelativePathText', 'Get-CEBrowserProfileLabel', 'Get-CEBrowserExtensionIdSet', 'Test-CEFirefoxAddonId', 'Test-CEBrowserInstalled',
-                    'Get-CEBrowserProfileRoot', 'Format-CEBrowserExtensionEvidence', 'ConvertTo-CEBoundedInt', 'Test-CEPlainProfileItem'
+                    'Get-CEBrowserProfileRoot', 'Format-CEBrowserExtensionEvidence', 'ConvertTo-CEBoundedInt', 'Test-CEPlainProfileItem', 'Get-CEProgramFilesPath'
                 $text = @($names | ForEach-Object { (Get-Command $_ -CommandType Function).ScriptBlock.ToString() }) -join "`n"
                 $text | Should -Not -Match 'Get-Content|ReadAll|OpenRead|OpenText|OpenWrite|StreamReader|FileStream|\.Open\(|ConvertFrom-Json|Import-Csv|Select-String|Get-Item|Get-ChildItem|Test-Path|Resolve-Path|Registry|Invoke-CENative|Invoke-Expression|Start-Process|-Recurse|\[IO\.File\]|&\s*\$'
                 # Listings stay lazy: routing the enumerable through an 'if' expression would read the whole folder first.
@@ -3238,29 +3286,65 @@ Describe 'AI tools (UA-07, SC-09, UA-10)' {
   { "name": "Microsoft Edge", "engine": "chromium", "root": "AppData\\Local\\Microsoft\\Edge\\User Data", "installed": [ { "base": "programFiles", "path": "Microsoft\\Edge\\Application\\msedge.exe" }, { "base": "programFilesX86", "path": "Microsoft\\Edge\\Application\\msedge.exe" } ] }
 ] }
 '@
-            $oldPf = $env:ProgramFiles
-            $oldPfx = ${env:ProgramFiles(x86)}
-            try {
-                $env:ProgramFiles = $pf
-                ${env:ProgramFiles(x86)} = $pfx
-                $m = @(Get-TestBrowserMatch $p)
-            }
-            finally {
-                $env:ProgramFiles = $oldPf
-                ${env:ProgramFiles(x86)} = $oldPfx
-            }
+            Set-TestProgramFiles -W6432 $pf -ProgramFiles $pf -X86 $pfx
+            $m = @(Get-TestBrowserMatch $p)
             $found = @{}
             foreach ($x in $m) { $found[$x.Browser] = $x.BrowserFound }
             $found['Google Chrome'] | Should -BeTrue -Because 'chrome.exe is in Program Files'
             $found['Brave'] | Should -BeTrue -Because 'brave.exe is in Program Files (x86)'
             $found['Microsoft Edge'] | Should -BeFalse -Because 'msedge.exe is in neither'
+
+            # In a 32-bit PowerShell, ProgramFiles names the x86 folder; the 64-bit one is still looked in.
+            Set-TestProgramFiles -W6432 $pf -ProgramFiles $pfx -X86 $pfx
+            $m = @(Get-TestBrowserMatch $p)
+            @($m | Where-Object { $_.Browser -eq 'Google Chrome' })[0].BrowserFound | Should -BeTrue -Because 'a 32-bit host still finds 64-bit Chrome'
+            InModuleScope CEAudit -Parameters @{ Pf = $pf; Pfx = $pfx } {
+                param($Pf, $Pfx)
+                Get-CEProgramFilesPath 'programFiles' | Should -Be $Pf
+                Get-CEProgramFilesPath 'programFilesX86' | Should -Be $Pfx
+                Get-CEProgramFilesPath 'profile' | Should -Be ''
+                $env:ProgramW6432 = $null
+                Get-CEProgramFilesPath 'programFiles' | Should -Be $Pfx -Because 'without ProgramW6432 (32-bit Windows) ProgramFiles is used'
+            }
+        }
+
+        It 'knows Firefox is installed when only Developer Edition or Nightly is' {
+            # Every Firefox edition keeps its profiles in the same folder, so an add-on in a Developer Edition
+            # profile must not be called a leftover of release Firefox.
+            $p = Join-Path $TestDrive 'bx-firefox-dev'
+            New-TestTree $p @('AppData\Roaming\Mozilla\Firefox\Profiles\ab12cd34.dev-edition-default\extensions\support@wordtune.com.xpi')
+            Set-TestBrowserConfig -Tools (Get-Content (Join-Path $script:RepoRoot 'config\ai-tools.json') -Raw) -Browsers (Get-Content (Join-Path $script:RepoRoot 'config\browser-profiles.json') -Raw)
+            $tool = @(Get-TestToolById (Invoke-TestBrowserScan -ProfilePath $p) 'wordtune-extension')
+            $tool[0].LeftoverOnly | Should -BeTrue -Because 'no Firefox edition is installed yet'
+
+            $cases = @{
+                'Developer Edition in Program Files'         = @{ Base = 'W6432'; Path = 'Firefox Developer Edition\firefox.exe' }
+                'Nightly in Program Files (x86)'             = @{ Base = 'X86'; Path = 'Firefox Nightly\firefox.exe' }
+                'an older Nightly in Program Files'          = @{ Base = 'W6432'; Path = 'Nightly\firefox.exe' }
+                'Developer Edition installed for one person' = @{ Base = 'Profile'; Path = 'AppData\Local\Firefox Developer Edition\firefox.exe' }
+            }
+            $i = 0
+            foreach ($k in $cases.Keys) {
+                $i++
+                $pf = Join-Path $TestDrive "bx-ff-pf$i"
+                $pfx = Join-Path $TestDrive "bx-ff-pfx$i"
+                Set-TestProgramFiles -W6432 $pf -ProgramFiles $pf -X86 $pfx
+                $q = Join-Path $TestDrive "bx-ff-profile$i"
+                New-TestTree $q @('AppData\Roaming\Mozilla\Firefox\Profiles\ab12cd34.dev-edition-default\extensions\support@wordtune.com.xpi')
+                $base = switch ($cases[$k].Base) { 'W6432' { $pf } 'X86' { $pfx } default { $q } }
+                New-TestTree $base @($cases[$k].Path)
+                $tool = @(Get-TestToolById (Invoke-TestBrowserScan -ProfilePath $q) 'wordtune-extension')
+                $tool[0].LeftoverOnly | Should -BeFalse -Because $k
+                @($tool[0].Signals) | Should -Be @('Mozilla Firefox add-on: support@wordtune.com (profile: dev-edition-default)') -Because $k
+            }
         }
 
         It 'does not report Comet or Genspark from the profiles they leave behind when uninstalled' {
             $p = Join-Path $TestDrive 'bx-comet'
             New-TestTree $p @("AppData\Local\Perplexity\Comet\User Data\Default\Extensions\$($CETestExtId.Claude)\1.0.94_0",
                 'AppData\Local\GensparkSoftware\Genspark-Browser\User Data\Default')
-            # The shipped files, read directly so an admin's copy on this machine doesn't change the result.
+            # The shipped files, read directly so an admin's copy on this machine doesn't change the result,
+            # and Program Files is empty (BeforeEach), so a Comet installed on this machine doesn't either.
             Set-TestBrowserConfig -Tools (Get-Content (Join-Path $script:RepoRoot 'config\ai-tools.json') -Raw) -Browsers (Get-Content (Join-Path $script:RepoRoot 'config\browser-profiles.json') -Raw)
             $st = Invoke-TestBrowserScan -ProfilePath $p
             @(Get-TestToolById $st 'perplexity-comet').Count | Should -Be 0 -Because 'Comet is not installed'
@@ -3273,6 +3357,18 @@ Describe 'AI tools (UA-07, SC-09, UA-10)' {
             $st = Invoke-TestBrowserScan -ProfilePath $p
             @(Get-TestToolById $st 'perplexity-comet')[0].Signals | Should -Contain 'Found %USERPROFILE%\AppData\Local\Perplexity\Comet\Application'
             @(Get-TestToolById $st 'claude-in-chrome')[0].LeftoverOnly | Should -BeFalse
+        }
+
+        It 'finds Opera Neon installed for all users while it is closed' {
+            # An install in Program Files has no profile folder, and Neon is not running.
+            Set-TestBrowserConfig -Tools (Get-Content (Join-Path $script:RepoRoot 'config\ai-tools.json') -Raw) -Browsers (Get-Content (Join-Path $script:RepoRoot 'config\browser-profiles.json') -Raw)
+            $p = Join-Path $TestDrive 'bx-neon'
+            New-Item -ItemType Directory -Force -Path $p | Out-Null
+            $neon = [pscustomobject]@{ Name = 'Opera Neon 1.0.4321.0'; Version = '1.0.4321.0'; Publisher = 'Opera Software'; KeyName = 'Opera Neon 1.0.4321.0' }
+            $tool = @(Get-TestToolById (Invoke-TestBrowserScan -ProfilePath $p -Software @($neon)) 'opera-neon')
+            @($tool[0].Signals) | Should -Be @('Installed program: Opera Neon 1.0.4321.0')
+            $stable = [pscustomobject]@{ Name = 'Opera Stable 120.0.5543.0'; Version = '120.0.5543.0'; Publisher = 'Opera Software'; KeyName = 'Opera 120.0.5543.0' }
+            @(Get-TestToolById (Invoke-TestBrowserScan -ProfilePath $p -Software @($stable)) 'opera-neon').Count | Should -Be 0 -Because 'plain Opera is not Neon'
         }
 
         It 'does not reach a skipped link through a folder name ending in a dot' {
@@ -3344,11 +3440,20 @@ Describe 'AI tools (UA-07, SC-09, UA-10)' {
                 }
                 $cases = @{
                     'a folder on the way' = & $case 'a' 'AppData\Local\Vendor' 'Tool'
-                    'the folder itself'   = & $case 'b' 'AppData\Local\Vendor\Tool' 'x'
                     'the VS Code folder'  = & $case 'c' '.vscode' 'extensions\pub.ext-1.0.0'
                 }
                 foreach ($k in $cases.Keys) {
                     @((Invoke-TestBrowserScan -ProfilePath $cases[$k]).Tools).Count | Should -Be 0 -Because "$k is a junction"
+                }
+                # The folder itself may be a link (moved to another drive, say): it is found by its own
+                # attributes and not followed.
+                $moved = & $case 'b' 'AppData\Local\Vendor\Tool' 'x'
+                @(Get-TestToolById (Invoke-TestBrowserScan -ProfilePath $moved) 't-folder')[0].Signals | Should -Be @('Found %USERPROFILE%\AppData\Local\Vendor\Tool')
+                InModuleScope CEAudit -Parameters @{ P = $moved } {
+                    param($P)
+                    Test-CEPlainProfileItem -ProfilePath $P -Relative 'AppData\Local\Vendor\Tool' | Should -BeTrue
+                    Test-CEPlainProfileItem -ProfilePath $P -Relative 'AppData\Local\Vendor\Tool' -NoLink | Should -BeFalse -Because '-NoLink is for callers that go on to use the path'
+                    Test-CEPlainProfileItem -ProfilePath $P -Relative 'AppData\Local\Vendor' -NoLink | Should -BeTrue
                 }
             }
             finally {
@@ -3372,6 +3477,57 @@ Describe 'AI tools (UA-07, SC-09, UA-10)' {
             finally {
                 foreach ($l in $links) { if ([IO.Directory]::Exists($l)) { [IO.Directory]::Delete($l) } }
             }
+        }
+
+        It "reads a built-in VS Code extension's package.json only when it is small and not a link" {
+            # The per-user install is in a profile the user controls, and a SYSTEM audit reads it.
+            $dir = Join-Path $TestDrive 'lk-vscode-pkg\resources\app\extensions'
+            New-TestTree $dir @('copilot', 'big', 'nopkg', 'broken')
+            Set-Content -LiteralPath (Join-Path $dir 'copilot\package.json') -Value '{ "name": "copilot-chat", "publisher": "GitHub" }' -Encoding ASCII
+            [IO.File]::WriteAllText((Join-Path $dir 'big\package.json'), ('{ "name": "file", "publisher": "big", "pad": "' + ('x' * (2MB + 16)) + '" }'))
+            Set-Content -LiteralPath (Join-Path $dir 'broken\package.json') -Value '{ not json' -Encoding ASCII
+            InModuleScope CEAudit -Parameters @{ D = $dir } {
+                param($D)
+                Get-CEVsCodeBuiltInExtensionId -Folder (Join-Path $D 'copilot') | Should -Be 'github.copilot-chat'
+                Get-CEVsCodeBuiltInExtensionId -Folder (Join-Path $D 'big') | Should -Be 'big' -Because 'a package.json over 2 MB is not read'
+                Get-CEVsCodeBuiltInExtensionId -Folder (Join-Path $D 'nopkg') | Should -Be 'nopkg'
+                Get-CEVsCodeBuiltInExtensionId -Folder (Join-Path $D 'broken') | Should -Be 'broken'
+                $budget = [long]10
+                Get-CEVsCodeBuiltInExtensionId -Folder (Join-Path $D 'copilot') -Budget ([ref]$budget) | Should -Be 'copilot' -Because 'the byte budget is used up'
+                $budget = [long]1000
+                Get-CEVsCodeBuiltInExtensionId -Folder (Join-Path $D 'copilot') -Budget ([ref]$budget) | Should -Be 'github.copilot-chat'
+                $budget | Should -BeLessThan 1000 -Because 'what was read comes off the budget'
+                Read-CEBoundedText -Path (Join-Path $D 'big\package.json') -MaxBytes 1MB | Should -BeNullOrEmpty
+                Read-CEBoundedText -Path (Join-Path $D 'copilot') -MaxBytes 1MB | Should -BeNullOrEmpty -Because 'a folder is not a file'
+                Read-CEBoundedText -Path (Join-Path $D 'copilot\package.json') -MaxBytes 1MB | Should -Match 'copilot-chat'
+                # Files a user controls are read through Read-CEBoundedText and folders listed with a cap.
+                foreach ($f in 'Get-CEVsCodeBuiltInExtensionId', 'Get-CEAIToolStateUncached', 'Get-CEVMwareMachine', 'Get-CEVirtualBoxMachine', 'Get-CEWslNetworkingMode') {
+                    (Get-Command $f -CommandType Function).ScriptBlock.ToString() | Should -Not -Match 'Get-Content|Get-ChildItem|ReadAll|Test-Path' -Because $f
+                }
+            }
+            # End to end: Copilot Chat is recognised, and the oversized file falls back to its folder name.
+            $st = InModuleScope CEAudit -Parameters @{ D = $dir } {
+                param($D)
+                $script:pkgDir = $D
+                Mock Get-CEVsCodeBuiltInExtensionDir { , @($script:pkgDir) }
+                Mock Get-CEUserProfilePath { $null }
+                Mock Get-CEInstalledSoftware { @() }
+                Mock Get-CEStorePackageName { , @() }
+                Mock Get-CEProcessList { , @() }
+                Get-CEAIToolStateUncached -Context ([pscustomobject]@{ IsSystem = $true })
+            }
+            @(Get-TestToolById $st 'github-copilot-vscode')[0].Signals | Should -Be @('VS Code built-in extension: github.copilot-chat')
+        }
+
+        It "does not follow a built-in VS Code extension's package.json that is a symbolic link" {
+            $dir = Join-Path $TestDrive 'lk-vscode-pkglink'
+            New-TestTree $dir @('copilot', 'linked')
+            Set-Content -LiteralPath (Join-Path $dir 'copilot\package.json') -Value '{ "name": "copilot-chat", "publisher": "GitHub" }' -Encoding ASCII
+            $link = Join-Path $dir 'linked\package.json'
+            try { New-Item -ItemType SymbolicLink -Path $link -Target (Join-Path $dir 'copilot\package.json') -ErrorAction Stop | Out-Null }
+            catch { Set-ItResult -Skipped -Because "this account can't create symbolic links: $($_.Exception.Message)"; return }
+            try { InModuleScope CEAudit -Parameters @{ D = $dir } { param($D) Get-CEVsCodeBuiltInExtensionId -Folder (Join-Path $D 'linked') | Should -Be 'linked' } }
+            finally { Remove-Item -LiteralPath $link -Force }
         }
 
         It 'does not follow a directory symbolic link below the profile' {
@@ -3456,6 +3612,39 @@ Describe 'Security review fixes' {
                 @($vms).Count | Should -Be 0
                 Test-CELocalFilePath '\\attacker-host\share\evil.vmx' | Should -BeFalse
             }
+        }
+
+        It 'reads VM inventories only through plain folders and up to a size limit' {
+            $vmx = Join-Path $TestDrive 'vm-limits\lab.vmx'
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $vmx) | Out-Null
+            Set-Content -LiteralPath $vmx -Value 'displayName = "Lab"'
+            $line = "vmlist1.config = `"$vmx`""
+            # A plain inventory is read.
+            $plain = Join-Path $TestDrive 'vm-plain'
+            New-Item -ItemType Directory -Force -Path (Join-Path $plain 'AppData\Roaming\VMware') | Out-Null
+            Set-Content -LiteralPath (Join-Path $plain 'AppData\Roaming\VMware\inventory.vmls') -Value $line
+            # One reached through a junction the user made is not.
+            $linked = Join-Path $TestDrive 'vm-linked'
+            New-Item -ItemType Directory -Force -Path (Join-Path $linked 'AppData\Roaming'), (Join-Path $TestDrive 'vm-target') | Out-Null
+            Set-Content -LiteralPath (Join-Path $TestDrive 'vm-target\inventory.vmls') -Value $line
+            $link = Join-Path $linked 'AppData\Roaming\VMware'
+            New-Item -ItemType Junction -Path $link -Target (Join-Path $TestDrive 'vm-target') | Out-Null
+            # And one over 1 MB is not read at all.
+            $big = Join-Path $TestDrive 'vm-big'
+            New-Item -ItemType Directory -Force -Path (Join-Path $big 'AppData\Roaming\VMware') | Out-Null
+            [IO.File]::WriteAllText((Join-Path $big 'AppData\Roaming\VMware\inventory.vmls'), ($line + "`r`n" + ('#' * (1MB + 16))))
+            try {
+                InModuleScope CEAudit -Parameters @{ Plain = $plain; Linked = $linked; Big = $big } {
+                    param($Plain, $Linked, $Big)
+                    $vms = Get-CEVMwareMachine -ProfilePath $Plain
+                    @($vms).Count | Should -Be 1
+                    $vms = Get-CEVMwareMachine -ProfilePath $Linked
+                    @($vms).Count | Should -Be 0 -Because 'the VMware folder is a junction'
+                    $vms = Get-CEVMwareMachine -ProfilePath $Big
+                    @($vms).Count | Should -Be 0 -Because 'the inventory is over the size limit'
+                }
+            }
+            finally { if ([IO.Directory]::Exists($link)) { [IO.Directory]::Delete($link) } }
         }
     }
 
@@ -3961,6 +4150,26 @@ Describe 'MCP inventory (11-McpInventory)' {
             $res.Parsed | Should -Be 0
             $res.Creds | Should -Be 0
             $res.Json | Should -Not -Match ([regex]::Escape($script:secret))
+        }
+        It 'machine (SYSTEM) context does not look up config files through a link in the profile' {
+            # alice's .cursor is a junction to bob's: as SYSTEM, bob's file must not be reported under alice.
+            $alice = Join-Path $TestDrive 'mcp-alice'
+            $bob = Join-Path $TestDrive 'mcp-bob\.cursor'
+            New-Item -ItemType Directory -Force -Path $alice, $bob, (Join-Path $alice 'AppData\Roaming\Claude') | Out-Null
+            Set-Content -LiteralPath (Join-Path $bob 'mcp.json') -Value '{ "mcpServers": {} }' -Encoding ASCII
+            Set-Content -LiteralPath (Join-Path $alice 'AppData\Roaming\Claude\claude_desktop_config.json') -Value '{ "mcpServers": {} }' -Encoding ASCII
+            $link = Join-Path $alice '.cursor'
+            New-Item -ItemType Junction -Path $link -Target $bob | Out-Null
+            try {
+                $inv = InModuleScope CEAudit -Parameters @{ P = $alice } {
+                    param($P)
+                    Mock Get-CEUserProfilePath { $P }
+                    Get-CEMcpInventory -Context ([pscustomobject]@{ ComputerName = 'T4'; AuditTime = (Get-Date); IsElevated = $true; IsSystem = $true; ConsoleUserSid = 'S-1-5-21-1-1-1-1001' })
+                }
+                $inv.mcpConfigsFound | Should -Be 1 -Because 'only the file reached through plain folders counts'
+                @($inv.mcpServers | ForEach-Object { $_.configPath }) | Should -Be @('AppData\Roaming\Claude\claude_desktop_config.json')
+            }
+            finally { if ([IO.Directory]::Exists($link)) { [IO.Directory]::Delete($link) } }
         }
     }
 }

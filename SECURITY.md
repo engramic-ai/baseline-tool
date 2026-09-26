@@ -37,11 +37,23 @@ listed in `config/ai-tools.json`. It skips folders below the profile folder that
 junctions or symbolic links, and names ending in a dot or a space, which Windows would
 read as a different folder. The same rules apply when it looks for AI tools' folders in
 the profile and lists VS Code extensions there: it checks that each folder on the way is
-a plain folder, and checks the last one by its attributes only. These checks are made by
-path, so a user who can create symbolic links (for example with Developer Mode on) could
-swap a folder for a link between the check and the read; a SYSTEM audit could then
-connect to a network share. Blocking local-to-remote symbolic link evaluation by policy
-prevents this.
+a plain folder, and checks the last one by its attributes only, without following it.
+
+A few files in the profile are opened, including by a SYSTEM audit: the `package.json`
+of each extension that ships with a per-user VS Code install (to tell GitHub Copilot
+Chat, whose folder is just `copilot`, from the others), and the VMware, VirtualBox and
+WSL settings files (`inventory.vmls`, `VirtualBox.xml`, `.wslconfig`). Each is reached
+through plain folders only, is skipped when it is itself a junction or symbolic link,
+and is read only up to a size limit (2 MB for `package.json`, with 32 MB in all; 1 MB or
+4 MB for the others), and nothing in it is run. The virtual machine files those settings
+name get the same link check and size limit, and are read only when they are on a local
+fixed drive. When the MCP presence check runs as SYSTEM, the config files are reached
+the same way, so their presence and permissions are never looked up through a link.
+
+These checks are made by path, so a user who can create symbolic links (for example with
+Developer Mode on) could swap a folder or file for a link between the check and the read;
+a SYSTEM audit could then connect to a network share. Blocking local-to-remote symbolic
+link evaluation by policy prevents this.
 
 When it finds a credential in one of those files it records **only a classification**:
 the provider, the credential type, and whether the value is held in plaintext or

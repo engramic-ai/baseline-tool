@@ -237,7 +237,8 @@ function ConvertTo-CEMcpServers {
 function Get-CEMcpInventory {
     <#
         Per-user MCP inventory. In a machine / SYSTEM context, records presence,
-        path and ACL only (never opens a file). In the user's own session, parses
+        path and ACL only (never opens a file), and only for files reached through
+        plain folders that are not links themselves. In the user's own session, parses
         each config and classifies its credentials, storing nothing derived from
         a credential value.
     #>
@@ -259,6 +260,9 @@ function Get-CEMcpInventory {
     if ($profilePath) {
         foreach ($entry in (Get-CEMcpConfigCatalogue)) {
             if (-not $entry.RelPath) { continue }
+            # As SYSTEM the profile belongs to someone else: reach the file through plain folders only,
+            # and not through a link, so its presence and permissions are never looked up elsewhere.
+            if ($machineContext -and -not (Test-CEPlainProfileItem -ProfilePath $profilePath -Relative $entry.RelPath -NoLink)) { continue }
             $full = Join-Path $profilePath $entry.RelPath
             if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { continue }
             $found++

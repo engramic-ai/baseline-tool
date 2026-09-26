@@ -49,22 +49,38 @@ function Test-CEPlainDirectoryChain {
 function Test-CEPlainProfileItem {
     <#
         Whether Relative names a file or folder below ProfilePath that is reached through plain
-        folders only and is not itself a junction or symbolic link. Reads attributes only: nothing
-        is opened and no link the user made is followed. ProfilePath must be on a local fixed drive.
+        folders only. The last part may itself be a junction or symbolic link (a folder moved to
+        another drive, say): its own attributes are read, and the link is not followed. With
+        -NoLink the last part must not be a link either, for callers that go on to use the path.
+        Reads attributes only: nothing is opened. ProfilePath must be on a local fixed drive.
     #>
-    param([string]$ProfilePath, [string]$Relative)
+    param([string]$ProfilePath, [string]$Relative, [switch]$NoLink)
     if (-not $ProfilePath -or -not (Test-CELocalFilePath $ProfilePath)) { return $false }
     if (-not (Test-CERelativePathText $Relative)) { return $false }
     $parent = Split-Path -Parent $Relative
     if ($parent -and -not (Test-CEPlainDirectoryChain -Base $ProfilePath -Relative $parent)) { return $false }
     try {
         $full = Join-Path $ProfilePath $Relative
-        $d = New-Object IO.DirectoryInfo $full
-        if ($d.Exists) { return (([int]($d.Attributes -band [IO.FileAttributes]::ReparsePoint)) -eq 0) }
-        $f = New-Object IO.FileInfo $full
-        return ($f.Exists -and ([int]($f.Attributes -band [IO.FileAttributes]::ReparsePoint)) -eq 0)
+        $item = New-Object IO.DirectoryInfo $full
+        if (-not $item.Exists) { $item = New-Object IO.FileInfo $full }
+        if (-not $item.Exists) { return $false }
+        return (-not $NoLink -or ([int]($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) -eq 0)
     }
     catch { return $false }
+}
+
+function Get-CEProgramFilesPath {
+    <#
+        The Program Files folder for an 'installed' base: programFiles is the 64-bit one, even in a
+        32-bit PowerShell (where ProgramFiles names the x86 folder), and programFilesX86 the 32-bit one.
+    #>
+    param([string]$Base)
+    if ($Base -eq 'programFiles') {
+        if ($env:ProgramW6432) { return [string]$env:ProgramW6432 }
+        return [string]$env:ProgramFiles
+    }
+    if ($Base -eq 'programFilesX86') { return [string]${env:ProgramFiles(x86)} }
+    return ''
 }
 
 function Get-CEPlainChildName {
@@ -73,9 +89,10 @@ function Get-CEPlainChildName {
         -Extension. Looks at no more than -Max entries. Names only: nothing is opened. Never
         descends into a child. Leaves out names ending in '.' or a space: Windows drops that
         character when the name is used in a path, so 'Profile 1.' would lead into a link
-        called 'Profile 1' that was skipped here.
+        called 'Profile 1' that was skipped here. -IncludeLinks keeps links too, for callers
+        that use the names only and never the paths.
     #>
-    param([string]$Path, [int]$Max, [string]$Extension)
+    param([string]$Path, [int]$Max, [string]$Extension, [switch]$IncludeLinks)
     $names = New-Object System.Collections.ArrayList
     $seen = 0
     try {
@@ -84,7 +101,7 @@ function Get-CEPlainChildName {
         if ($Extension) { $items = $di.EnumerateFiles('*' + $Extension) } else { $items = $di.EnumerateDirectories() }
         foreach ($i in $items) {
             if (++$seen -gt $Max) { Write-Verbose "Stopped listing $Path at $Max entries"; break }
-            if (([int]($i.Attributes -band [IO.FileAttributes]::ReparsePoint)) -ne 0) { continue }
+            if (-not $IncludeLinks -and ([int]($i.Attributes -band [IO.FileAttributes]::ReparsePoint)) -ne 0) { continue }
             if ($i.Name -match '[. ]$') { continue }
             [void]$names.Add($i.Name)
         }
@@ -218,12 +235,7 @@ function Test-CEBrowserInstalled {
     $items = @($Browser.Installed)
     if ($items.Count -eq 0) { return $true }
     foreach ($item in $items) {
-        $base = switch ($item.Base) {
-            'programFiles' { [string]$env:ProgramFiles }
-            'programFilesX86' { [string]${env:ProgramFiles(x86)} }
-            'profile' { $ProfilePath }
-            default { '' }
-        }
+        $base = if ($item.Base -eq 'profile') { $ProfilePath } else { Get-CEProgramFilesPath $item.Base }
         if (-not $base -or -not (Test-CELocalFilePath $base)) { continue }
         if ($item.Base -eq 'profile') {
             $parent = Split-Path -Parent $item.Path

@@ -145,22 +145,65 @@ function Test-CELocalFilePath {
     catch { return $false }
 }
 
+function Read-CEBoundedText {
+    <#
+        Text of a file a standard user may control, or $null when it is missing, is a junction or
+        symbolic link, is larger than MaxBytes or can't be read. Never reads more than the size it
+        checked, so a file that grows after the check is not read in full either. Opened for reading
+        only; nothing in it is run. The check and the open are separate steps (see SECURITY.md).
+    #>
+    param([string]$Path, [int]$MaxBytes)
+    if (-not $Path -or $MaxBytes -le 0) { return $null }
+    try {
+        $fi = New-Object IO.FileInfo $Path
+        if (-not $fi.Exists -or ([int]($fi.Attributes -band [IO.FileAttributes]::ReparsePoint)) -ne 0 -or $fi.Length -gt $MaxBytes) { return $null }
+        $size = [int]$fi.Length
+        $buf = New-Object byte[] ($size + 1)
+        $total = 0
+        $fs = New-Object IO.FileStream -ArgumentList $Path, ([IO.FileMode]::Open), ([IO.FileAccess]::Read), ([IO.FileShare]::ReadWrite)
+        try {
+            while ($total -lt $buf.Length) {
+                $n = $fs.Read($buf, $total, $buf.Length - $total)
+                if ($n -le 0) { break }
+                $total += $n
+            }
+        }
+        finally { $fs.Dispose() }
+        if ($total -gt $size) { Write-Verbose "$Path grew while it was read; not used"; return $null }
+        $reader = New-Object IO.StreamReader -ArgumentList (New-Object IO.MemoryStream -ArgumentList $buf, 0, $total), ([Text.Encoding]::UTF8), $true
+        try { return $reader.ReadToEnd() } finally { $reader.Dispose() }
+    }
+    catch { Write-Verbose "Could not read ${Path}: $($_.Exception.Message)"; return $null }
+}
+
+function Read-CEProfileText {
+    <#
+        Text of a file below the user's profile, reached through plain folders only and read with
+        Read-CEBoundedText; $null when that fails. A SYSTEM audit reads these from a profile the
+        user controls.
+    #>
+    param([string]$ProfilePath, [string]$Relative, [int]$MaxBytes)
+    if (-not (Test-CEPlainProfileItem -ProfilePath $ProfilePath -Relative $Relative -NoLink)) { return $null }
+    return (Read-CEBoundedText -Path (Join-Path $ProfilePath $Relative) -MaxBytes $MaxBytes)
+}
+
 function Get-CEVMwareMachine {
     <# VMware Workstation/Player VMs from the user's inventory.vmls. #>
     param([string]$ProfilePath)
     if (-not $ProfilePath) { return ,@() }
-    $inventory = Join-Path $ProfilePath 'AppData\Roaming\VMware\inventory.vmls'
-    if (-not (Test-Path -LiteralPath $inventory)) { return ,@() }
+    $text = Read-CEProfileText -ProfilePath $ProfilePath -Relative 'AppData\Roaming\VMware\inventory.vmls' -MaxBytes 1MB
+    if ($null -eq $text) { return ,@() }
     $paths = New-Object System.Collections.ArrayList
-    foreach ($line in @(Get-Content -LiteralPath $inventory -ErrorAction SilentlyContinue)) {
+    foreach ($line in @($text -split '\r?\n')) {
         if ("$line" -match '^\s*vmlist\d+\.config\s*=\s*"(.+\.vmx)"' -and -not $paths.Contains($Matches[1])) { [void]$paths.Add($Matches[1]) }
     }
     $machines = New-Object System.Collections.ArrayList
     foreach ($p in $paths) {
         # The path comes from a user-writable file; never open one that points off this machine.
         if (-not (Test-CELocalFilePath $p)) { Write-Verbose "Skipping non-local VMware path $p"; continue }
-        if (-not (Test-Path -LiteralPath $p)) { continue }
-        $vm = ConvertFrom-CEVmxText -Lines @(Get-Content -LiteralPath $p -ErrorAction SilentlyContinue) -Path $p
+        $vmx = Read-CEBoundedText -Path $p -MaxBytes 1MB
+        if ($null -eq $vmx) { continue }
+        $vm = ConvertFrom-CEVmxText -Lines @($vmx -split '\r?\n') -Path $p
         $vm | Add-Member -NotePropertyName Path -NotePropertyValue $p
         [void]$machines.Add($vm)
     }
@@ -172,21 +215,23 @@ function Get-CEVirtualBoxMachine {
     param([string]$ProfilePath)
     if (-not $ProfilePath) { return ,@() }
     $registry = Join-Path $ProfilePath '.VirtualBox\VirtualBox.xml'
-    if (-not (Test-Path -LiteralPath $registry)) { return ,@() }
+    $text = Read-CEProfileText -ProfilePath $ProfilePath -Relative '.VirtualBox\VirtualBox.xml' -MaxBytes 4MB
+    if ($null -eq $text) { return ,@() }
     $machines = New-Object System.Collections.ArrayList
     try {
         $doc = New-Object System.Xml.XmlDocument
         $doc.XmlResolver = $null
-        $doc.LoadXml((Get-Content -LiteralPath $registry -Raw -ErrorAction Stop))
+        $doc.LoadXml($text)
         foreach ($entry in @($doc.SelectNodes("//*[local-name()='MachineEntry']"))) {
             $src = [string]$entry.GetAttribute('src')
             if (-not $src) { continue }
             if (-not [IO.Path]::IsPathRooted($src)) { $src = Join-Path (Split-Path -Parent $registry) $src }
             # src comes from a user-writable file; never open one that points off this machine.
             if (-not (Test-CELocalFilePath $src)) { Write-Verbose "Skipping non-local VirtualBox path $src"; continue }
-            if (-not (Test-Path -LiteralPath $src)) { continue }
+            $vboxText = Read-CEBoundedText -Path $src -MaxBytes 4MB
+            if ($null -eq $vboxText) { continue }
             try {
-                $vm = ConvertFrom-CEVboxXml -Xml (Get-Content -LiteralPath $src -Raw -ErrorAction Stop)
+                $vm = ConvertFrom-CEVboxXml -Xml $vboxText
                 if ($vm) { $vm | Add-Member -NotePropertyName Path -NotePropertyValue $src; [void]$machines.Add($vm) }
             }
             catch { Write-Verbose "Could not read $src : $_" }
@@ -277,9 +322,9 @@ function Get-CEWslDistribution {
 function Get-CEWslNetworkingMode {
     param([string]$ProfilePath)
     if (-not $ProfilePath) { return '' }
-    $file = Join-Path $ProfilePath '.wslconfig'
-    if (-not (Test-Path -LiteralPath $file)) { return '' }
-    $ini = ConvertFrom-CEIniText -Lines @(Get-Content -LiteralPath $file -ErrorAction SilentlyContinue)
+    $text = Read-CEProfileText -ProfilePath $ProfilePath -Relative '.wslconfig' -MaxBytes 1MB
+    if ($null -eq $text) { return '' }
+    $ini = ConvertFrom-CEIniText -Lines @($text -split '\r?\n')
     if ($ini.ContainsKey('wsl2') -and $ini['wsl2'].ContainsKey('networkingmode')) { return ([string]$ini['wsl2']['networkingmode']).ToLowerInvariant() }
     return ''
 }

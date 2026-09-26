@@ -339,28 +339,53 @@ BeforeAll {
     }
 
     function global:Use-TestTags {
-        # Makes the module read the reparse tag in Tags (path -> tag) for each of those paths, and a tag of 0 (a
-        # reparse point that is not a link) for TEMP and every folder above it: a test that follows a real junction
-        # under TestDrive walks its target from the drive root, and must not depend on how this machine reaches
-        # TEMP (a profile container or a moved profile is a link). Every other path gets its real tag (Pester 6
-        # mocks have no fallback). A \\?\ path is looked up without its prefix. This account can't create
-        # symbolic links, so tests make real junctions look like them this way.
-        param([hashtable]$Tags = @{})
+        # Makes the module read the reparse tag in Tags (path -> tag) for each of those paths. TestDrive, TEMP and
+        # every folder above them are outside the fixture, so the module sees them as plain folders (their
+        # attributes and their tag): a test that follows a real junction under TestDrive walks its target from the
+        # drive root, and must pass or fail on the module's behaviour only, not on how this machine reaches TEMP (a
+        # junction, a symbolic link, a profile container, a folder this account may not look at). Every other path
+        # gets its real attributes and tag (Pester 6 mocks have no fallback). A \\?\ path is looked up without its
+        # prefix. This account can't create symbolic links, so tests make real junctions look like them this way.
+        # -Record keeps every path whose attributes or tag the module asks for in $global:CETestLooked.
+        param([hashtable]$Tags = @{}, [switch]$Record)
         $map = @{}
         foreach ($k in $Tags.Keys) { $map[([string]$k).TrimEnd('\').ToLowerInvariant()] = [long]$Tags[$k] }
-        $up = [IO.Path]::GetFullPath($env:TEMP).TrimEnd('\')
-        while ($up -and $up -notmatch '^[A-Za-z]:$') {
-            if (-not $map.ContainsKey($up.ToLowerInvariant())) { $map[$up.ToLowerInvariant()] = [long]0 }
-            $up = (Split-Path -Parent $up).TrimEnd('\')
+        $outside = @{}
+        $drive = Get-PSDrive -Name TestDrive -ErrorAction SilentlyContinue
+        foreach ($start in @($(if ($drive) { $drive.Root }), $env:TEMP, $env:TMP)) {
+            if (-not $start) { continue }
+            foreach ($form in @([string]$start, [IO.Path]::GetFullPath([string]$start))) {
+                $up = $form.TrimEnd('\')
+                while ($up -and $up -notmatch '^[A-Za-z]:$') {
+                    $outside[$up.ToLowerInvariant()] = $true
+                    $up = (Split-Path -Parent $up).TrimEnd('\')
+                }
+            }
         }
+        foreach ($k in $outside.Keys) { if (-not $map.ContainsKey($k)) { $map[$k] = [long]0 } }
         $global:CETestTagMap = $map
+        $global:CETestOutside = $outside
+        $global:CETestLooked = New-Object System.Collections.ArrayList
+        $global:CETestRecordLooks = [bool]$Record
+        # The real Get-CEItemPresence: a mock is an alias in the module, so the function itself is still there.
+        $global:CETestRealPresence = & (Get-Module CEAudit) { ${function:Get-CEItemPresence} }
         InModuleScope CEAudit { $null = Get-CEReparseTag -Path $env:TEMP }   # loads CEAudit.ReparseTag
         Mock -ModuleName CEAudit Get-CEReparseTag {
             $p = ([string]$Path).TrimEnd('\', '/')
             $bare = ($p -replace '^\\\\\?\\', '').ToLowerInvariant()
+            if ($global:CETestRecordLooks) { [void]$global:CETestLooked.Add($bare) }
             if ($global:CETestTagMap.ContainsKey($bare)) { return $global:CETestTagMap[$bare] }
             if (-not $bare -or $bare -match '[*?]') { return [long]-1 }
             return [long][CEAudit.ReparseTag]::Get($p)
+        }
+        Mock -ModuleName CEAudit Get-CEItemPresence {
+            $bare = (([string]$Path).TrimEnd('\', '/') -replace '^\\\\\?\\', '').ToLowerInvariant()
+            if ($global:CETestRecordLooks) { [void]$global:CETestLooked.Add($bare) }
+            if ($global:CETestOutside.ContainsKey($bare)) {
+                return [pscustomobject]@{ State = 'present'; Attributes = [IO.FileAttributes]::Directory; FullName = $Path
+                    Name = (([string]$Path).TrimEnd('\', '/') -replace '^.*[\\/]', ''); IsFolder = $true; Reason = '' }
+            }
+            return (& $global:CETestRealPresence -Path $Path)
         }
     }
 }
@@ -1023,8 +1048,18 @@ Describe 'Desktop app result rendering' {
         Set-CEAiTab -Ai $gone -Findings $script:guiResult.Findings
         $ui.AiAgentsEmpty.Visibility | Should -Be 'Visible'
         $ui.AiAgentsEmpty.Text | Should -Match 'incomplete'
+        @($ui.AiEnvs.Children) | Should -Contain 'No VMs, WSL distributions or containers found.' -Because 'VS Code extensions can not hide a virtual machine'
+        @($ui.AiEnvs.Children | Where-Object { $_ -like 'BAD: Not read, so the AI tools found may be incomplete: %USERPROFILE%\.vscode\extensions*' }).Count | Should -Be 1
+        # A VM file that was not read: the scan for AI tools is complete, but "no VMs" is not said.
+        $vmOnly = [ordered]@{ agentsFound = 0; contained = $true; deviations = 0; agents = @(); environments = @(); scanComplete = $true
+            notRead = @([ordered]@{ location = '%USERPROFILE%\VMs\a.vmx'; kind = 'file-content'; reason = 'it could not be read (IOException)'; remedy = ''; topic = 'vm-file'; needsUserSession = $false; count = 1 }) }
+        $ui.AiEnvs.Children.Clear()
+        Set-CEAiTab -Ai $vmOnly -Findings $script:guiResult.Findings
+        $ui.AiAgentsEmpty.Text | Should -Be 'No recognised AI tools found in this session.'
         @($ui.AiEnvs.Children) | Should -Not -Contain 'No VMs, WSL distributions or containers found.'
-        @($ui.AiEnvs.Children | Where-Object { $_ -like 'BAD: Not read*%USERPROFILE%\.vscode\extensions*' }).Count | Should -Be 1
+        @($ui.AiEnvs.Children | Where-Object { $_ -like 'BAD: Not read (none of these could hide an AI tool*%USERPROFILE%\VMs\a.vmx*' }).Count | Should -Be 1
+        $ui.AiEnvs.Children.Clear()
+        Set-CEAiTab -Ai $gone -Findings $script:guiResult.Findings
         @($ui.AiEnvs.Children | Where-Object { $_ -like '*To read these, run the audit without elevation*' }).Count | Should -Be 1
         # A record the user's own session would not read either gets its own fix, not the elevation advice.
         $gone.notRead = @([ordered]@{ location = '%USERPROFILE%\AppData\Local\Vendor\Tool'; kind = 'existence'; reason = 'it could not be read (UnauthorizedAccessException)'
@@ -2637,6 +2672,55 @@ Describe 'Virtual machines, WSL and containers (SC-12, FW-07)' {
             (@(& $script:run 'FW-07'))[0].Status | Should -Be 'Manual' -Because 'the networking mode of a WSL distribution was not read'
         }
 
+        It 'is Manual, never Not applicable or a Pass, when Hyper-V could not be listed, and says to list it elevated' {
+            # An audit without elevation, the one the profile remedy asks for, cannot list Hyper-V virtual machines.
+            $p = Join-Path $TestDrive 'fw07-hyperv-profile'
+            New-Item -ItemType Directory -Force -Path $p | Out-Null
+            $st = InModuleScope CEAudit -Parameters @{ P = $p } {
+                param($P)
+                $script:testHvProfile = $P
+                Mock Get-CEUserProfilePath { $script:testHvProfile }
+                Mock Get-CEWslDistribution { , @() }
+                Mock Get-CEContainer { , @() }
+                Mock Get-CEVirtualisationListener { , @() }
+                Mock Get-Command { [pscustomobject]@{ Name = 'Get-VM' } }
+                Mock Get-VMSwitch { throw 'The operation failed on C:\ProgramData\Microsoft\Windows\Hyper-V' }
+                $ctx = { param([bool]$Elevated) [pscustomobject]@{ ComputerName = 'HV'; AuditTime = (Get-Date); IsElevated = $Elevated; IsSystem = $false; ConsoleUserSid = $null } }
+                [pscustomobject]@{ User = Get-CEVirtualisationStateUncached -Context (& $ctx $false); Failed = Get-CEVirtualisationStateUncached -Context (& $ctx $true) }
+            }
+            $rec = 'hyperv|Hyper-V virtual machines|existence|an audit without elevation cannot list them|False'
+            @($st.User.NotRead | ForEach-Object { "$($_.Topic)|$($_.Location)|$($_.Kind)|$($_.Reason)|$($_.NeedsUserSession)" }) | Should -Be @($rec)
+            @($st.User.Notes).Count | Should -Be 0 -Because 'it is a not-read record, not a note FW-07 would pass with'
+            Set-TestVirt $st.User
+            $f = @(& $script:run 'FW-07')
+            $f.Count | Should -Be 1
+            $f[0].Status | Should -Be 'Manual'
+            $f[0].Subject | Should -Be 'Not read'
+            @($f[0].Evidence) | Should -Be @('Hyper-V virtual machines (not checked): an audit without elevation cannot list them')
+            $f[0].Recommendation | Should -Match 'elevated prompt \(Get-VM'
+            $f[0].Recommendation | Should -Match 'run the audit elevated'
+            $f[0].Recommendation | Should -Not -Match 'without elevation while signed in' -Because 'a run without elevation cannot list them'
+            # Next to a VM that was read and is not exposed it is not a Pass either.
+            $st.User.VMware = @([pscustomobject]@{ Name = 'Dev'; Networks = @('nat'); SharedFolders = @() })
+            @(& $script:run 'FW-07' | ForEach-Object Status) | Should -Be @('Manual')
+            # SC-12 keeps its Info note, with its own advice, and does not depend on the record.
+            Set-TestVirt $st.User
+            $st.User.VMware = @()
+            $sc = @(& $script:run 'SC-12')
+            @($sc | ForEach-Object Status) | Should -Be @('Info')
+            $sc[0].Actual | Should -Match 'need elevation to list'
+            # An elevated audit that fails to list them: a fixed reason, never the error's text.
+            @($st.Failed.NotRead | ForEach-Object { "$($_.Topic)|$($_.Reason)" }) | Should -Be @('hyperv|it could not be read (RuntimeException)')
+            ($st.Failed | ConvertTo-Json -Depth 6) | Should -Not -Match 'ProgramData'
+            Set-TestVirt $st.Failed
+            $f = @(& $script:run 'FW-07')
+            @($f | ForEach-Object Status) | Should -Be @('Manual')
+            $f[0].Recommendation | Should -Match 'Virtual Machine Management service'
+            # Hyper-V that can be listed, with nothing on it, is still Not applicable.
+            Set-TestVirt (New-TestVirtState)
+            (@(& $script:run 'FW-07'))[0].Status | Should -Be 'NotApplicable'
+        }
+
         It 'warns about bridged networking from every source' {
             Set-TestVirt (New-TestVirtState `
                 -HyperV @([pscustomobject]@{ Name = 'Server'; State = 'Running'; ExternalSwitches = @('External LAN') }) `
@@ -3426,27 +3510,28 @@ Describe 'AI tools (UA-07, SC-09, UA-10)' {
             $profile2 = Join-Path $root 'chrome\User Data\Profile 2'
             New-Item -ItemType Junction -Path $chrome -Target (Join-Path $root 'chrome') | Out-Null
             New-Item -ItemType Junction -Path $profile2 -Target (Join-Path $root 'profile2') | Out-Null
+            # Only the two stand-ins get the tag: TestDrive and the folders above it, which the junctions' targets are
+            # walked through from the drive root, count as plain folders (Use-TestTags).
+            $as = { param([string]$Hex) Use-TestTags @{ $chrome = [Convert]::ToInt64($Hex, 16); $profile2 = [Convert]::ToInt64($Hex, 16) } }
             try {
-                $global:CETestReparseTag = [Convert]::ToInt64('9000601A', 16)
-                Mock -ModuleName CEAudit Get-CEReparseTag { $global:CETestReparseTag }
+                & $as '9000601A'
                 $claude = @(Get-TestToolById (Invoke-TestBrowserScan -ProfilePath $p -Elevated) 't-claude')
                 $claude.Count | Should -Be 1
                 @($claude[0].Signals | Sort-Object) | Should -Be @(
                     "Google Chrome extension: $($CETestExtId.Claude) 1.0 (profile: Profile 1)",
                     "Google Chrome extension: $($CETestExtId.Claude) 2.0 (profile: Profile 2)")
                 # The same folders as junctions to local folders are followed for names too, once their targets are checked.
-                $global:CETestReparseTag = [Convert]::ToInt64('A0000003', 16)
+                & $as 'A0000003'
                 $st = Invoke-TestBrowserScan -ProfilePath $p -Elevated
                 @(Get-TestToolById $st 't-claude')[0].Signals.Count | Should -Be 2
                 @($st.NotRead).Count | Should -Be 0
                 # As symbolic links they are not.
-                $global:CETestReparseTag = [Convert]::ToInt64('A000000C', 16)
+                & $as 'A000000C'
                 $st = Invoke-TestBrowserScan -ProfilePath $p -Elevated
                 @(Get-TestToolById $st 't-claude').Count | Should -Be 0
                 @($st.NotRead | ForEach-Object { $_.Location }) | Should -Be @('%USERPROFILE%\AppData\Local\Google\Chrome\User Data')
             }
             finally {
-                Remove-Variable -Name CETestReparseTag -Scope Global -ErrorAction SilentlyContinue
                 foreach ($l in @($profile2, $chrome)) { if ([IO.Directory]::Exists($l)) { [IO.Directory]::Delete($l) } }
             }
         }
@@ -4796,6 +4881,7 @@ Describe 'MCP inventory (11-McpInventory)' {
             Set-Content -LiteralPath (Join-Path $alice 'AppData\Roaming\Claude\claude_desktop_config.json') -Value '{ "mcpServers": {} }' -Encoding ASCII
             $link = Join-Path $alice '.cursor'
             New-Item -ItemType Junction -Path $link -Target $bob | Out-Null
+            Use-TestTags   # the junction's target is walked from the drive root: TestDrive and the folders above it count as plain
             try {
                 $inv = InModuleScope CEAudit -Parameters @{ P = $alice } {
                     param($P)
@@ -4860,6 +4946,7 @@ Describe 'MCP inventory (11-McpInventory)' {
             Set-Content -LiteralPath (Join-Path $dots 'mcp.json') -Value $cfg -Encoding ASCII
             $link = Join-Path $alice '.cursor'
             New-Item -ItemType Junction -Path $link -Target $dots | Out-Null
+            Use-TestTags   # the junction's target is walked from the drive root: TestDrive and the folders above it count as plain
             try {
                 $inv = InModuleScope CEAudit -Parameters @{ P = $alice } {
                     param($P)
@@ -5143,7 +5230,7 @@ namespace CETest {
         ($f | ConvertTo-Json -Depth 8) | Should -Not -Match 'SECRET123'
         $ai = InModuleScope CEAudit { Get-CEAiPosture -Context (Get-CEDeviceContext) }
         ($ai | ConvertTo-Json -Depth 12) | Should -Not -Match 'SECRET123'
-        $ai.scanComplete | Should -BeFalse
+        @($ai.notRead | Where-Object { $_.topic -eq 'mcp' } | ForEach-Object { "$($_.location)|$($_.reason)" }) | Should -Be @('%USERPROFILE%\.claude.json|it could not be parsed by the audit')
         # Permissions that can't be read are not "other users can modify it", and their error text is not kept.
         InModuleScope CEAudit {
             Mock Get-CEPathAclProblem { "$Path permissions could not be read: Attempted to perform an unauthorized operation." }
@@ -5371,6 +5458,67 @@ namespace CETest {
         @($ai.notRead | ForEach-Object { "$($_.topic)|$($_.location)" }) | Should -Be @('vscode|%USERPROFILE%\.vscode\extensions')
     }
 
+    It 'calls the scan incomplete only for records that could hide an AI tool, and says so in the report' {
+        $rec = { param([string]$Topic, [string]$Location) [ordered]@{ Location = $Location; Kind = 'file-content'; Reason = 'it could not be read (IOException)'; Remedy = ''; Topic = $Topic; NeedsUserSession = $false; Count = 1 } }
+        Set-TestLayerAI -NotRead @()
+        $global:CETestLayerVirt = [pscustomobject]@{ HyperV = [pscustomobject]@{ Readable = $false; Message = 'Hyper-V virtual machines need elevation to list'; Machines = @(); NatMappings = @() }
+            VMware = @(); VirtualBox = @(); Wsl = @(); WslNetworking = ''; Containers = @(); Listeners = @(); Notes = @()
+            NotRead = @((& $rec 'vm-file' '%USERPROFILE%\VMs\a.vmx'), (& $rec 'wslconfig' '%USERPROFILE%\.wslconfig'),
+                [ordered]@{ Location = 'Hyper-V virtual machines'; Kind = 'existence'; Reason = 'an audit without elevation cannot list them'; Remedy = 'x'; Topic = 'hyperv'; NeedsUserSession = $false; Count = 1 }) }
+        Mock -ModuleName CEAudit Get-CEVirtualisationState { $global:CETestLayerVirt }
+        $global:CETestLayerMcp = [ordered]@{ mcpServers = @(); mcpConfigsFound = 1; mcpConfigsParsed = 0; credentialsFound = 0; credentialsPlaintext = 0; scanBounds = 'test'
+            mcpConfigsUnreadable = @([ordered]@{ path = '.cursor\mcp.json'; toolId = 'cursor'; reason = 'it could not be parsed by the audit'; needsUserSession = $false
+                    location = '%USERPROFILE%\.cursor\mcp.json'; kind = 'file-content'; remedy = ''; topic = 'mcp'; count = 1 }) }
+        Mock -ModuleName CEAudit Get-CEMcpInventory { $global:CETestLayerMcp }
+        $ai = InModuleScope CEAudit { Get-CEAiPosture -Context (Get-CEDeviceContext) }
+        $ai.scanComplete | Should -BeTrue -Because 'a VM file, .wslconfig or an MCP config can not hide an AI tool'
+        @($ai.notRead | ForEach-Object { "$($_.topic)|$($_.location)" }) | Should -Be @('vm-file|%USERPROFILE%\VMs\a.vmx', 'wslconfig|%USERPROFILE%\.wslconfig', 'mcp|%USERPROFILE%\.cursor\mcp.json') -Because 'Hyper-V is not in the profile; FW-07 reports it'
+        $f = @(Invoke-CEAuditCore -Id 'SC-14')
+        $r = Export-CEReport -Findings $f -Context (New-TestContext) -OutputPath (Join-Path $TestDrive 'layer-complete-report')
+        $md = Get-Content $r.Paths.Markdown -Raw
+        $html = Get-Content $r.Paths.Html -Raw
+        $md | Should -Match 'None of them could hide an AI tool'
+        $md | Should -Not -Match 'this list may be incomplete'
+        $md | Should -Match ([regex]::Escape('- %USERPROFILE%\VMs\a.vmx (file not read)'))
+        $html | Should -Not -Match 'no AI tools confirmed|scan incomplete|AI tools found may be incomplete'
+        $html | Should -Match 'None of these could hide an AI tool'
+        # A record that could hide an AI tool, and one from an older version with no topic, make it incomplete.
+        foreach ($t in 'paths', 'vscode', 'vscode-builtin', 'browser', 'profile', '') {
+            Set-TestLayerAI -NotRead @(& $rec $t '%USERPROFILE%\x')
+            (InModuleScope CEAudit { Get-CEAiPosture -Context (Get-CEDeviceContext) }).scanComplete | Should -BeFalse -Because "a '$t' record can hide an AI tool"
+        }
+        foreach ($t in 'browser-installed', 'extension-version') {
+            Set-TestLayerAI -NotRead @(& $rec $t '%USERPROFILE%\x')
+            (InModuleScope CEAudit { Get-CEAiPosture -Context (Get-CEDeviceContext) }).scanComplete | Should -BeTrue -Because "a '$t' record hides no AI tool"
+        }
+    }
+
+    It 'shows a profile it could not read once in the AI posture, with every distinct remedy' {
+        $ai = InModuleScope CEAudit {
+            Mock Get-CEInstalledSoftware { @() }
+            Mock Get-CEStorePackageName { , @() }
+            Mock Get-CEVsCodeBuiltInExtensionDir { , @() }
+            Mock Get-CEProcessList { , @() }
+            Mock Get-CEWslDistribution { , @() }
+            Mock Get-CEHyperVMachine { [pscustomobject]@{ Readable = $true; Message = ''; Machines = @(); NatMappings = @() } }
+            Mock Get-CEContainer { , @() }
+            Mock Get-CEVirtualisationListener { , @() }
+            $script:testPostureProfile = '\\host\share\alice'
+            Mock Get-CEUserProfilePath { $script:testPostureProfile }
+            $ctx = { param([string]$Name) [pscustomobject]@{ ComputerName = $Name; AuditTime = (Get-Date); IsElevated = $true; IsSystem = $true; ConsoleUserSid = 'S-1-5-21-1-1-1-1001' } }
+            $off = Get-CEAiPosture -Context (& $ctx 'P1')
+            $script:testPostureProfile = $null
+            [pscustomobject]@{ Off = $off; None = (Get-CEAiPosture -Context (& $ctx 'P2')) }
+        }
+        # The AI tools, virtual machines and MCP configs each record the profile off local fixed drives, with their own remedy.
+        @($ai.Off.notRead | ForEach-Object { "$($_.location)|$($_.kind)|$($_.reason)|$($_.topic)" }) | Should -Be @('%USERPROFILE%|folder-listing|it is not on a local fixed drive|profile')
+        $ai.Off.notRead[0].remedy | Should -Be 'Check the AI tools in this profile by hand. Check the virtual machines in this profile by hand. Check the MCP client configs in this profile by hand.'
+        $ai.Off.scanComplete | Should -BeFalse
+        InModuleScope CEAudit -Parameters @{ R = @($ai.Off.notRead) } { param($R) (Get-CENotReadAdvice -Records $R -Scope Machine) -join ' ' } | Should -Match 'Check the virtual machines in this profile by hand'
+        # With nobody signed in they record the same thing, with the same remedy: one record, one remedy.
+        @($ai.None.notRead | ForEach-Object { "$($_.location)|$($_.kind)|$($_.topic)|$($_.remedy)" }) | Should -Be @('%USERPROFILE%|existence|profile|Run the audit while the person who uses this device is signed in at the console.')
+    }
+
     It 'applies the rule table to every kind of folder, above the user''s rights and in their own session' {
         $root = Join-Path $TestDrive 'layer-rules'
         $p = Join-Path $root 'profile'
@@ -5510,6 +5658,67 @@ namespace CETest {
         finally {
             foreach ($j in $made) { [IO.Directory]::Delete($j) }
             [void][CETest.MountPoint]::Undefine($letter, $raw)
+        }
+    }
+
+    It 'refuses a junction whose local target passes through a real symbolic link to another computer, before following anything' {
+        # Design test P2. The junction's stored target is a local folder, but a folder on the way to it is a real
+        # directory symbolic link to a network path (192.0.2.1, TEST-NET-1, which never answers). The gate must stop
+        # at the link from its attributes and tag alone: nothing below it is looked at, and nothing is listed or read
+        # through the junction. Needs the right to create symbolic links: it runs in the Windows Sandbox CI.
+        if (-not ('CETest.SymLink' -as [type])) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+namespace CETest {
+    public static class SymLink {
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.I1)]
+        static extern bool CreateSymbolicLinkW(string link, string target, uint flags);
+        // SYMBOLIC_LINK_FLAG_DIRECTORY | ALLOW_UNPRIVILEGED_CREATE. Nothing checks, or opens, the target.
+        public static int NewDirectory(string link, string target) { return CreateSymbolicLinkW(link, target, 0x1 | 0x2) ? 0 : Marshal.GetLastWin32Error(); }
+    }
+}
+'@
+        }
+        $root = Join-Path $TestDrive 'layer-p2'
+        $p = Join-Path $root 'profile'
+        $j = Join-Path $p 'x'
+        $link = Join-Path $root 'T\link'
+        New-Item -ItemType Directory -Force -Path $j, (Join-Path $root 'T') | Out-Null
+        $err = [CETest.SymLink]::NewDirectory($link, '\\192.0.2.1\share')
+        if ($err -ne 0) { Set-ItResult -Skipped -Because "this account can't create symbolic links (Win32 error $err)"; return }
+        try {
+            # Set as stored, so nothing checks (and so follows) the target while the test sets it up.
+            [CETest.MountPoint]::Set($j, ('\??\' + (Join-Path $link 'real'))) | Should -Be 0
+            Use-TestTags -Record
+            $global:CETestRealJunctionTarget = & (Get-Module CEAudit) { ${function:Get-CEJunctionTarget} }
+            Mock -ModuleName CEAudit Get-CEJunctionTarget { [void]$global:CETestLooked.Add("target:$(([string]$Path).ToLowerInvariant())"); & $global:CETestRealJunctionTarget -Path $Path }
+            $r = InModuleScope CEAudit -Parameters @{ P = $p } {
+                param($P)
+                $log = New-CENotReadLog
+                $names = Get-CEProfileChildName -ProfilePath $P -Relative 'x' -Max 10 -Log $log -Above $true -Topic 't'   # assign first: it returns ,array
+                $exists = Test-CEProfileItem -ProfilePath $P -Relative 'x\y' -Log $log -Above $true -Topic 't'
+                $text = Read-CEProfileFile -ProfilePath $P -Relative 'x\y.json' -MaxBytes 1KB -Log $log -Above $true -Topic 't'
+                [pscustomobject]@{ Names = @($names); Exists = $exists; Text = $text; Records = @($log.Records | ForEach-Object { "$($_.Location)|$($_.Kind)|$($_.Reason)|$($_.NeedsUserSession)" }) }
+            }
+            @($r.Names).Count | Should -Be 0
+            $r.Exists | Should -BeNullOrEmpty -Because 'whether anything is there is not known, not "no"'
+            $r.Text | Should -BeNullOrEmpty
+            @($r.Records) | Should -Be @(
+                "%USERPROFILE%\x|folder-listing|$global:CETestJunctionBad|True",
+                "%USERPROFILE%\x\y|existence|$global:CETestJunctionBad|True",
+                "%USERPROFILE%\x\y.json|file-content|a junction or symbolic link on the way is not followed when reading file contents above the user's rights|True")
+            # The link was judged by its own attributes and tag; nothing below it, or through the junction, was looked at.
+            $linkKey = $link.ToLowerInvariant()
+            @($global:CETestLooked) | Should -Contain $linkKey
+            @($global:CETestLooked | Where-Object { $_.StartsWith("$linkKey\") -or $_.StartsWith("$($j.ToLowerInvariant())\") }) | Should -BeNullOrEmpty
+            @($global:CETestLooked | Where-Object { $_ -like 'target:*' }) | Should -Be @("target:$($j.ToLowerInvariant())") -Because 'only the junction''s own target is read, once'
+        }
+        finally {
+            # The links themselves, never what they point to.
+            if ([IO.Directory]::Exists($j)) { [IO.Directory]::Delete($j) }
+            [IO.Directory]::Delete($link)
         }
     }
 

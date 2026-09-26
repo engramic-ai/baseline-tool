@@ -87,7 +87,8 @@ elevated. All of these reads go through one layer (`src/CEAudit/Private/15-Profi
    tool may not look at (for example because of its permissions) is recorded too. The checks that depend on it (SC-09, SC-12, SC-13, SC-14, FW-07 and
    UA-07) are then Manual, never Pass or Not applicable, and the records appear in the
    report, the GUI and the `ai.notRead` block of `user-status.json` (with
-   `ai.scanComplete`). Machine-scope checks name a full audit without elevation, signed
+   `ai.scanComplete`, which is `false` only when a location not read could hide an AI
+   tool). Machine-scope checks name a full audit without elevation, signed
    in as that user; User-scope checks name the per-user probe. A reason is a fixed
    string: it never contains file contents or error text.
 

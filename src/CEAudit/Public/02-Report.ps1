@@ -169,11 +169,13 @@ function Export-CEMarkdown {
         & $w '## AI on this device'
         & $w ''
         & $w "**$($ai.agentsFound) AI tool(s) found** - $(if ($ai.contained) { 'contained (none running as administrator, no root distribution)' } else { "$($ai.deviations) deviation(s)" })."
-        if (-not $ai.scanComplete) {
+        $shown = @($ai.notRead | Where-Object { $_.topic -ne 'extension-version' })
+        if ($shown.Count) {
             & $w ''
-            & $w 'Some locations were not read, so this list may be incomplete:'
+            # scanComplete is false only when a location not read could hide an AI tool.
+            & $w $(if (-not $ai.scanComplete) { 'Some locations were not read, so this list may be incomplete:' }
+                else { 'Some locations were not read. None of them could hide an AI tool, but what else they hold (such as a virtual machine or an MCP config) was not checked:' })
             & $w ''
-            $shown = @($ai.notRead | Where-Object { $_.topic -ne 'extension-version' })
             foreach ($r in $shown) { & $w "- $(Format-CENotRead $r)" }
             & $w ''
             & $w ((Get-CENotReadAdvice -Records $shown -Scope Machine) -join ' ')
@@ -430,7 +432,8 @@ function Export-CEHtml {
     elseif ($aiPosture.agentsFound -eq 0) { "<p class='ref'>No AI tools detected in this session.$(if ($Context.IsSystem) { ' Shadow AI is collected per user; run as the signed-in user for the full picture.' })</p>" } else { '' }
     $notReadShown = @(@($aiPosture.notRead) | Where-Object { $_.topic -ne 'extension-version' })
     $notReadLi = ($notReadShown | ForEach-Object { "<li>$(& $e (Format-CENotRead $_))</li>" }) -join ''
-    $aiNotRead = if ($notReadLi) { "<div class='ref' style='margin-top:8px'>Not read, so this may be incomplete. $(& $e ((Get-CENotReadAdvice -Records $notReadShown -Scope Machine) -join ' '))</div><ul>$notReadLi</ul>" } else { '' }
+    $notReadLead = if (-not $aiPosture.scanComplete) { 'Not read, so the AI tools found may be incomplete.' } else { 'Not read. None of these could hide an AI tool, but what else they hold (such as a virtual machine or an MCP config) was not checked.' }
+    $aiNotRead = if ($notReadLi) { "<div class='ref' style='margin-top:8px'>$notReadLead $(& $e ((Get-CENotReadAdvice -Records $notReadShown -Scope Machine) -join ' '))</div><ul>$notReadLi</ul>" } else { '' }
     $aiApprovals = Get-CEAIApprovalSummary -Posture $aiPosture
     $aiApprHtml = if ($aiApprovals) { "<div class='ref'>Approval (config/ai-approvals.json, SC-14): $(& $e $aiApprovals)</div>" } else { '' }
     $aiHtml = "<h2 id='ai'>AI on this device</h2><div class='aibox'><div class='h'><strong>$($aiPosture.agentsFound) AI tool(s) found</strong><span class='dev0 $aiDevCls'>$aiDevTxt</span></div>$aiApprHtml$aiEmpty$(if ($agentsLi) { "<ul>$agentsLi</ul>" })$(if ($envLi) { "<div class='ref' style='margin-top:8px'>Where AI runs</div><ul>$envLi</ul>" })$(if ($mcpLi) { "<div class='ref' style='margin-top:8px'>MCP servers</div><ul>$mcpLi</ul>" })$aiNotRead<p class='ref' style='margin:10px 0 0'>Baseline finds recognised AI apps and browser extensions installed on this device. It can't see AI websites used in a browser tab.</p></div>"

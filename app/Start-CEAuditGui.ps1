@@ -1369,7 +1369,10 @@ function Set-CEAiTab {
         }
         else { [void]$ui.AiEnvs.Children.Add((New-CEAiLine -Text "$(Get-UiField $env 'type' ''): $(Get-UiField $env 'name' '')")) }
     }
-    if (@(Get-UiField $Ai 'environments' @()).Count -eq 0 -and $scanComplete) { [void]$ui.AiEnvs.Children.Add((New-CEAiLine -Text 'No VMs, WSL distributions or containers found.')) }
+    # scanComplete is about AI tools only: a virtual machine can be hidden only by the profile or its virtual
+    # machine settings not being read (or by a record with no topic, from an older version).
+    $vmUnread = @($notRead | Where-Object { @('', 'profile', 'vm-inventory', 'vm-file') -contains [string](Get-UiField $_ 'topic' '') }).Count
+    if (@(Get-UiField $Ai 'environments' @()).Count -eq 0 -and -not $vmUnread) { [void]$ui.AiEnvs.Children.Add((New-CEAiLine -Text 'No VMs, WSL distributions or containers found.')) }
     if ($notRead.Count) {
         $lines = @($notRead | ForEach-Object {
                 $count = [int](Get-UiField $_ 'count' 1)
@@ -1386,7 +1389,8 @@ function Set-CEAiTab {
         if ($user -and $user -eq $notRead.Count) { $advice += "To read these, $toRead." }
         elseif ($user) { $advice += "To read those skipped because the audit ran with more rights than the user, $toRead." }
         $advice += @($notRead | ForEach-Object { [string](Get-UiField $_ 'remedy' '') } | Where-Object { $_ } | Select-Object -Unique)
-        $text = "Not read, so this may be incomplete: $($lines -join '; '). $($advice -join ' ')".TrimEnd()
+        $lead = if ($scanComplete) { 'Not read (none of these could hide an AI tool, but what else they hold, such as a virtual machine or an MCP config, was not checked)' } else { 'Not read, so the AI tools found may be incomplete' }
+        $text = "${lead}: $($lines -join '; '). $($advice -join ' ')".TrimEnd()
         [void]$ui.AiEnvs.Children.Add((New-CEAiLine -Text $text -Bad))
     }
 

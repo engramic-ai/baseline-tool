@@ -2665,6 +2665,29 @@ Describe 'AI tools (UA-07, SC-09, UA-10)' {
         }
     }
 
+    It 'reports unreadable processes only for tools that can act on the device' {
+        # A browser or chat app whose process can't be read is not a possible hidden agent (UA-10).
+        InModuleScope CEAudit {
+            $orig = (Get-CEConfig).'ai-tools'
+            try {
+                (Get-CEConfig).'ai-tools' = [pscustomobject]@{ schemaVersion = 2; tools = @(
+                    [pscustomobject]@{ id = 't-agent'; name = 'Agent X'; canActOnDevice = $true; windows = [pscustomobject]@{ processes = @([pscustomobject]@{ image = 'agentx.exe'; path = '*\x\*' }) } },
+                    [pscustomobject]@{ id = 't-browser'; name = 'Browser Y'; canActOnDevice = $false; windows = [pscustomobject]@{ processes = @([pscustomobject]@{ image = 'browsx.exe'; path = '*\y\*' }) } }) }
+                Mock Get-CEUserProfilePath { $null }
+                Mock Get-CEInstalledSoftware { @() }
+                Mock Get-CEStorePackageName { , @() }
+                Mock Get-CEVsCodeBuiltInExtensionDir { , @() }
+                Mock Get-CEProcessList {
+                    @([pscustomobject]@{ Name = 'agentx.exe'; ProcessId = 1; Path = ''; CommandLine = ''; Cim = $null },
+                      [pscustomobject]@{ Name = 'browsx.exe'; ProcessId = 2; Path = ''; CommandLine = ''; Cim = $null })
+                }
+                $st = Get-CEAIToolStateUncached -Context ([pscustomobject]@{ IsSystem = $false })
+                @($st.UninspectedProcesses) | Should -Be @('agentx.exe (pid 1)')
+            }
+            finally { (Get-CEConfig).'ai-tools' = $orig }
+        }
+    }
+
     It 'SC-09 warns about agents that can act on the device, not local or chat-only tools' {
         Set-TestAITools -Tools @((New-TestAITool 'Claude desktop app'), (New-TestAITool 'Ollama' -Service '' -CanAct $false))
         $f = @(Invoke-CEAuditCore -Id 'SC-09')

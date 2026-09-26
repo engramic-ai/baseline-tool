@@ -254,9 +254,11 @@ function Get-CEAIToolStateUncached {
         })
     }
 
-    # Agent images whose path and command line couldn't be read: they may belong to a tool running
-    # elevated or as another user. node.exe is too common to report this way.
-    $agentImages = @($catalog | ForEach-Object { @(Get-CEObjectValue $_.Signals 'processes' @()) | Where-Object { (Get-CEObjectValue $_ 'path' '') -or (Get-CEObjectValue $_ 'commandLine' '') } | ForEach-Object { [string]$_.image } } |
+    # Agent images whose path and command line couldn't be read: they may belong to an agent that can
+    # act on the device running elevated or as another user. Only those tools count; browsers and chat
+    # apps are not agents UA-10 looks for. node.exe is too common to report this way.
+    $agentImages = @($catalog | Where-Object { [bool](Get-CEObjectValue $_.Tool 'canActOnDevice' $false) } |
+        ForEach-Object { @(Get-CEObjectValue $_.Signals 'processes' @()) | Where-Object { (Get-CEObjectValue $_ 'path' '') -or (Get-CEObjectValue $_ 'commandLine' '') } | ForEach-Object { [string]$_.image } } |
         Where-Object { $_ -and $_ -ne 'node.exe' } | Sort-Object -Unique)
     $hidden = @($processes | Where-Object { $agentImages -contains $_.Name -and -not $_.Path -and -not $_.CommandLine -and -not $claimed.ContainsKey($_.ProcessId) } |
         ForEach-Object { "$($_.Name) (pid $($_.ProcessId))" })

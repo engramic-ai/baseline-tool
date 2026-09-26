@@ -2,17 +2,82 @@
 # AI browser extensions in the user's browser profiles (config/browser-profiles.json),
 # for the catalog in config/ai-tools.json. Folder and file NAMES only: no file in a
 # browser profile is opened, so history, cookies, settings and extension data are never
-# read. Runs the same way as SYSTEM over a standard user's profile: links below the
-# profile folder are skipped, listings are capped, and only catalog ids are returned.
+# read. Runs the same way as SYSTEM over a standard user's profile: listings are capped,
+# only catalog ids are returned, and when the audit has more rights than the user
+# (Test-CEAboveUserRights) links below the profile folder are skipped.
 # ---------------------------------------------------------------------------
 
-function Test-CEPlainDirectory {
-    <# True when Path is an existing directory that is not a junction or symbolic link. #>
+function Get-CEReparseTag {
+    <#
+        The reparse tag of Path (0 when it is not a reparse point), or -1 when it can't be read.
+        Reads the folder entry only (FindFirstFileW), so the item is not opened: a link is not
+        followed and a cloud file is not downloaded. Tests mock this.
+    #>
     param([string]$Path)
+    # FindFirstFileW treats * and ? as wildcards, which would name another item.
+    if (-not $Path -or $Path -match '[*?]' -or -not (Test-CEIsWindows)) { return [long]-1 }
+    try {
+        if (-not ('CEAudit.ReparseTag' -as [type])) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+namespace CEAudit {
+    public static class ReparseTag {
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        struct FindData {
+            public uint Attributes;
+            public uint CreationLow, CreationHigh, AccessLow, AccessHigh, WriteLow, WriteHigh;
+            public uint SizeHigh, SizeLow, Reserved0, Reserved1;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string FileName;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 14)] public string AlternateFileName;
+        }
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern IntPtr FindFirstFileW(string name, out FindData data);
+        [DllImport("kernel32.dll")] static extern bool FindClose(IntPtr handle);
+        public static long Get(string path) {
+            FindData data;
+            IntPtr handle = FindFirstFileW(path, out data);
+            if (handle == IntPtr.Zero || handle == new IntPtr(-1)) { return -1; }
+            FindClose(handle);
+            if ((data.Attributes & 0x400) == 0) { return 0; }
+            return (long)data.Reserved0;
+        }
+    }
+}
+'@ -ErrorAction Stop
+        }
+        return [long][CEAudit.ReparseTag]::Get($Path.TrimEnd('\', '/'))
+    }
+    catch {
+        Write-Verbose "Could not read the reparse tag of ${Path}: $($_.Exception.Message)"
+        return [long]-1
+    }
+}
+
+function Test-CELinkItem {
+    <#
+        Whether a file or folder (a FileSystemInfo) is a link: a reparse point whose tag is a name
+        surrogate (bit 0x20000000), such as a junction (0xA0000003) or symbolic link (0xA000000C).
+        Other reparse points are not links: OneDrive and other cloud files keep theirs once they are
+        downloaded, and deduplicated or compressed files have one too. A tag that can't be read
+        counts as a link. Attributes only: nothing is opened.
+    #>
+    param($Item)
+    if ($null -eq $Item -or ([int]($Item.Attributes -band [IO.FileAttributes]::ReparsePoint)) -eq 0) { return $false }
+    $tag = [long](Get-CEReparseTag -Path ([string]$Item.FullName))
+    if ($tag -lt 0) { return $true }
+    return (($tag -band 0x20000000) -ne 0)
+}
+
+function Test-CEPlainDirectory {
+    <#
+        True when Path is an existing directory that is not a junction or symbolic link
+        (Test-CELinkItem). With -FollowLinks, any existing directory.
+    #>
+    param([string]$Path, [switch]$FollowLinks)
     if (-not $Path) { return $false }
     try {
         $d = New-Object IO.DirectoryInfo $Path
-        return ($d.Exists -and ([int]($d.Attributes -band [IO.FileAttributes]::ReparsePoint)) -eq 0)
+        return ($d.Exists -and ($FollowLinks -or -not (Test-CELinkItem $d)))
     }
     catch { return $false }
 }
@@ -32,16 +97,17 @@ function Test-CEPlainDirectoryChain {
     <#
         Base exists as a directory (it may itself be a link: profile containers and moved profiles
         are; callers check Base with Test-CELocalFilePath) and every folder of Relative below it is
-        a plain directory.
+        a plain directory. With -FollowLinks (an audit in the user's own session), every folder of
+        Relative only has to exist.
     #>
-    param([string]$Base, [string]$Relative)
+    param([string]$Base, [string]$Relative, [switch]$FollowLinks)
     if (-not $Base) { return $false }
     try { if (-not (New-Object IO.DirectoryInfo $Base).Exists) { return $false } } catch { return $false }
     if (-not (Test-CERelativePathText $Relative)) { return $false }
     $p = $Base
     foreach ($seg in ($Relative -split '[\\/]')) {
         $p = Join-Path $p $seg
-        if (-not (Test-CEPlainDirectory $p)) { return $false }
+        if (-not (Test-CEPlainDirectory $p -FollowLinks:$FollowLinks)) { return $false }
     }
     return $true
 }
@@ -52,19 +118,20 @@ function Test-CEPlainProfileItem {
         folders only. The last part may itself be a junction or symbolic link (a folder moved to
         another drive, say): its own attributes are read, and the link is not followed. With
         -NoLink the last part must not be a link either, for callers that go on to use the path.
-        Reads attributes only: nothing is opened. ProfilePath must be on a local fixed drive.
+        -FollowLinks (an audit in the user's own session) drops both link rules. Reads attributes
+        only: nothing is opened. ProfilePath must be on a local fixed drive.
     #>
-    param([string]$ProfilePath, [string]$Relative, [switch]$NoLink)
+    param([string]$ProfilePath, [string]$Relative, [switch]$NoLink, [switch]$FollowLinks)
     if (-not $ProfilePath -or -not (Test-CELocalFilePath $ProfilePath)) { return $false }
     if (-not (Test-CERelativePathText $Relative)) { return $false }
     $parent = Split-Path -Parent $Relative
-    if ($parent -and -not (Test-CEPlainDirectoryChain -Base $ProfilePath -Relative $parent)) { return $false }
+    if ($parent -and -not (Test-CEPlainDirectoryChain -Base $ProfilePath -Relative $parent -FollowLinks:$FollowLinks)) { return $false }
     try {
         $full = Join-Path $ProfilePath $Relative
         $item = New-Object IO.DirectoryInfo $full
         if (-not $item.Exists) { $item = New-Object IO.FileInfo $full }
         if (-not $item.Exists) { return $false }
-        return (-not $NoLink -or ([int]($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) -eq 0)
+        return ($FollowLinks -or -not $NoLink -or -not (Test-CELinkItem $item))
     }
     catch { return $false }
 }
@@ -90,7 +157,7 @@ function Get-CEPlainChildName {
         descends into a child. Leaves out names ending in '.' or a space: Windows drops that
         character when the name is used in a path, so 'Profile 1.' would lead into a link
         called 'Profile 1' that was skipped here. -IncludeLinks keeps links too, for callers
-        that use the names only and never the paths.
+        that use the names only and never the paths, and for an audit in the user's own session.
     #>
     param([string]$Path, [int]$Max, [string]$Extension, [switch]$IncludeLinks)
     $names = New-Object System.Collections.ArrayList
@@ -101,7 +168,7 @@ function Get-CEPlainChildName {
         if ($Extension) { $items = $di.EnumerateFiles('*' + $Extension) } else { $items = $di.EnumerateDirectories() }
         foreach ($i in $items) {
             if (++$seen -gt $Max) { Write-Verbose "Stopped listing $Path at $Max entries"; break }
-            if (-not $IncludeLinks -and ([int]($i.Attributes -band [IO.FileAttributes]::ReparsePoint)) -ne 0) { continue }
+            if (-not $IncludeLinks -and (Test-CELinkItem $i)) { continue }
             if ($i.Name -match '[. ]$') { continue }
             [void]$names.Add($i.Name)
         }
@@ -133,8 +200,8 @@ function Get-CEBrowserProfileRoot {
         Validated Windows entries from browser-profiles.json plus the caps (defaults 64 / 2000,
         clamped to 1..10000). Drops, with Write-Verbose, entries with no name, an engine other than
         chromium/firefox, a bad root, and installed items with a base other than programFiles,
-        programFilesX86 or profile, or a bad path. A missing file, a missing 'windows' key or
-        missing caps are not errors.
+        programFilesX86 or profile, or a bad path, or an appx name that is not a Store package name.
+        A missing file, a missing 'windows' key or missing caps are not errors.
     #>
     $cfg = (Get-CEConfig)['browser-profiles']
     $browsers = New-Object System.Collections.ArrayList
@@ -150,6 +217,13 @@ function Get-CEBrowserProfileRoot {
         $installed = New-Object System.Collections.ArrayList
         foreach ($item in @(Get-CEObjectValue $b 'installed' @())) {
             if ($null -eq $item) { continue }
+            $appx = [string](Get-CEObjectValue $item 'appx' '')
+            if ($appx) {
+                # A Store (MSIX) package installed for the user, by package name.
+                if ($appx -notmatch '^[A-Za-z0-9][A-Za-z0-9.-]{0,63}$') { Write-Verbose "browser-profiles.json: ignoring an installed item of '$name' (appx '$appx')"; continue }
+                [void]$installed.Add([pscustomobject]@{ Base = 'appx'; Path = $appx })
+                continue
+            }
             $base = [string](Get-CEObjectValue $item 'base' '')
             $path = [string](Get-CEObjectValue $item 'path' '')
             if (@('programFiles', 'programFilesX86', 'profile') -notcontains $base -or -not (Test-CERelativePathText $path)) {
@@ -211,10 +285,10 @@ function Get-CEBrowserProfileLabel {
 
 function Get-CEChromiumExtensionVersion {
     <# Highest '<version>_<n>' child folder name, as the version; '' when there is none. #>
-    param([string]$Folder)
+    param([string]$Folder, [switch]$FollowLinks)
     $best = $null
     $bestText = ''
-    $names = Get-CEPlainChildName -Path $Folder -Max 32   # assign first: it returns ,array
+    $names = Get-CEPlainChildName -Path $Folder -Max 32 -IncludeLinks:$FollowLinks   # assign first: it returns ,array
     foreach ($n in $names) {
         if ($n -notmatch '^(\d{1,5}(\.\d{1,5}){0,3})_\d{1,3}$') { continue }
         $text = $Matches[1]
@@ -227,23 +301,29 @@ function Get-CEChromiumExtensionVersion {
 
 function Test-CEBrowserInstalled {
     <#
-        Whether any of the browser's 'installed' files exists; $true when it lists none. Program
-        Files paths come from the machine; profile paths must be a link-free chain below the
-        profile. Existence only: FileInfo.Exists reads attributes, it does not open the file.
+        Whether any of the browser's 'installed' files exists, or any of its Store packages
+        (appx) is among -StorePackages, the user's Store package names; $true when it lists none.
+        Program Files paths come from the machine; profile paths must be a link-free chain below
+        the profile unless -FollowLinks. Existence only: FileInfo.Exists reads attributes, it does
+        not open the file.
     #>
-    param($Browser, [string]$ProfilePath)
+    param($Browser, [string]$ProfilePath, [string[]]$StorePackages, [switch]$FollowLinks)
     $items = @($Browser.Installed)
     if ($items.Count -eq 0) { return $true }
     foreach ($item in $items) {
+        if ($item.Base -eq 'appx') {
+            if (@($StorePackages) -contains $item.Path) { return $true }
+            continue
+        }
         $base = if ($item.Base -eq 'profile') { $ProfilePath } else { Get-CEProgramFilesPath $item.Base }
         if (-not $base -or -not (Test-CELocalFilePath $base)) { continue }
         if ($item.Base -eq 'profile') {
             $parent = Split-Path -Parent $item.Path
-            if ($parent -and -not (Test-CEPlainDirectoryChain -Base $base -Relative $parent)) { continue }
+            if ($parent -and -not (Test-CEPlainDirectoryChain -Base $base -Relative $parent -FollowLinks:$FollowLinks)) { continue }
         }
         try {
             $fi = New-Object IO.FileInfo (Join-Path $base $item.Path)
-            if ($fi.Exists -and ([int]($fi.Attributes -band [IO.FileAttributes]::ReparsePoint)) -eq 0) { return $true }
+            if ($fi.Exists -and ($FollowLinks -or -not (Test-CELinkItem $fi))) { return $true }
         }
         catch { Write-Verbose "Could not check $($item.Path): $($_.Exception.Message)" }
     }
@@ -256,9 +336,11 @@ function Get-CEBrowserExtensionList {
           Chromium: <root>\<profile>\Extensions\<id>\<version>_<n>
           Firefox:  <root>\<profile>\extensions\<id>.xpi
         Returns only ids in -ChromiumIds / -FirefoxIds. Catalog ids are compared, never used to build
-        a path. Tests mock this.
+        a path. Links below the profile folder are skipped unless -FollowLinks (an audit in the
+        user's own session, see Test-CEAboveUserRights). -StorePackages: the user's Store package
+        names, for browsers installed from the Store. Tests mock this.
     #>
-    param([string]$ProfilePath, [hashtable]$ChromiumIds, [hashtable]$FirefoxIds)
+    param([string]$ProfilePath, [hashtable]$ChromiumIds, [hashtable]$FirefoxIds, [string[]]$StorePackages, [switch]$FollowLinks)
     $list = New-Object System.Collections.ArrayList
     if (-not $ChromiumIds) { $ChromiumIds = @{} }
     if (-not $FirefoxIds) { $FirefoxIds = @{} }
@@ -269,12 +351,12 @@ function Get-CEBrowserExtensionList {
     foreach ($b in @($roots.Browsers)) {
         $ids = if ($b.Engine -eq 'firefox') { $FirefoxIds } else { $ChromiumIds }
         if ($ids.Count -eq 0) { continue }
-        if (-not (Test-CEPlainDirectoryChain -Base $ProfilePath -Relative $b.Root)) { continue }
+        if (-not (Test-CEPlainDirectoryChain -Base $ProfilePath -Relative $b.Root -FollowLinks:$FollowLinks)) { continue }
         $root = Join-Path $ProfilePath $b.Root
         $found = $null   # whether the browser is installed; worked out on the first match only
         $candidates = New-Object System.Collections.ArrayList
         if ($b.Engine -eq 'chromium' -and $b.RootIsProfile) { [void]$candidates.Add([pscustomobject]@{ Path = $root; Label = 'main' }) }
-        $children = Get-CEPlainChildName -Path $root -Max $roots.MaxEntries   # assign first: it returns ,array
+        $children = Get-CEPlainChildName -Path $root -Max $roots.MaxEntries -IncludeLinks:$FollowLinks   # assign first: it returns ,array
         foreach ($n in $children) {
             if ($b.Engine -eq 'chromium' -and $skip -contains $n) { continue }
             [void]$candidates.Add([pscustomobject]@{ Path = (Join-Path $root $n); Label = (Get-CEBrowserProfileLabel -Engine $b.Engine -Folder $n) })
@@ -282,28 +364,28 @@ function Get-CEBrowserExtensionList {
         $profiles = 0
         foreach ($c in $candidates) {
             # The profile folder as a path: Windows normalises it the same way the reads below will.
-            if (-not (Test-CEPlainDirectory $c.Path)) { continue }
+            if (-not (Test-CEPlainDirectory $c.Path -FollowLinks:$FollowLinks)) { continue }
             $extDir = Join-Path $c.Path $(if ($b.Engine -eq 'firefox') { 'extensions' } else { 'Extensions' })
-            if (-not (Test-CEPlainDirectory $extDir)) { continue }
+            if (-not (Test-CEPlainDirectory $extDir -FollowLinks:$FollowLinks)) { continue }
             if (++$profiles -gt $roots.MaxProfiles) { Write-Verbose "Stopped at $($roots.MaxProfiles) $($b.Name) profiles"; break }
             if ($b.Engine -eq 'firefox') {
-                $files = Get-CEPlainChildName -Path $extDir -Max $roots.MaxEntries -Extension '.xpi'
+                $files = Get-CEPlainChildName -Path $extDir -Max $roots.MaxEntries -Extension '.xpi' -IncludeLinks:$FollowLinks
                 foreach ($n in $files) {
                     # On Windows PowerShell 5.1, *.xpi also matches .xpix (the short-name rule).
                     if ($n -notmatch '\.xpi$') { continue }
                     $id = $n -replace '\.xpi$', ''
                     if (-not (Test-CEFirefoxAddonId $id) -or -not $FirefoxIds.ContainsKey($id)) { continue }
-                    if ($null -eq $found) { $found = Test-CEBrowserInstalled -Browser $b -ProfilePath $ProfilePath }
+                    if ($null -eq $found) { $found = Test-CEBrowserInstalled -Browser $b -ProfilePath $ProfilePath -StorePackages $StorePackages -FollowLinks:$FollowLinks }
                     [void]$list.Add([pscustomobject]@{ Browser = $b.Name; Engine = $b.Engine; Profile = $c.Label; Id = $id; Version = ''; BrowserFound = [bool]$found })
                 }
             }
             else {
-                $folders = Get-CEPlainChildName -Path $extDir -Max $roots.MaxEntries
+                $folders = Get-CEPlainChildName -Path $extDir -Max $roots.MaxEntries -IncludeLinks:$FollowLinks
                 foreach ($n in $folders) {
                     $lid = $n.ToLowerInvariant()
                     if ($lid -cnotmatch '^[a-p]{32}$' -or -not $ChromiumIds.ContainsKey($lid)) { continue }
-                    if ($null -eq $found) { $found = Test-CEBrowserInstalled -Browser $b -ProfilePath $ProfilePath }
-                    $version = Get-CEChromiumExtensionVersion -Folder (Join-Path $extDir $n)
+                    if ($null -eq $found) { $found = Test-CEBrowserInstalled -Browser $b -ProfilePath $ProfilePath -StorePackages $StorePackages -FollowLinks:$FollowLinks }
+                    $version = Get-CEChromiumExtensionVersion -Folder (Join-Path $extDir $n) -FollowLinks:$FollowLinks
                     [void]$list.Add([pscustomobject]@{ Browser = $b.Name; Engine = $b.Engine; Profile = $c.Label; Id = $lid; Version = $version; BrowserFound = [bool]$found })
                 }
             }

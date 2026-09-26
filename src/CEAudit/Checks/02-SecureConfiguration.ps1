@@ -200,11 +200,15 @@ Register-CECheck -Id 'SC-09' -Category 'SecureConfiguration' -Severity 'Medium' 
             }
         }
         # AI agents can run commands and change files on behalf of a cloud account, much like a remote access tool.
+        # A current approval in ai-approvals.json (SC-14) is the record that one is needed, so it isn't raised here.
+        $register = Get-CEAIApprovalRegister
+        $today = ([datetime]$ctx.AuditTime).Date
         foreach ($tool in @((Get-CEAIToolState -Context $ctx).Tools | Where-Object { $_.CanActOnDevice })) {
+            if ((Get-CEAIApproval -ToolId $tool.Id -Register $register -Today $today).State -eq 'approved') { continue }
             $results += New-CEResult -Status 'Warn' -Subject $tool.Name `
                 -Expected 'AI agents that can run commands or change files only where approved, with MFA on their account' `
                 -Actual "AI agent that can act on this device: $($tool.Name)" -Evidence @($tool.Signals) `
-                -Recommendation "Remove it if it isn't needed. If it is: record who approved it, make sure its account uses MFA (UA-07), don't run it with administrator rights (UA-10), and keep it asking before it runs commands or changes files. $($tool.Notes)".Trim()
+                -Recommendation "Remove it if it isn't needed. If it is: record the approval in config/ai-approvals.json (SC-14), make sure its account uses MFA (UA-07), don't run it with administrator rights (UA-10), and keep it asking before it runs commands or changes files. $($tool.Notes)".Trim()
         }
         return $results
     }
@@ -351,4 +355,49 @@ Register-CECheck -Id 'SC-13' -Category 'SecureConfiguration' -Severity 'High' -S
         }
         return New-CEResult -Status 'Pass' -Expected $expected `
             -Actual "$($servers.Count) MCP server(s) configured; no plaintext credentials found"
+    }
+
+Register-CECheck -Id 'SC-14' -Category 'SecureConfiguration' -Severity 'Medium' `
+    -Title 'AI tools on the device have been approved' `
+    -Frameworks @('NCSC') `
+    -Reference 'NCSC device security guidance: control which applications can be installed and used on a device. An AI tool the organisation has not approved can send its data to a service nobody has assessed. Decisions are recorded in config/ai-approvals.json.' `
+    -Test {
+        param($ctx)
+        $tools = @((Get-CEAIToolState -Context $ctx).Tools)
+        $register = Get-CEAIApprovalRegister
+        $today = ([datetime]$ctx.AuditTime).Date
+        $expected = 'Every AI tool on the device has been approved by the organisation'
+        $results = @()
+        if (@($register.Problems).Count) {
+            $results += New-CEResult -Status 'Warn' -Subject 'ai-approvals.json' -Expected 'Every entry in the approvals register can be read' `
+                -Actual "Entries ignored: $(@($register.Problems) -join '; ')" -Evidence @($register.Problems) `
+                -Recommendation 'Fix these entries in config/ai-approvals.json. Until then, the tools they name count as not reviewed.'
+        }
+        if (-not $tools.Count) {
+            $results += New-CEResult -Status 'NotApplicable' -Expected $expected -Actual 'No recognised AI tools found'
+            return $results
+        }
+        foreach ($tool in $tools) {
+            $a = Get-CEAIApproval -ToolId $tool.Id -Register $register -Today $today
+            $mfa = if ($tool.Service) { " and make sure its $($tool.Service) account uses MFA (UA-07)" } else { '' }
+            switch ($a.State) {
+                'approved' {
+                    $results += New-CEResult -Status 'Pass' -Subject $tool.Name -Expected $expected -Actual $a.Detail -Evidence @($tool.Signals)
+                }
+                'stale' {
+                    $results += New-CEResult -Status 'Warn' -Subject $tool.Name -Expected $expected -Actual $a.Detail -Evidence @($tool.Signals) `
+                        -Recommendation 'Review the decision: if the tool is still needed, update decidedBy and decidedOn in config/ai-approvals.json; if not, remove it.'
+                }
+                'not-approved' {
+                    $results += New-CEResult -Status 'Fail' -Subject $tool.Name -Expected $expected -Actual $a.Detail -Evidence @($tool.Signals) `
+                        -Recommendation "Remove $($tool.Name) from this device. If it is now needed, change the decision in config/ai-approvals.json instead."
+                }
+                default {
+                    $results += New-CEResult -Status 'Warn' -Subject $tool.Name -Expected $expected `
+                        -Actual "Not reviewed: $($tool.Name) is on this device, and config/ai-approvals.json has no decision for it" -Evidence @($tool.Signals) `
+                        -Recommendation "Decide whether $($tool.Name) is needed. If it is, add it to config/ai-approvals.json as approved, with who decided, when and why$mfa. If it isn't, remove it."
+                }
+            }
+        }
+        return $results
     }

@@ -340,9 +340,9 @@ BeforeAll {
 }
 
 Describe 'Module structure' {
-    It 'loads 57 checks with unique ids' {
+    It 'loads 58 checks with unique ids' {
         $checks = Get-CECheck
-        $checks.Count | Should -Be 57
+        $checks.Count | Should -Be 58
         ($checks.Id | Sort-Object -Unique).Count | Should -Be $checks.Count
     }
 
@@ -693,7 +693,7 @@ Describe 'Audit of an insecure device' {
             $r.Summary.Verdict | Should -Match '^FAIL'
             $fw = @($script:findings | Where-Object Category -eq 'Firewalls')
             $p = Export-CEReport -Findings $fw -Context (New-TestContext) -OutputPath (Join-Path $TestDrive 'out-partial') -PartialRun
-            $p.Summary.Verdict | Should -Match '^PARTIAL: \d+ of 57 checks run$' -Because 'a partial run gives no FAIL/READY verdict even with failures'
+            $p.Summary.Verdict | Should -Match '^PARTIAL: \d+ of 58 checks run$' -Because 'a partial run gives no FAIL/READY verdict even with failures'
             (Get-Content $r.Paths.Html -Raw) | Should -Match 'Cyber Essentials Plus readiness'
             (Get-Content $r.Paths.Markdown -Raw) | Should -Match 'Automatic-fail items'
             ($r.Summary.CEPlus | Where-Object TestCase -eq 'TC2').State | Should -Be 'Likely fail'
@@ -724,19 +724,19 @@ Describe 'Audit of a hardened device' {
     It 'does not claim READY for a partial run' {
         $f = @(Invoke-CEAuditCore -Id 'NC-08')
         $summary = InModuleScope CEAudit -Parameters @{ F = $f } { param($F) Get-CESummary -Findings $F -PartialRun }
-        $summary.Verdict | Should -Be 'PARTIAL: 1 of 57 checks run'
+        $summary.Verdict | Should -Be 'PARTIAL: 1 of 58 checks run'
         $summary.PartialRun | Should -BeTrue
         $out = Join-Path $TestDrive 'partial'
         $r = Export-CEReport -Findings $f -Context (New-TestContext) -OutputPath $out -PartialRun
-        $r.Summary.Verdict | Should -Be 'PARTIAL: 1 of 57 checks run'
-        (Get-Content $r.Paths.Html -Raw) | Should -Match ([regex]::Escape("<div class='msg'>PARTIAL: 1 of 57 checks run</div>"))
-        (Get-Content $r.Paths.Markdown -Raw) | Should -Match ([regex]::Escape('## PARTIAL: 1 of 57 checks run'))
+        $r.Summary.Verdict | Should -Be 'PARTIAL: 1 of 58 checks run'
+        (Get-Content $r.Paths.Html -Raw) | Should -Match ([regex]::Escape("<div class='msg'>PARTIAL: 1 of 58 checks run</div>"))
+        (Get-Content $r.Paths.Markdown -Raw) | Should -Match ([regex]::Escape('## PARTIAL: 1 of 58 checks run'))
         # A check can run without leaving a finding, so the engine's count wins over the findings.
         $progress = @{}
         $f = @(Invoke-CEAuditCore -Id 'NC-08', 'NC-07' -ProgressState $progress)
         $progress.Done | Should -Be 2
         $r = Export-CEReport -Findings @($f | Where-Object CheckId -eq 'NC-08') -Context (New-TestContext) -OutputPath $out -PartialRun -ChecksRun $progress.Done
-        $r.Summary.Verdict | Should -Be 'PARTIAL: 2 of 57 checks run'
+        $r.Summary.Verdict | Should -Be 'PARTIAL: 2 of 58 checks run'
     }
 
     It 'still asks for manual attestation (MFA, software review, backups)' {
@@ -2559,8 +2559,9 @@ Describe 'Virtual machines, WSL and containers (SC-12, FW-07)' {
 Describe 'AI tools (UA-07, SC-09, UA-10)' {
     BeforeAll {
         function global:New-TestAITool {
-            param([string]$Name, [string]$Service = 'Anthropic (Claude)', [bool]$CanAct = $true, [object[]]$Processes = @())
-            [pscustomobject]@{ Id = ($Name.ToLower() -replace '[^a-z0-9]+', '-'); Name = $Name; Service = $Service; CanActOnDevice = $CanAct; Notes = ''
+            param([string]$Name, [string]$Service = 'Anthropic (Claude)', [bool]$CanAct = $true, [object[]]$Processes = @(), [string]$Id)
+            if (-not $Id) { $Id = ($Name.ToLower() -replace '[^a-z0-9]+', '-') }
+            [pscustomobject]@{ Id = $Id; Name = $Name; Service = $Service; CanActOnDevice = $CanAct; Notes = ''
                 Signals = @("Store app: $Name"); Processes = $Processes }
         }
         function global:New-TestAgentProcess {
@@ -2598,13 +2599,20 @@ Describe 'AI tools (UA-07, SC-09, UA-10)' {
     It 'the shipped tool list is well formed' {
         $list = Get-Content (Join-Path (Join-Path $script:RepoRoot 'config') 'ai-tools.json') -Raw | ConvertFrom-Json
         $list.lastReviewed | Should -Match '^\d{4}-\d{2}-\d{2}$'
+        $list.schemaVersion | Should -Be 2
         $ids = @($list.tools | ForEach-Object { $_.id })
         ($ids | Sort-Object -Unique).Count | Should -Be $ids.Count
         foreach ($t in @($list.tools)) {
-            $signals = @($t.programs).Count + @($t.uninstallKeys).Count + @($t.appx).Count + @($t.processes).Count + @($t.paths).Count + @($t.vscodeExtensions).Count
+            # Detection signals live in a block per operating system; nothing Windows-specific at the top level.
+            foreach ($legacy in 'programs', 'uninstallKeys', 'appx', 'processes', 'paths', 'vscodeExtensions', 'mcpConfigs', 'enabled') {
+                $t.PSObject.Properties[$legacy] | Should -BeNullOrEmpty -Because "$($t.id): $legacy belongs in the windows block"
+            }
+            $w = $t.windows
+            $w | Should -Not -BeNullOrEmpty -Because $t.id
+            $signals = @($w.programs).Count + @($w.uninstallKeys).Count + @($w.appx).Count + @($w.processes).Count + @($w.paths).Count + @($w.vscodeExtensions).Count
             $signals | Should -BeGreaterThan 0 -Because $t.id
-            foreach ($proc in @($t.processes)) { $proc.image | Should -Match '^[\w. -]+\.exe$' -Because $t.id }
-            foreach ($prog in @($t.programs)) { ($prog.name -replace '[*?]', '').Length | Should -BeGreaterOrEqual 4 -Because "$($t.id) program pattern must not be too broad" }
+            foreach ($proc in @($w.processes)) { $proc.image | Should -Match '^[\w. -]+\.exe$' -Because $t.id }
+            foreach ($prog in @($w.programs)) { ($prog.name -replace '[*?]', '').Length | Should -BeGreaterOrEqual 4 -Because "$($t.id) program pattern must not be too broad" }
             @($t.sources).Count | Should -BeGreaterThan 0 -Because $t.id
             foreach ($u in @($t.sources)) { $u | Should -Match '^https://' -Because $t.id }
         }
@@ -2695,6 +2703,174 @@ Describe 'AI tools (UA-07, SC-09, UA-10)' {
         $f = @(Invoke-CEAuditCore -Id 'UA-10')
         $f[0].Status | Should -Be 'Manual'
         $f[0].Actual | Should -Be "Couldn't check: Claude Code: claude.exe pid 20 as PC\paul; Possible AI agent claude.exe (pid 30) (path not readable)"
+    }
+
+    Context 'approved AI tools register (SC-14)' {
+        BeforeAll {
+            $global:CEOrigApprovals = InModuleScope CEAudit { (Get-CEConfig).'ai-approvals' }
+            function global:Set-TestApprovals {
+                # The register as JSON text, parsed the way the module parses config files.
+                param([string]$Json)
+                InModuleScope CEAudit -Parameters @{ J = $Json } { param($J) (Get-CEConfig).'ai-approvals' = ($J | ConvertFrom-Json) }
+            }
+            function global:Get-TestDay { param([int]$DaysAgo) (Get-Date).Date.AddDays(-$DaysAgo).ToString('yyyy-MM-dd') }
+            $global:CETestTools = @((New-TestAITool 'Claude Code' -Id 'claude-code'), (New-TestAITool 'Cursor' -Service 'Cursor' -Id 'cursor'),
+                (New-TestAITool 'Google Gemini CLI' -Service 'Google (Gemini)' -Id 'gemini-cli'), (New-TestAITool 'Ollama' -Service '' -CanAct $false -Id 'ollama'))
+        }
+        AfterEach {
+            InModuleScope CEAudit -Parameters @{ O = $global:CEOrigApprovals } { param($O) (Get-CEConfig).'ai-approvals' = $O }
+        }
+
+        It 'ships an empty register' {
+            $r = Get-Content (Join-Path $script:RepoRoot 'config\ai-approvals.json') -Raw | ConvertFrom-Json
+            @($r.tools).Count | Should -Be 0
+            $r.maxApprovalAgeDays | Should -Be 365
+        }
+
+        It 'is not applicable when no AI tools are found' {
+            Set-TestAITools -Tools @()
+            $f = @(Invoke-CEAuditCore -Id 'SC-14')
+            $f.Count | Should -Be 1
+            $f[0].Status | Should -Be 'NotApplicable'
+        }
+
+        It 'passes approved tools, fails ones not approved and warns about ones not reviewed, chat-only tools included' {
+            Set-TestAITools -Tools $global:CETestTools
+            Set-TestApprovals @"
+{ "maxApprovalAgeDays": 365, "tools": [
+  { "id": "claude-code", "decision": "approved", "decidedBy": "A. Person", "decidedOn": "$(Get-TestDay 10)", "reason": "Team plan" },
+  { "id": "cursor", "decision": "not-approved", "decidedBy": "A. Person", "decidedOn": "$(Get-TestDay 10)", "reason": "Use Copilot" }
+] }
+"@
+            $f = @(Invoke-CEAuditCore -Id 'SC-14')
+            $by = @{}; foreach ($x in $f) { $by[$x.Subject] = $x }
+            $by['Claude Code'].Status | Should -Be 'Pass'
+            $by['Claude Code'].Actual | Should -Be "Approved by A. Person on $(Get-TestDay 10): Team plan"
+            $by['Cursor'].Status | Should -Be 'Fail'
+            $by['Cursor'].Actual | Should -Be "Not approved (by A. Person on $(Get-TestDay 10)): Use Copilot"
+            $by['Google Gemini CLI'].Status | Should -Be 'Warn'
+            $by['Google Gemini CLI'].Actual | Should -Match '^Not reviewed'
+            $by['Google Gemini CLI'].Recommendation | Should -Match 'Google \(Gemini\) account uses MFA'
+            $by['Ollama'].Status | Should -Be 'Warn' -Because 'chat-only and local tools need a decision too'
+            (Get-CECheck -Id 'SC-14').Frameworks | Should -Be @('NCSC') -Because 'shadow AI must not fail the Cyber Essentials judgement'
+        }
+
+        It 'treats old or incomplete approvals as due for review' {
+            Set-TestAITools -Tools @($global:CETestTools[0], $global:CETestTools[1], $global:CETestTools[2])
+            Set-TestApprovals @"
+{ "maxApprovalAgeDays": 365, "tools": [
+  { "id": "claude-code", "decision": "approved", "decidedBy": "A. Person", "decidedOn": "$(Get-TestDay 400)" },
+  { "id": "cursor", "decision": "Approved", "decidedOn": "$(Get-TestDay 5)" },
+  { "id": "gemini-cli", "decision": "approved", "decidedBy": "A. Person", "decidedOn": "$(Get-TestDay -30)" }
+] }
+"@
+            $f = @(Invoke-CEAuditCore -Id 'SC-14')
+            $by = @{}; foreach ($x in $f) { $by[$x.Subject] = $x }
+            $by['Claude Code'].Status | Should -Be 'Warn'
+            $by['Claude Code'].Actual | Should -Match '400 days ago; approvals are reviewed every 365 days'
+            $by['Cursor'].Status | Should -Be 'Warn' -Because 'an approval must say who approved it (the decision itself is case-insensitive)'
+            $by['Cursor'].Actual | Should -Match 'missing who approved it'
+            $by['Google Gemini CLI'].Status | Should -Be 'Warn' -Because 'a date in the future is not a valid decision date'
+        }
+
+        It 'flags entries it cannot use, and counts those tools as not reviewed' {
+            Set-TestAITools -Tools @($global:CETestTools[1], $global:CETestTools[2])
+            Set-TestApprovals @"
+{ "maxApprovalAgeDays": "soon", "tools": [
+  { "id": "not-a-tool", "decision": "approved", "decidedBy": "A", "decidedOn": "$(Get-TestDay 1)" },
+  { "id": "cursor", "decision": "approved", "decidedBy": "A", "decidedOn": "$(Get-TestDay 1)" },
+  { "id": "cursor", "decision": "not-approved", "decidedBy": "A", "decidedOn": "$(Get-TestDay 1)" },
+  { "id": "gemini-cli", "decision": "yes", "decidedBy": "A", "decidedOn": "$(Get-TestDay 1)" },
+  { "decision": "approved" }
+] }
+"@
+            $f = @(Invoke-CEAuditCore -Id 'SC-14')
+            $reg = @($f | Where-Object Subject -eq 'ai-approvals.json')
+            $reg.Status | Should -Be 'Warn'
+            $reg.Actual | Should -Match "maxApprovalAgeDays 'soon'"
+            $reg.Actual | Should -Match "'not-a-tool' is not a tool in ai-tools.json"
+            $reg.Actual | Should -Match "'cursor' is listed 2 times"
+            $reg.Actual | Should -Match "'gemini-cli' has decision 'yes'"
+            $reg.Actual | Should -Match 'an entry has no id'
+            @($f | Where-Object Subject -eq 'Cursor').Actual | Should -Match '^Not reviewed' -Because 'conflicting entries are ignored until fixed'
+            @($f | Where-Object Subject -eq 'Google Gemini CLI').Actual | Should -Match '^Not reviewed'
+        }
+
+        It 'reads a register with a single entry' {
+            # Windows PowerShell 5.1 hands back a lone object rather than a one-item array in several places.
+            Set-TestAITools -Tools @($global:CETestTools[0])
+            Set-TestApprovals "{ `"tools`": [ { `"id`": `"claude-code`", `"decision`": `"approved`", `"decidedBy`": `"A. Person`", `"decidedOn`": `"$(Get-TestDay 3)`" } ] }"
+            $f = @(Invoke-CEAuditCore -Id 'SC-14')
+            $f.Count | Should -Be 1
+            $f[0].Status | Should -Be 'Pass'
+        }
+
+        It 'SC-09 leaves out an approved agent but still raises one not reviewed' {
+            Set-TestAITools -Tools @($global:CETestTools[0], $global:CETestTools[1])
+            Set-TestApprovals "{ `"tools`": [ { `"id`": `"claude-code`", `"decision`": `"approved`", `"decidedBy`": `"A. Person`", `"decidedOn`": `"$(Get-TestDay 3)`" } ] }"
+            $f = @(Invoke-CEAuditCore -Id 'SC-09')
+            @($f | Where-Object Subject -eq 'Claude Code').Count | Should -Be 0
+            $cursor = @($f | Where-Object Subject -eq 'Cursor')
+            $cursor.Status | Should -Be 'Warn'
+            $cursor.Recommendation | Should -Match 'ai-approvals.json \(SC-14\)'
+        }
+
+        It 'puts each tool''s approval and the counts in the AI posture, apart from containment' {
+            Set-TestAITools -Tools $global:CETestTools
+            Set-TestApprovals @"
+{ "tools": [
+  { "id": "claude-code", "decision": "approved", "decidedBy": "A", "decidedOn": "$(Get-TestDay 3)" },
+  { "id": "cursor", "decision": "not-approved", "decidedBy": "A", "decidedOn": "$(Get-TestDay 3)" },
+  { "id": "ollama", "decision": "approved", "decidedBy": "A", "decidedOn": "$(Get-TestDay 900)" }
+] }
+"@
+            $ai = InModuleScope CEAudit { Get-CEAiPosture -Context (Get-CEDeviceContext) }
+            $by = @{}; foreach ($a in @($ai.agents)) { $by[$a.id] = $a }
+            $by['claude-code'].approval | Should -Be 'approved'
+            $by['cursor'].approval | Should -Be 'not-approved'
+            $by['gemini-cli'].approval | Should -Be 'unreviewed'
+            $by['ollama'].approval | Should -Be 'stale'
+            $by['cursor'].approvalDetail | Should -Match '^Not approved'
+            @($ai.approved, $ai.unapproved, $ai.unreviewed, $ai.approvalStale) | Should -Be @(1, 1, 1, 1)
+            $ai.contained | Should -BeTrue -Because 'approval is a decision, not containment'
+            InModuleScope CEAudit -Parameters @{ A = $ai } { param($A) Get-CEAIApprovalSummary -Posture $A } |
+                Should -Be '1 approved, 1 not approved, 1 due for review, 1 not reviewed'
+        }
+
+        It 'shows approvals in the report, and says what it cannot see' {
+            Set-TestAITools -Tools @($global:CETestTools[0], $global:CETestTools[2])
+            Set-TestApprovals "{ `"tools`": [ { `"id`": `"claude-code`", `"decision`": `"approved`", `"decidedBy`": `"A. O'Brien`", `"decidedOn`": `"$(Get-TestDay 3)`" } ] }"
+            $findings = @(Invoke-CEAuditCore -Id 'SC-14')
+            $r = Export-CEReport -Findings $findings -Context (New-TestContext) -OutputPath (Join-Path $TestDrive 'ai-report')
+            $md = Get-Content $r.Paths.Markdown -Raw
+            $html = Get-Content $r.Paths.Html -Raw
+            $md | Should -Match ([regex]::Escape('- Claude Code - present - approved'))
+            $md | Should -Match ([regex]::Escape('- Google Gemini CLI - present - **not reviewed**'))
+            $md | Should -Match ([regex]::Escape('Approval (config/ai-approvals.json, SC-14): 1 approved, 1 not reviewed.'))
+            $html | Should -Match "<span class='appr ok' title='Approved by A\. O&#39;Brien on "
+            $html | Should -Match "<span class='appr due'[^>]*>not reviewed</span>"
+            $html | Should -Match ([regex]::Escape("It can't see AI used in a browser tab."))
+        }
+
+        It 'reads Windows signals from the windows block, and from the top level in older overrides' {
+            InModuleScope CEAudit {
+                $orig = (Get-CEConfig).'ai-tools'
+                try {
+                    (Get-CEConfig).'ai-tools' = [pscustomobject]@{ tools = @(
+                        [pscustomobject]@{ id = 'grouped'; windows = [pscustomobject]@{ paths = @('.grouped') } },
+                        [pscustomobject]@{ id = 'off-here'; windows = [pscustomobject]@{ enabled = $false; paths = @('.off') } },
+                        [pscustomobject]@{ id = 'mac-only'; macos = [pscustomobject]@{ paths = @('.mac') } },
+                        [pscustomobject]@{ id = 'flat'; paths = @('.flat'); mcpConfigs = @([pscustomobject]@{ path = '.flat.json' }) }) }
+                    $catalog = Get-CEAIToolCatalog
+                    @($catalog | ForEach-Object { $_.Tool.id }) | Should -Be @('grouped', 'flat')
+                    @($catalog[0].Signals.paths) | Should -Be @('.grouped')
+                    @($catalog[1].Signals.paths) | Should -Be @('.flat') -Because 'an override written before signals were grouped still works'
+                    $mcp = Get-CEMcpConfigCatalogue
+                    @($mcp | ForEach-Object { $_.ToolId }) | Should -Be @('flat')
+                }
+                finally { (Get-CEConfig).'ai-tools' = $orig }
+            }
+        }
     }
 }
 
@@ -2919,7 +3095,7 @@ throw 'boom'
         $script:packs['config-clash'].Reason | Should -Match 'Config file name already used: thresholds\.json'
         $script:packs['good-again'].Reason | Should -Match "Pack 'good-pack' is already loaded"
         @(Get-CEPack | Where-Object Status -eq 'Loaded').Count | Should -Be 1
-        @(Get-CECheck | Where-Object { -not $_.Pack }).Count | Should -Be 57
+        @(Get-CECheck | Where-Object { -not $_.Pack }).Count | Should -Be 58
     }
 
     It 'rolls back everything a pack registered when it fails part way' {

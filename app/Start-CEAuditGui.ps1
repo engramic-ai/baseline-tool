@@ -432,6 +432,7 @@ $script:OutputRoot = $OutputRoot
                   <DataGridTextColumn Header="RIGHTS" Binding="{Binding Rights}" Width="130" ElementStyle="{StaticResource FlagText}"/>
                   <DataGridTextColumn Header="CAN ACT ON DEVICE" Binding="{Binding CanAct}" Width="150"/>
                   <DataGridTextColumn Header="MCP SERVERS" Binding="{Binding Mcp}" Width="110"/>
+                  <DataGridTextColumn Header="APPROVAL" Binding="{Binding Approval}" Width="130"/>
                   <DataGridTextColumn Header="" Binding="{Binding Spacer}" Width="*"/>
                 </DataGrid.Columns>
               </DataGrid>
@@ -452,7 +453,7 @@ $script:OutputRoot = $OutputRoot
               <StackPanel x:Name="AiEnvs" Margin="0,2,0,8"/>
               <TextBlock Margin="0,14,0,0"><Hyperlink x:Name="AiControlsLink">AI-related controls in Controls &#8594;</Hyperlink></TextBlock>
               <TextBlock Margin="0,18,0,0" FontSize="11.5" Foreground="{StaticResource Muted}" TextWrapping="Wrap"
-                         Text="The agents, WSL distributions and MCP servers you use live in your session. This is your posture; other users are audited in their own sessions, and SYSTEM never sees shadow AI. Credential values are never read or recorded, only where and how they are stored."/>
+                         Text="The agents, WSL distributions and MCP servers you use live in your session. This is your posture; other users are audited in their own sessions, and SYSTEM never sees shadow AI. Credential values are never read or recorded, only where and how they are stored. Baseline finds AI installed on this device; it can't see AI used in a browser tab."/>
             </StackPanel>
           </ScrollViewer>
         </TabItem>
@@ -1308,7 +1309,7 @@ function Set-CEAiTab {
     $agents = @(Get-UiField $Ai 'agents' @())
     $mcp = @(Get-UiField $Ai 'mcpServers' @())
 
-    $at = New-UiTable @('Tool', 'State', 'Rights', 'CanAct', 'Mcp', 'Spacer', 'Flag') @{ Flag = [bool] }
+    $at = New-UiTable @('Tool', 'State', 'Rights', 'CanAct', 'Mcp', 'Approval', 'Spacer', 'Flag') @{ Flag = [bool] }
     foreach ($a in $agents) {
         $running = [bool](Get-UiField $a 'running' $false)
         $elevated = [bool](Get-UiField $a 'elevated' $false)
@@ -1316,8 +1317,12 @@ function Set-CEAiTab {
         $rights = if ($asSystem) { 'SYSTEM' } elseif ($elevated) { 'administrator' } elseif ($running) { 'standard user' } else { '' }
         $id = [string](Get-UiField $a 'id' '')
         $count = @($mcp | Where-Object { [string](Get-UiField $_ 'toolId' '') -eq $id }).Count
+        # Saved results from before approvals existed have no 'approval' field.
+        $approval = switch ([string](Get-UiField $a 'approval' '')) {
+            'approved' { 'approved' } 'stale' { 'due for review' } 'not-approved' { 'not approved' } 'unreviewed' { 'not reviewed' } default { '-' }
+        }
         [void]$at.Rows.Add([string](Get-UiField $a 'name' ''), $(if ($running) { 'running' } else { 'present' }), $rights,
-            $(if ([bool](Get-UiField $a 'canActOnDevice' $false)) { 'yes' } else { 'no' }), $(if ($count) { [string]$count } else { '-' }), '', ($elevated -or $asSystem))
+            $(if ([bool](Get-UiField $a 'canActOnDevice' $false)) { 'yes' } else { 'no' }), $(if ($count) { [string]$count } else { '-' }), $approval, '', ($elevated -or $asSystem))
     }
     $ui.AiAgentsGrid.ItemsSource = $at.DefaultView
     $ui.AiAgentsEmpty.Visibility = if ($agents.Count) { 'Collapsed' } else { 'Visible' }
@@ -1371,6 +1376,10 @@ function Set-CEAiTab {
         $parts = @(@{ Text = "$n AI tool$(if ($n -ne 1) { 's' }) found, " })
         if ([bool](Get-UiField $Ai 'contained' ($dev -eq 0))) { $parts += @{ Text = 'contained'; Colour = '#006D6E'; Weight = 'SemiBold' } }
         else { $parts += @{ Text = "$dev running with elevated rights"; Colour = '#C23F2C'; Weight = 'SemiBold' } }
+        $notApproved = [int](Get-UiField $Ai 'unapproved' 0)
+        $toReview = [int](Get-UiField $Ai 'unreviewed' 0) + [int](Get-UiField $Ai 'approvalStale' 0)
+        if ($notApproved) { $parts += @{ Text = ", $notApproved not approved"; Colour = '#C23F2C'; Weight = 'SemiBold' } }
+        if ($toReview) { $parts += @{ Text = ", $toReview to review"; Colour = '#A9721A'; Weight = 'SemiBold' } }
         Set-UiRichText -Block $ui.AiLineText -Parts $parts
         $ui.AiLine.Visibility = 'Visible'
     }

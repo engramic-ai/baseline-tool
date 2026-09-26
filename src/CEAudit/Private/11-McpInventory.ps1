@@ -134,11 +134,10 @@ function Get-CECredentialClass {
 }
 
 function Get-CEMcpConfigCatalogue {
-    <# The (toolId, profile-relative path, format, root) entries declared in ai-tools.json. #>
-    $tools = @(Get-CEObjectValue ((Get-CEConfig)['ai-tools']) 'tools' @())
+    <# The (toolId, profile-relative path, format, root) entries declared in ai-tools.json for Windows. #>
     $out = New-Object System.Collections.ArrayList
-    foreach ($t in $tools) {
-        foreach ($m in @(Get-CEObjectValue $t 'mcpConfigs' @())) {
+    foreach ($t in @(Get-CEObjectValue ((Get-CEConfig)['ai-tools']) 'tools' @())) {
+        foreach ($m in @(Get-CEObjectValue (Get-CEAIToolSignal -Tool $t) 'mcpConfigs' @())) {
             [void]$out.Add([pscustomobject]@{
                     ToolId = [string]$t.id
                     RelPath = [string]$m.path

@@ -88,6 +88,7 @@ try {
     $status = [pscustomobject]@{
         schemaVersion = 1
         scope         = 'User'
+        platform      = 'windows'
         toolVersion   = [string](Get-CEToolVersion)
         computerName  = [string]$ctx.ComputerName
         user          = [string]$ctx.RunningAs
@@ -108,7 +109,7 @@ try {
             Write-Host ('  {0,-8} {1,-7} {2}{3}' -f $f.CheckId, $f.Status, $f.Title, $subject)
         }
     }
-    Write-Host "AI agents: $($ai.agentsFound)  contained: $($ai.contained)  deviations: $($ai.deviations)"
+    Write-Host "AI agents: $($ai.agentsFound)  contained: $($ai.contained)  deviations: $($ai.deviations)  approved: $($ai.approved)  not approved: $($ai.unapproved)  not reviewed: $($ai.unreviewed)  due for review: $($ai.approvalStale)"
     Write-Host "User-scope checks: $($userChecks.Count)  ($(($counts.GetEnumerator() | Where-Object { $_.Value } | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join '  '))"
     Write-Host "Status: $statusPath"
 }

@@ -156,7 +156,7 @@ Compliance is based on the last scheduled audit. A device that hasn't completed 
 
 ## The checks in detail
 
-57 checks across the five Cyber Essentials control themes, plus NCSC hardening and the AI/virtualisation footprint. The full list, with the requirement each check maps to, is in [docs/CONTROL-MAPPING.md](docs/CONTROL-MAPPING.md).
+58 checks across the five Cyber Essentials control themes, plus NCSC hardening and the AI/virtualisation footprint. The full list, with the requirement each check maps to, is in [docs/CONTROL-MAPPING.md](docs/CONTROL-MAPPING.md).
 
 | Theme | Examples |
 |---|---|
@@ -217,7 +217,8 @@ Installed apps such as OneDrive, Dropbox, Slack and Xero are detected and listed
 | `config/os-lifecycle.json` | Windows 11 end-of-servicing dates by release and edition. **Review this periodically**: SU-01 warns when it's more than 90 days old |
 | `config/unsupported-software.json` | End-of-life products to flag. Add your own. |
 | `config/asr-rules.json` | ASR rules to recommend. `standard: true` rules are proposed in Block mode, the rest in Audit mode. |
-| `config/ai-tools.json` | AI assistants and agents recognised on the device (20 tools): how to detect them, which account they use, and whether the tool can act on the device |
+| `config/ai-tools.json` | AI assistants and agents recognised on the device (20 tools): how to detect them on each operating system, which account they use, and whether the tool can act on the device |
+| `config/ai-approvals.json` | Your organisation's decision on each AI tool (approved or not approved, by whom, when and why), used by SC-14 and SC-09. Empty by default; see [docs/AI-APPROVALS.md](docs/AI-APPROVALS.md) |
 | `config/virtualisation.json` | Processes that publish ports for virtual machines and containers (FW-07), and WSL distributions created by container tools that SC-12 doesn't warn about |
 | `config/malware-test.json` | Test file links for the malware download test (MP-11), and where to record the result when you don't use Microsoft Defender |
 | `config/cloud-services.json` | MFA attestations and detection hints |

@@ -165,6 +165,7 @@ function ConvertTo-CEStatus {
         schemaVersion = 1
         toolVersion   = Get-CEToolVersion
         scope         = 'Machine'
+        platform      = 'windows'
         computerName  = $Context.ComputerName
         auditTime     = ([datetime]$Context.AuditTime).ToUniversalTime().ToString('o')
         runAs         = $Context.RunningAs

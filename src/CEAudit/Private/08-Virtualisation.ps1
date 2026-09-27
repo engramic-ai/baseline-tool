@@ -112,28 +112,104 @@ function ConvertFrom-CEWslListOutput {
     return ,@(@($Lines) | ForEach-Object { ("$_" -replace "`0", '').Trim() } | Where-Object { $_ })
 }
 
+function Test-CEHyperVPlatform {
+    <#
+        Whether the Hyper-V platform is on this device: its Virtual Machine Management service (vmms)
+        exists. Asked of the service manager, not of a program found on PATH. Only a service Windows
+        says is not there counts as absent; when it can't be told, Hyper-V counts as present, so its
+        virtual machines are never passed over without being listed.
+    #>
+    try { return [bool]@(Get-Service -Name 'vmms' -ErrorAction Stop).Count }
+    catch {
+        if ("$($_.FullyQualifiedErrorId)" -like 'NoServiceFoundForGivenName*') { return $false }
+        return $true
+    }
+}
+
 function Get-CEHyperVMachine {
-    <# Hyper-V VMs with whether they are on an external (bridged) switch. Needs elevation. #>
+    <#
+        Hyper-V VMs with whether they are on an external (bridged) switch. Needs elevation. No Hyper-V
+        platform (no vmms service) is no virtual machines, even where the management tools are installed.
+        When they could not be listed (no elevation, no Hyper-V PowerShell module, or listing failed),
+        Readable is false, Message says why for SC-12, and Reason and Remedy are the fixed strings of the
+        not-read record FW-07 reports (Add-CEHyperVNotRead). NotRead lists what could not be read once
+        they were listed: a VM whose network adapters, or the NAT port mappings, could not be read.
+    #>
     param($Context)
-    if (-not (Get-Command Get-VM -ErrorAction SilentlyContinue)) { return [pscustomobject]@{ Readable = $true; Message = ''; Machines = @(); NatMappings = @() } }
-    if (-not $Context.IsElevated) { return [pscustomobject]@{ Readable = $false; Message = 'Hyper-V virtual machines need elevation to list'; Machines = @(); NatMappings = @() } }
+    $none = [pscustomobject]@{ Readable = $true; Message = ''; Machines = @(); NatMappings = @(); NotRead = @() }
+    if (-not (Test-CEHyperVPlatform)) { return $none }
+    if (-not (Get-Command Get-VM -ErrorAction SilentlyContinue)) {
+        return [pscustomobject]@{ Readable = $false; Message = "Hyper-V virtual machines could not be listed: $($script:CEHyperVText.NoModule)"; Machines = @(); NatMappings = @()
+            NotRead = @(); Reason = $script:CEHyperVText.NoModule; Remedy = $script:CEHyperVText.NoModuleRemedy }
+    }
+    if (-not $Context.IsElevated) {
+        return [pscustomobject]@{ Readable = $false; Message = 'Hyper-V virtual machines need elevation to list'; Machines = @(); NatMappings = @()
+            NotRead = @(); Reason = $script:CEHyperVText.NeedsElevation; Remedy = $script:CEHyperVText.ElevateRemedy }
+    }
     try {
         $external = @(Get-VMSwitch -ErrorAction Stop | Where-Object { "$($_.SwitchType)" -eq 'External' } | ForEach-Object { $_.Name })
-        $machines = @(Get-VM -ErrorAction Stop | ForEach-Object {
-            $vm = $_
-            $switches = @(Get-VMNetworkAdapter -VMName $vm.Name -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.SwitchName } | Where-Object { $_ })
-            [pscustomobject]@{ Name = [string]$vm.Name; State = [string]$vm.State; ExternalSwitches = @($switches | Where-Object { $external -contains $_ }) }
-        })
-        $nat = @()
-        if (Get-Command Get-NetNatStaticMapping -ErrorAction SilentlyContinue) {
-            $nat = @(Get-NetNatStaticMapping -ErrorAction SilentlyContinue | ForEach-Object {
-                "$($_.Protocol) $($_.ExternalIPAddress):$($_.ExternalPort) -> $($_.InternalIPAddress):$($_.InternalPort)"
-            })
-        }
-        return [pscustomobject]@{ Readable = $true; Message = ''; Machines = $machines; NatMappings = $nat }
+        $vms = @(Get-VM -ErrorAction Stop)
     }
     catch {
-        return [pscustomobject]@{ Readable = $false; Message = "Hyper-V could not be read: $($_.Exception.Message)"; Machines = @(); NatMappings = @() }
+        # The error's type only: its text can name a path.
+        $why = "it could not be read ($(Get-CEErrorTypeName $_))"
+        return [pscustomobject]@{ Readable = $false; Message = "Hyper-V virtual machines could not be listed: $why"; Machines = @(); NatMappings = @()
+            NotRead = @(); Reason = $why; Remedy = $script:CEHyperVText.ErrorRemedy }
+    }
+    $notRead = New-Object System.Collections.ArrayList
+    $machines = New-Object System.Collections.ArrayList
+    foreach ($vm in $vms) {
+        if ($null -eq $vm) { continue }
+        $switches = @()
+        try { $switches = @(Get-VMNetworkAdapter -VM $vm -ErrorAction Stop | ForEach-Object { [string]$_.SwitchName } | Where-Object { $_ }) }
+        catch {
+            [void]$notRead.Add([pscustomobject]@{ Location = "Hyper-V virtual machine '$($vm.Name)'"
+                    Reason = "its network adapters could not be read ($(Get-CEErrorTypeName $_))"; Remedy = $script:CEHyperVText.AdapterRemedy })
+        }
+        [void]$machines.Add([pscustomobject]@{ Name = [string]$vm.Name; State = [string]$vm.State; ExternalSwitches = @($switches | Where-Object { $external -contains $_ }) })
+    }
+    $nat = @()
+    if (Get-Command Get-NetNatStaticMapping -ErrorAction SilentlyContinue) {
+        try {
+            $nat = @(Get-NetNatStaticMapping -ErrorAction Stop | ForEach-Object {
+                    "$($_.Protocol) $($_.ExternalIPAddress):$($_.ExternalPort) -> $($_.InternalIPAddress):$($_.InternalPort)"
+                })
+        }
+        catch {
+            [void]$notRead.Add([pscustomobject]@{ Location = 'NAT port mappings'
+                    Reason = "they could not be read ($(Get-CEErrorTypeName $_))"; Remedy = $script:CEHyperVText.NatRemedy })
+        }
+    }
+    return [pscustomobject]@{ Readable = $true; Message = ''; Machines = $machines.ToArray(); NatMappings = $nat; NotRead = $notRead.ToArray() }
+}
+
+$script:CEHyperVText = @{
+    NeedsElevation = 'an audit without elevation cannot list them'
+    ElevateRemedy  = 'List them from an elevated prompt (Get-VM, and Get-VMNetworkAdapter for the switch each one uses), or run the audit elevated.'
+    ErrorRemedy    = 'Check that the Hyper-V Virtual Machine Management service is running and run the audit elevated again, or list them from an elevated prompt (Get-VM, Get-VMNetworkAdapter).'
+    NoModule       = 'Hyper-V is installed without its PowerShell module, so the audit cannot list them'
+    NoModuleRemedy = 'Install the Hyper-V PowerShell module (Hyper-V Module for Windows PowerShell) and run the audit elevated again, or list the VMs by hand in Hyper-V Manager, with the switch each one uses.'
+    AdapterRemedy  = 'Check the switch it uses from an elevated prompt (Get-VMNetworkAdapter), or run the audit elevated again.'
+    NatRemedy      = 'List them from an elevated prompt (Get-NetNatStaticMapping), or run the audit elevated again.'
+}
+
+function Add-CEHyperVNotRead {
+    <#
+        Records Hyper-V virtual machines that could not be listed, and what could not be read once they
+        were (topic hyperv), so FW-07 is never Not applicable or a Pass without them. Unlike a skip in the
+        profile, the user's own session can't list them either: the remedy is an elevated run, an
+        elevated prompt, or the Hyper-V PowerShell module.
+    #>
+    param($Log, $HyperV)
+    if ($null -eq $HyperV) { return }
+    if (-not [bool](Get-CEObjectValue $HyperV 'Readable' $true)) {
+        Add-CENotRead -Log $Log -Location 'Hyper-V virtual machines' -Kind 'existence' -Topic 'hyperv' `
+            -Reason ([string](Get-CEObjectValue $HyperV 'Reason' $script:CEHyperVText.NeedsElevation)) `
+            -Remedy ([string](Get-CEObjectValue $HyperV 'Remedy' $script:CEHyperVText.ElevateRemedy))
+    }
+    foreach ($r in @(Get-CEObjectValue $HyperV 'NotRead' @())) {
+        if ($null -eq $r) { continue }
+        Add-CENotRead -Log $Log -Location ([string]$r.Location) -Kind 'existence' -Topic 'hyperv' -Reason ([string]$r.Reason) -Remedy ([string]$r.Remedy)
     }
 }
 
@@ -384,9 +460,9 @@ function Get-CEVirtualisationState {
     <#
         Everything SC-12 and FW-07 look at, gathered once per audit: HyperV, VMware, VirtualBox, Wsl,
         WslNetworking, Containers, Listeners, Notes (what could not be checked for reasons other
-        than reading the profile: Hyper-V needs elevation, a SYSTEM audit has no user session) and
-        NotRead (the locations in the user's profile, and the VM files their settings name, that
-        could not be read; see 15-ProfileReads.ps1).
+        than reading the profile: a SYSTEM audit has no user session) and NotRead (the locations in
+        the user's profile, and the VM files their settings name, that could not be read, see
+        15-ProfileReads.ps1, and Hyper-V virtual machines that could not be listed, topic hyperv).
     #>
     param($Context)
     $cacheKey = "$($Context.ComputerName)|$($Context.AuditTime.Ticks)|$($Context.IsElevated)|$($Context.IsSystem)"
@@ -417,7 +493,7 @@ function Get-CEVirtualisationStateUncached {
     }
     elseif ($Context.IsSystem) { $notes += 'Ran as SYSTEM: WSL drive mounting and Docker containers need a user session to check' }
     $hyperV = Get-CEHyperVMachine -Context $Context
-    if (-not $hyperV.Readable) { $notes += $hyperV.Message }
+    Add-CEHyperVNotRead -Log $log -HyperV $hyperV
     $docker = $null
     if (-not $Context.IsSystem) {
         $docker = Resolve-CEDockerPath

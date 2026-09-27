@@ -157,9 +157,10 @@ Register-CECheck -Id 'FW-07' -Category 'Firewalls' -Severity 'Medium' `
     -Test {
         param($ctx)
         $st = Get-CEVirtualisationState -Context $ctx
-        # What could not be read in the user's profile and may hide a bridged VM. .wslconfig matters only
-        # when there are WSL distributions for its networking mode to apply to.
-        $topics = @('profile', 'vm-inventory', 'vm-file')
+        # What could not be read in the user's profile, and Hyper-V virtual machines that could not be
+        # listed: either may hide a bridged VM. .wslconfig matters only when there are WSL distributions
+        # for its networking mode to apply to.
+        $topics = @('profile', 'vm-inventory', 'vm-file', 'hyperv')
         if (@($st.Wsl).Count -gt 0) { $topics += 'wslconfig' }
         $notRead = Select-CENotRead -Records @(Get-CEObjectValue $st 'NotRead' @()) -Topics $topics   # assign first: it returns ,array
         $expected = 'No bridged networking or ports published to the network'

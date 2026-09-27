@@ -377,10 +377,13 @@ function Get-CEAiPosture {
         whether they are contained, and where they run (WSL, containers). A
         deviation is an agent running as administrator/SYSTEM or a distribution
         that logs in as root. Read-only; only meaningful in the user's own
-        session (Invoke-CEUserProbe.ps1). notRead lists every location that
-        could not be read (15-ProfileReads.ps1); scanComplete is false when one
-        of them could hide an AI tool, a virtual machine or an MCP config, and
-        then agentsFound, environments and contained describe only what was seen.
+        session (Invoke-CEUserProbe.ps1). notRead lists every location in the
+        profile that could not be read (15-ProfileReads.ps1), once each, with
+        every distinct remedy. scanComplete is false only when one of them could
+        hide an AI tool (Get-CEAIDetectionTopic -HidesTool), and then agentsFound
+        and contained describe only what was seen; a record about a virtual
+        machine, an MCP config or the version of an extension already found
+        leaves it true.
     #>
     [CmdletBinding()]
     param($Context)
@@ -426,11 +429,18 @@ function Get-CEAiPosture {
     $agentDeviations = @($agents | Where-Object { $_.elevated -or $_.asSystem }).Count + @($wslEnvs | Where-Object { $_.defaultUidRoot }).Count
     $deviations = [int]$agentDeviations + $plaintext
 
-    # Everything not read, once each (the three states can all record the missing profile).
+    # What could not be read in the profile. Hyper-V virtual machines that could not be listed (topic
+    # hyperv) are not in the profile, and FW-07 reports them.
+    $all = @(@(Get-CEObjectValue $ai 'NotRead' @()) + @(Get-CEObjectValue $virt 'NotRead' @()) + @($mcp.mcpConfigsUnreadable) | Where-Object {
+            $null -ne $_ -and [string](Get-CENotReadField $_ 'Topic' (Get-CENotReadField $_ 'topic' '')) -ne 'hyperv' })
+    # Only a record that could hide an AI tool makes the scan incomplete (a record with no topic, from an older version, may).
+    $hiding = Select-CENotRead -Records $all -Topics (Get-CEAIDetectionTopic -HidesTool)   # assign first: it returns ,array
+    $scanComplete = ($hiding.Count -eq 0)
+    # One record per location, kind and reason: the three states can each record the same profile, with
+    # their own remedy, and every distinct remedy is kept.
     $notRead = New-Object System.Collections.ArrayList
     $seen = @{}
-    $all = @(Get-CEObjectValue $ai 'NotRead' @()) + @(Get-CEObjectValue $virt 'NotRead' @()) + @($mcp.mcpConfigsUnreadable)
-    foreach ($r in @($all | Where-Object { $null -ne $_ })) {
+    foreach ($r in $all) {
         $rec = [ordered]@{
             location         = [string](Get-CENotReadField $r 'Location' (Get-CENotReadField $r 'location' ''))
             kind             = [string](Get-CENotReadField $r 'Kind' (Get-CENotReadField $r 'kind' ''))
@@ -440,13 +450,16 @@ function Get-CEAiPosture {
             needsUserSession = [bool](Get-CENotReadField $r 'NeedsUserSession' (Get-CENotReadField $r 'needsUserSession' $false))
             count            = [int](Get-CENotReadField $r 'Count' (Get-CENotReadField $r 'count' 1))
         }
-        $key = "$($rec.location)|$($rec.kind)|$($rec.reason)|$($rec.topic)"
-        if ($seen.ContainsKey($key)) { continue }
-        $seen[$key] = $true
-        [void]$notRead.Add($rec)
+        $key = "$($rec.location)|$($rec.kind)|$($rec.reason)"
+        if (-not $seen.ContainsKey($key)) { $seen[$key] = $rec; [void]$notRead.Add($rec); continue }
+        $kept = $seen[$key]
+        if (-not $kept.remedy) { $kept.remedy = $rec.remedy }
+        elseif ($rec.remedy -and -not $kept.remedy.Contains($rec.remedy)) { $kept.remedy = "$($kept.remedy) $($rec.remedy)" }
+        $kept.needsUserSession = ($kept.needsUserSession -or $rec.needsUserSession)
+        if ($rec.count -gt $kept.count) { $kept.count = $rec.count }
+        # The report and the app leave out extension-version records: a record that stands for another topic too is shown.
+        if ($kept.topic -eq 'extension-version' -and $rec.topic -ne 'extension-version') { $kept.topic = $rec.topic }
     }
-    # Every topic can hide something a check looks for, except the version of an extension already found.
-    $scanComplete = (@($notRead | Where-Object { $_.topic -ne 'extension-version' }).Count -eq 0)
 
     return [ordered]@{
         agentsFound          = @($agents).Count

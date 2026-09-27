@@ -88,7 +88,8 @@ elevated. All of these reads go through one layer (`src/CEAudit/Private/15-Profi
    checks that depend on it (SC-09, SC-12, SC-13, FW-07 and UA-07) are then Manual,
    never Pass or Not applicable, and the records appear in the
    report, the GUI and the `ai.notRead` block of `user-status.json` (with
-   `ai.scanComplete`). Machine-scope checks name a full audit without elevation, signed
+   `ai.scanComplete`, which is `false` only when a location not read could hide an AI
+   tool). Machine-scope checks name a full audit without elevation, signed
    in as that user; User-scope checks name the per-user probe. A reason is a fixed
    string: it never contains file contents or error text.
 
@@ -108,6 +109,15 @@ referenced from an environment variable or credential manager. It never records:
 - another user's secrets from a SYSTEM / machine audit - that context records only that
   a config file is present, its path and its permissions, and never opens it. Parsing
   and credential classification happen only in the user's own session.
+
+Beside each server it records what the server runs, and never a credential passed to it
+there: the program's file name only (`npx`, `node.exe`, not its path or anything after
+it), and at most two of its arguments. A URL among them is cut to scheme, host and port.
+An argument is replaced by `(redacted)` when it holds a user name or password (a URL with
+`://` then `@`, or `user:password@host`), when the classifier recognises it by its prefix
+or by the credential name it is given under (`--api-key VALUE`, `API_TOKEN=VALUE`, or a
+`Password=` part of a connection string), or when it is shaped like a bare token. An
+endpoint URL is recorded the same way: scheme, host and port, with `/...` for a path.
 
 When a config can't be parsed, only that is recorded ("it could not be parsed by the
 audit"), never the parser's message, which can quote the text it stopped at. Its

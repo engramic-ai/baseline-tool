@@ -285,15 +285,19 @@ Register-CECheck -Id 'SC-12' -Category 'SecureConfiguration' -Severity 'Medium' 
         if ($tooling.Count) { $items += "Container platform ($(@($tooling | ForEach-Object { $_.Name }) -join ', '))" }
         $items += @($st.Containers | ForEach-Object { "Container '$($_.Name)' ($($_.Image))" })
         $notRead = Select-CENotRead -Records @(Get-CEObjectValue $st 'NotRead' @()) -Topics @('profile', 'vm-inventory', 'vm-file')   # assign first: it returns ,array
-        $evidence = @($items) + @($st.Notes) + @($notRead | ForEach-Object { Format-CENotRead $_ })
+        # Hyper-V virtual machines that could not be listed are a note here (FW-07 reports them as not read).
+        $notes = @($st.Notes)
+        if (-not [bool](Get-CEObjectValue $st.HyperV 'Readable' $true)) { $notes += [string](Get-CEObjectValue $st.HyperV 'Message' '') }
+        $notes = @($notes | Where-Object { $_ })
+        $evidence = @($items) + @($notes) + @($notRead | ForEach-Object { Format-CENotRead $_ })
         $expected = 'Each virtual machine, WSL distribution and container used for work meets the Cyber Essentials requirements, or is removed'
         # Something not read may be a virtual machine, so there is no Pass then.
         $notReadResult = if ($notRead.Count) { New-CENotReadResult -Records $notRead -Scope User -Expected $expected -Consequence 'a virtual machine may be missing from this list' }
 
         if ($items.Count -eq 0) {
-            if (@($st.Notes).Count) {
+            if ($notes.Count) {
                 # Not about reading the profile: Hyper-V needs elevation, and a SYSTEM audit has no user session.
-                New-CEResult -Status 'Info' -Expected $expected -Actual "None found, but not everything could be checked: $(@($st.Notes) -join '; ')" -Evidence $evidence `
+                New-CEResult -Status 'Info' -Expected $expected -Actual "None found, but not everything could be checked: $($notes -join '; ')" -Evidence $evidence `
                     -Recommendation 'Run the audit again from an elevated prompt while signed in to check everything.'
             }
             elseif (-not $notRead.Count) {

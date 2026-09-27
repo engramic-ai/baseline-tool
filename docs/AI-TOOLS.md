@@ -6,7 +6,7 @@ The tools found appear in the report's AI section, the app's AI tab and the `ai`
 
 ## What could not be looked at
 
-When the audit runs as SYSTEM or elevated it doesn't follow a symbolic link in the user's profile, or open a file stored online only (see [SECURITY.md](../SECURITY.md)). Each place it skips is listed in `ai.notRead` (where, what, why and how to read it), and `ai.scanComplete` is `false` when one of them could hide an AI tool, a virtual machine or an MCP config. The report then says the list of AI tools may be incomplete, and SC-09 and UA-07 add a Manual result for what was not read. `agentsFound` and `contained` describe only what was seen, so rely on them when `scanComplete` is `true`.
+When the audit runs as SYSTEM or elevated it doesn't follow a symbolic link in the user's profile, or open a file stored online only (see [SECURITY.md](../SECURITY.md)). Each place it skips is listed in `ai.notRead` (where, what, why and how to read it, once each, with every remedy that applies), and `ai.scanComplete` is `false` only when one of them could hide an AI tool. The report then says the list of AI tools may be incomplete, and SC-09 and UA-07 add a Manual result for what was not read. `agentsFound` and `contained` describe only what was seen, so rely on them when `scanComplete` is `true`. A place that could hide only a virtual machine or an MCP config, or the version of an extension already found, is listed in `ai.notRead` but leaves `scanComplete` `true`: the checks that depend on it (SC-12, SC-13, FW-07) are Manual instead.
 
 ## AI browser extensions and AI browsers
 

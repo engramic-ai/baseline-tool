@@ -2574,9 +2574,9 @@ Describe 'AI tools (UA-07, SC-09, UA-10)' {
             [pscustomobject]@{ ProcessId = $ProcessId; Image = $Image; Path = "C:\x\$Image"; Owner = $Owner; AsSystem = ($Owner -eq 'NT AUTHORITY\SYSTEM'); Elevated = $Elevated }
         }
         function global:Set-TestAITools {
-            param([object[]]$Tools = @(), [string[]]$Uninspected = @())
+            param([object[]]$Tools = @(), [string[]]$Uninspected = @(), [bool]$ProfileChecked = $true)
             Set-TestDevice -Kind Secure
-            $global:CETestAI = [pscustomobject]@{ Tools = $Tools; UninspectedProcesses = $Uninspected }
+            $global:CETestAI = [pscustomobject]@{ Tools = $Tools; UninspectedProcesses = $Uninspected; ProfileChecked = $ProfileChecked }
             Mock -ModuleName CEAudit Get-CEAIToolState { $global:CETestAI }
         }
     }
@@ -2607,20 +2607,36 @@ Describe 'AI tools (UA-07, SC-09, UA-10)' {
         $list.schemaVersion | Should -Be 2
         $ids = @($list.tools | ForEach-Object { $_.id })
         ($ids | Sort-Object -Unique).Count | Should -Be $ids.Count
+        # @($null).Count is 1, so count only properties that are there.
+        $items = { param($o, [string]$n) if ($null -eq $o) { return , @() }; $p = $o.PSObject.Properties[$n]; if ($p -and $null -ne $p.Value) { return , @($p.Value) }; return , @() }
+        $idPattern = @{ chrome = '^[a-p]{32}$'; edge = '^[a-p]{32}$'; opera = '^[a-p]{32}$'
+            firefox = '^(\{[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\}|[A-Za-z0-9._+-]{1,80}@[A-Za-z0-9.-]{1,80})$' }
+        $extIds = @()
         foreach ($t in @($list.tools)) {
             # Detection signals live in a block per operating system; nothing Windows-specific at the top level.
             foreach ($legacy in 'programs', 'uninstallKeys', 'appx', 'processes', 'paths', 'vscodeExtensions', 'mcpConfigs', 'enabled') {
                 $t.PSObject.Properties[$legacy] | Should -BeNullOrEmpty -Because "$($t.id): $legacy belongs in the windows block"
             }
-            $w = $t.windows
-            $w | Should -Not -BeNullOrEmpty -Because $t.id
-            $signals = @($w.programs).Count + @($w.uninstallKeys).Count + @($w.appx).Count + @($w.processes).Count + @($w.paths).Count + @($w.vscodeExtensions).Count
+            # Browser extension ids are the same on every operating system, so they are shared, at the top level.
+            $exts = & $items $t 'browserExtensions'
+            $wProp = $t.PSObject.Properties['windows']
+            $w = if ($wProp) { $wProp.Value } else { $null }
+            ($null -ne $w -or $exts.Count -gt 0) | Should -BeTrue -Because "$($t.id) needs a windows block or browserExtensions"
+            $signals = $exts.Count
+            foreach ($n in 'programs', 'uninstallKeys', 'appx', 'processes', 'paths', 'vscodeExtensions') { $signals += (& $items $w $n).Count }
             $signals | Should -BeGreaterThan 0 -Because $t.id
-            foreach ($proc in @($w.processes)) { $proc.image | Should -Match '^[\w. -]+\.exe$' -Because $t.id }
-            foreach ($prog in @($w.programs)) { ($prog.name -replace '[*?]', '').Length | Should -BeGreaterOrEqual 4 -Because "$($t.id) program pattern must not be too broad" }
+            foreach ($e in $exts) {
+                [string]$e.store | Should -BeIn @('chrome', 'edge', 'opera', 'firefox') -Because $t.id
+                [string]$e.id | Should -Match $idPattern[[string]$e.store] -Because "$($t.id): $($e.store) id"
+                ([string]$e.id).Length | Should -BeLessOrEqual 128 -Because $t.id
+                $extIds += $(if ($e.store -eq 'firefox') { [string]$e.id } else { ([string]$e.id).ToLowerInvariant() })
+            }
+            foreach ($proc in (& $items $w 'processes')) { $proc.image | Should -Match '^[\w. -]+\.exe$' -Because $t.id }
+            foreach ($prog in (& $items $w 'programs')) { ($prog.name -replace '[*?]', '').Length | Should -BeGreaterOrEqual 4 -Because "$($t.id) program pattern must not be too broad" }
             @($t.sources).Count | Should -BeGreaterThan 0 -Because $t.id
             foreach ($u in @($t.sources)) { $u | Should -Match '^https://' -Because $t.id }
         }
+        @($extIds | Group-Object | Where-Object Count -gt 1 | ForEach-Object Name) -join ', ' | Should -BeNullOrEmpty -Because 'an extension id belongs to one tool'
     }
 
     It 'detects tools from programs, Store apps, profile folders, extensions and processes' {
@@ -2636,37 +2652,72 @@ Describe 'AI tools (UA-07, SC-09, UA-10)' {
         InModuleScope CEAudit -Parameters @{ P = $profileDir } {
             param($P)
             $script:aiProfile = $P
-            Mock Get-CEUserProfilePath { $script:aiProfile }
-            Mock Get-CEInstalledSoftware {
-                @([pscustomobject]@{ Name = 'Cursor (User)'; Version = '1.6'; Publisher = 'Anysphere'; KeyName = '{DADADADA}_is1' },
-                  [pscustomobject]@{ Name = 'Cursor Themes Pack'; Version = '2'; Publisher = 'Somebody else'; KeyName = 'x' },
-                  [pscustomobject]@{ Name = 'Ollama version 0.34.1'; Version = '0.34.1'; Publisher = 'Ollama'; KeyName = '{44E8}_is1' })
+            # The shipped catalog plus a browser that can't act on the device, which runs many processes.
+            $orig = (Get-CEConfig).'ai-tools'
+            (Get-CEConfig).'ai-tools' = [pscustomobject]@{ schemaVersion = 2; tools = @(@($orig.tools) + @(
+                [pscustomobject]@{ id = 't-browser'; name = 'Browser Y'; canActOnDevice = $false; windows = [pscustomobject]@{ processes = @([pscustomobject]@{ image = 'browsx.exe'; path = '*\Browser Y\*' }) } })) }
+            try {
+                Mock Get-CEUserProfilePath { $script:aiProfile }
+                Mock Get-CEInstalledSoftware {
+                    @([pscustomobject]@{ Name = 'Cursor (User)'; Version = '1.6'; Publisher = 'Anysphere'; KeyName = '{DADADADA}_is1' },
+                      [pscustomobject]@{ Name = 'Cursor Themes Pack'; Version = '2'; Publisher = 'Somebody else'; KeyName = 'x' },
+                      [pscustomobject]@{ Name = 'Ollama version 0.34.1'; Version = '0.34.1'; Publisher = 'Ollama'; KeyName = '{44E8}_is1' })
+                }
+                Mock Get-CEStorePackageName { @('Claude', 'Microsoft.Copilot', 'Microsoft.WindowsCalculator') }
+                Mock Get-CEProcessList {
+                    @([pscustomobject]@{ Name = 'claude.exe'; ProcessId = 10; Path = 'C:\Program Files\WindowsApps\Claude_2.1_x64__pzs8sxrjxfjjc\app\claude.exe'; CommandLine = 'claude.exe'; Cim = $null },
+                      [pscustomobject]@{ Name = 'claude.exe'; ProcessId = 20; Path = 'C:\Users\paul\.local\bin\claude.exe'; CommandLine = 'claude'; Cim = $null },
+                      [pscustomobject]@{ Name = 'claude.exe'; ProcessId = 30; Path = ''; CommandLine = ''; Cim = $null },
+                      [pscustomobject]@{ Name = 'node.exe'; ProcessId = 40; Path = 'C:\nodejs\node.exe'; CommandLine = 'node C:\npm\node_modules\@google\gemini-cli\bundle\gemini.js'; Cim = $null },
+                      [pscustomobject]@{ Name = 'node.exe'; ProcessId = 50; Path = ''; CommandLine = ''; Cim = $null },
+                      [pscustomobject]@{ Name = 'copilot.exe'; ProcessId = 60; Path = 'C:\Tools\SomethingElse\copilot.exe'; CommandLine = 'copilot'; Cim = $null },
+                      [pscustomobject]@{ Name = 'browsx.exe'; ProcessId = 70; Path = 'C:\Apps\Browser Y\browsx.exe'; CommandLine = 'browsx'; Cim = $null },
+                      [pscustomobject]@{ Name = 'browsx.exe'; ProcessId = 71; Path = 'C:\Apps\Browser Y\browsx.exe'; CommandLine = 'browsx --type=renderer'; Cim = $null },
+                      [pscustomobject]@{ Name = 'browsx.exe'; ProcessId = 72; Path = 'C:\Apps\Browser Y\browsx.exe'; CommandLine = 'browsx --type=gpu'; Cim = $null })
+                }
+                Mock Get-CEProcessOwner { 'PC\paul' }
+                Mock Get-CEProcessElevation { if ($ProcessId -eq 20) { 1 } else { 0 } }
+                $st = Get-CEAIToolStateUncached -Context ([pscustomobject]@{ IsSystem = $false })
+                $byId = @{}
+                foreach ($t in $st.Tools) { $byId[$t.Id] = $t }
+                @($byId.Keys | Sort-Object) | Should -Be @('claude-code', 'claude-desktop', 'cursor', 'gemini-cli', 'github-copilot-vscode', 'ollama', 't-browser')
+                $byId['claude-desktop'].Processes.ProcessId | Should -Be 10
+                $byId['claude-desktop'].Signals | Should -Contain 'Running: claude.exe (pid 10)'
+                $byId['t-browser'].Signals | Should -Be @('Running: browsx.exe (3 processes)') -Because 'a tool that cannot act on the device has its processes counted, not listed'
+                $byId['claude-code'].Processes.ProcessId | Should -Be 20 -Because 'claude.exe is told apart by path'
+                $byId['claude-code'].Processes[0].Elevated | Should -BeTrue
+                $byId['cursor'].Signals | Should -Contain 'Installed program: Cursor (User) 1.6'
+                $byId['ollama'].Signals | Should -Contain 'Installed program: Ollama version 0.34.1'
+                @($byId['ollama'].Processes).Count | Should -Be 0
+                $byId['github-copilot-vscode'].Signals | Should -Be @('VS Code extension: github.copilot-chat-0.30.0', 'VS Code built-in extension: github.copilot-chat', 'VS Code extension: github.copilot-1.350.0')
+                $byId['gemini-cli'].Signals | Should -Contain 'Found %USERPROFILE%\.gemini'
+                $st.UninspectedProcesses | Should -Be @('claude.exe (pid 30)') -Because 'node.exe and unrelated copilot.exe are not reported'
+                Should -Invoke Get-CEProcessOwner -Times 0 -ParameterFilter { $Process.ProcessId -eq 60 }
             }
-            Mock Get-CEStorePackageName { @('Claude', 'Microsoft.Copilot', 'Microsoft.WindowsCalculator') }
-            Mock Get-CEProcessList {
-                @([pscustomobject]@{ Name = 'claude.exe'; ProcessId = 10; Path = 'C:\Program Files\WindowsApps\Claude_2.1_x64__pzs8sxrjxfjjc\app\claude.exe'; CommandLine = 'claude.exe'; Cim = $null },
-                  [pscustomobject]@{ Name = 'claude.exe'; ProcessId = 20; Path = 'C:\Users\paul\.local\bin\claude.exe'; CommandLine = 'claude'; Cim = $null },
-                  [pscustomobject]@{ Name = 'claude.exe'; ProcessId = 30; Path = ''; CommandLine = ''; Cim = $null },
-                  [pscustomobject]@{ Name = 'node.exe'; ProcessId = 40; Path = 'C:\nodejs\node.exe'; CommandLine = 'node C:\npm\node_modules\@google\gemini-cli\bundle\gemini.js'; Cim = $null },
-                  [pscustomobject]@{ Name = 'node.exe'; ProcessId = 50; Path = ''; CommandLine = ''; Cim = $null },
-                  [pscustomobject]@{ Name = 'copilot.exe'; ProcessId = 60; Path = 'C:\Tools\SomethingElse\copilot.exe'; CommandLine = 'copilot'; Cim = $null })
+            finally { (Get-CEConfig).'ai-tools' = $orig }
+        }
+    }
+
+    It 'reports unreadable processes only for tools that can act on the device' {
+        # A browser or chat app whose process can't be read is not a possible hidden agent (UA-10).
+        InModuleScope CEAudit {
+            $orig = (Get-CEConfig).'ai-tools'
+            try {
+                (Get-CEConfig).'ai-tools' = [pscustomobject]@{ schemaVersion = 2; tools = @(
+                    [pscustomobject]@{ id = 't-agent'; name = 'Agent X'; canActOnDevice = $true; windows = [pscustomobject]@{ processes = @([pscustomobject]@{ image = 'agentx.exe'; path = '*\x\*' }) } },
+                    [pscustomobject]@{ id = 't-browser'; name = 'Browser Y'; canActOnDevice = $false; windows = [pscustomobject]@{ processes = @([pscustomobject]@{ image = 'browsx.exe'; path = '*\y\*' }) } }) }
+                Mock Get-CEUserProfilePath { $null }
+                Mock Get-CEInstalledSoftware { @() }
+                Mock Get-CEStorePackageName { , @() }
+                Mock Get-CEVsCodeBuiltInExtensionDir { , @() }
+                Mock Get-CEProcessList {
+                    @([pscustomobject]@{ Name = 'agentx.exe'; ProcessId = 1; Path = ''; CommandLine = ''; Cim = $null },
+                      [pscustomobject]@{ Name = 'browsx.exe'; ProcessId = 2; Path = ''; CommandLine = ''; Cim = $null })
+                }
+                $st = Get-CEAIToolStateUncached -Context ([pscustomobject]@{ IsSystem = $false })
+                @($st.UninspectedProcesses) | Should -Be @('agentx.exe (pid 1)')
             }
-            Mock Get-CEProcessOwner { 'PC\paul' }
-            Mock Get-CEProcessElevation { if ($ProcessId -eq 20) { 1 } else { 0 } }
-            $st = Get-CEAIToolStateUncached -Context ([pscustomobject]@{ IsSystem = $false })
-            $byId = @{}
-            foreach ($t in $st.Tools) { $byId[$t.Id] = $t }
-            @($byId.Keys | Sort-Object) | Should -Be @('claude-code', 'claude-desktop', 'cursor', 'gemini-cli', 'github-copilot-vscode', 'ollama')
-            $byId['claude-desktop'].Processes.ProcessId | Should -Be 10
-            $byId['claude-code'].Processes.ProcessId | Should -Be 20 -Because 'claude.exe is told apart by path'
-            $byId['claude-code'].Processes[0].Elevated | Should -BeTrue
-            $byId['cursor'].Signals | Should -Contain 'Installed program: Cursor (User) 1.6'
-            $byId['ollama'].Signals | Should -Contain 'Installed program: Ollama version 0.34.1'
-            @($byId['ollama'].Processes).Count | Should -Be 0
-            $byId['github-copilot-vscode'].Signals | Should -Be @('VS Code extension: github.copilot-chat-0.30.0', 'VS Code built-in extension: github.copilot-chat', 'VS Code extension: github.copilot-1.350.0')
-            $byId['gemini-cli'].Signals | Should -Contain 'Found %USERPROFILE%\.gemini'
-            $st.UninspectedProcesses | Should -Be @('claude.exe (pid 30)') -Because 'node.exe and unrelated copilot.exe are not reported'
-            Should -Invoke Get-CEProcessOwner -Times 0 -ParameterFilter { $Process.ProcessId -eq 60 }
+            finally { (Get-CEConfig).'ai-tools' = $orig }
         }
     }
 
@@ -2718,13 +2769,29 @@ Describe 'AI tools (UA-07, SC-09, UA-10)' {
                     [pscustomobject]@{ id = 'grouped'; windows = [pscustomobject]@{ paths = @('.grouped') } },
                     [pscustomobject]@{ id = 'off-here'; windows = [pscustomobject]@{ enabled = $false; paths = @('.off') } },
                     [pscustomobject]@{ id = 'mac-only'; macos = [pscustomobject]@{ paths = @('.mac') } },
-                    [pscustomobject]@{ id = 'flat'; paths = @('.flat'); mcpConfigs = @([pscustomobject]@{ path = '.flat.json' }) }) }
+                    [pscustomobject]@{ id = 'flat'; paths = @('.flat'); mcpConfigs = @([pscustomobject]@{ path = '.flat.json' }) },
+                    [pscustomobject]@{ id = 'ext-only'; browserExtensions = @([pscustomobject]@{ store = 'chrome'; id = 'fcoeoabgfenejglbffodgkkbkcdhcgfn' }) },
+                    [pscustomobject]@{ id = 'ext-off'; windows = [pscustomobject]@{ enabled = $false }; browserExtensions = @([pscustomobject]@{ store = 'chrome'; id = 'hehggadaopoacecdllhhajmbjkdcmajg' }) },
+                    [pscustomobject]@{ id = 'both'; windows = [pscustomobject]@{ paths = @('.both') }; browserExtensions = @([pscustomobject]@{ store = 'firefox'; id = 'support@wordtune.com' }) }) }
                 $catalog = Get-CEAIToolCatalog
-                @($catalog | ForEach-Object { $_.Tool.id }) | Should -Be @('grouped', 'flat')
+                @($catalog | ForEach-Object { $_.Tool.id }) | Should -Be @('grouped', 'flat', 'ext-only', 'both') -Because 'enabled: false turns off extensions too'
                 @($catalog[0].Signals.paths) | Should -Be @('.grouped')
                 @($catalog[1].Signals.paths) | Should -Be @('.flat') -Because 'an override written before signals were grouped still works'
+                @($catalog[2].Signals.PSObject.Properties).Count | Should -Be 0 -Because 'a tool found only by its browser extensions has no Windows signals'
+                $ids = Get-CEBrowserExtensionIdSet -Catalog $catalog
+                @($ids.Chromium.Keys) | Should -Be @('fcoeoabgfenejglbffodgkkbkcdhcgfn')
+                @($ids.Firefox.Keys) | Should -Be @('support@wordtune.com')
                 $mcp = Get-CEMcpConfigCatalogue
                 @($mcp | ForEach-Object { $_.ToolId }) | Should -Be @('flat')
+
+                # A v2 override with no browserExtensions anywhere still reads.
+                (Get-CEConfig).'ai-tools' = [pscustomobject]@{ schemaVersion = 2; tools = @([pscustomobject]@{ id = 'grouped'; name = 'Grouped'; windows = [pscustomobject]@{ paths = @('.grouped') } }) }
+                Mock Get-CEUserProfilePath { $null }
+                Mock Get-CEInstalledSoftware { @() }
+                Mock Get-CEStorePackageName { , @() }
+                Mock Get-CEVsCodeBuiltInExtensionDir { , @() }
+                Mock Get-CEProcessList { , @() }
+                { Get-CEAIToolStateUncached -Context ([pscustomobject]@{ IsSystem = $false }) } | Should -Not -Throw
             }
             finally { (Get-CEConfig).'ai-tools' = $orig }
         }
@@ -2744,10 +2811,10 @@ Describe 'AI tools (UA-07, SC-09, UA-10)' {
         $html = Get-Content $r.Paths.Html -Raw
         $md | Should -Match ([regex]::Escape('**2 AI tools found**'))
         $md | Should -Match ([regex]::Escape('- Claude Code - present'))
-        $md | Should -Match ([regex]::Escape("It can't see AI used in a browser tab."))
+        $md | Should -Match ([regex]::Escape("Baseline finds recognised AI apps and browser extensions installed on this device. It can't see AI websites used in a browser tab."))
         $md | Should -Match 'approved, across all its devices, is part of the Engramic Baseline paid tier\.'
         $html | Should -Match ([regex]::Escape('<strong>2 AI tools found</strong>'))
-        $html | Should -Match ([regex]::Escape("It can't see AI used in a browser tab."))
+        $html | Should -Match ([regex]::Escape("Baseline finds recognised AI apps and browser extensions installed on this device. It can't see AI websites used in a browser tab."))
         $html | Should -Match 'is part of the Engramic Baseline paid tier\.</p>'
         foreach ($text in $md, $html) { $text | Should -Not -Match '[Uu]pgrade' }
 
@@ -2761,6 +2828,300 @@ Describe 'AI tools (UA-07, SC-09, UA-10)' {
         $md | Should -Match ([regex]::Escape('**0 AI tools found**'))
         $md | Should -Not -Match 'paid tier' -Because 'the note only follows a list of tools'
         (Get-Content $r.Paths.Html -Raw) | Should -Not -Match 'paid tier'
+    }
+
+    Context 'AI browser extensions' {
+        BeforeAll {
+            $global:CEOrigBrowserConfig = InModuleScope CEAudit { @{ Tools = (Get-CEConfig)['ai-tools']; Browsers = (Get-CEConfig)['browser-profiles'] } }
+            $global:CETestExtId = @{ Claude = 'fcoeoabgfenejglbffodgkkbkcdhcgfn'; ChatGpt = 'hehggadaopoacecdllhhajmbjkdcmajg'; ChatGptEdge = 'odlomjlbamekndcpllcnffbgeohgkmjh'
+                Other = 'cjpalhdlnbpafiamejdnhcphjbkeiagm'; Early = ('a' * 32) }
+            # Tools found only by their browser extensions, with real store ids.
+            $global:CETestExtTools = @"
+{ "schemaVersion": 2, "tools": [
+  { "id": "t-claude", "name": "Claude test", "service": "Anthropic (Claude)", "canActOnDevice": false,
+    "browserExtensions": [ { "store": "chrome", "id": "$($CETestExtId.Claude)" } ] },
+  { "id": "t-chatgpt", "name": "ChatGPT test", "service": "OpenAI (ChatGPT)", "canActOnDevice": false,
+    "browserExtensions": [ { "store": "edge", "id": "$($CETestExtId.ChatGptEdge)" }, { "store": "chrome", "id": "$($CETestExtId.ChatGpt)" } ] },
+  { "id": "t-wordtune", "name": "Wordtune test", "service": "Wordtune", "canActOnDevice": false,
+    "browserExtensions": [ { "store": "firefox", "id": "support@wordtune.com" }, { "store": "firefox", "id": "x@y.xpix" } ] }
+] }
+"@
+            # The browsers the fixtures use, with no 'installed' files, so nothing is labelled a leftover.
+            $global:CETestBrowsers = @'
+{ "maxProfilesPerBrowser": 64, "maxEntriesPerFolder": 2000, "windows": [
+  { "name": "Google Chrome", "engine": "chromium", "root": "AppData\\Local\\Google\\Chrome\\User Data" },
+  { "name": "Microsoft Edge", "engine": "chromium", "root": "AppData\\Local\\Microsoft\\Edge\\User Data" },
+  { "name": "Brave", "engine": "chromium", "root": "AppData\\Local\\BraveSoftware\\Brave-Browser\\User Data" },
+  { "name": "Opera", "engine": "chromium", "root": "AppData\\Roaming\\Opera Software\\Opera Stable", "rootIsProfile": true },
+  { "name": "Mozilla Firefox", "engine": "firefox", "root": "AppData\\Roaming\\Mozilla\\Firefox\\Profiles" }
+] }
+'@
+            $global:CETestChromeData = 'AppData\Local\Google\Chrome\User Data'
+            function global:Set-TestBrowserConfig {
+                # Replaces ai-tools.json and/or browser-profiles.json (JSON text, parsed the way the module parses config files).
+                param([string]$Tools, [string]$Browsers)
+                InModuleScope CEAudit -Parameters @{ T = $Tools; B = $Browsers } {
+                    param($T, $B)
+                    if ($T) { (Get-CEConfig)['ai-tools'] = ($T | ConvertFrom-Json) }
+                    if ($B) { (Get-CEConfig)['browser-profiles'] = ($B | ConvertFrom-Json) }
+                }
+            }
+            function global:New-TestTree {
+                # Folders under Root; paths ending in a file name (.xpi, .xpix, .exe, Preferences) become empty files.
+                param([string]$Root, [string[]]$Paths)
+                foreach ($rel in $Paths) {
+                    $full = Join-Path $Root $rel
+                    if ($rel -match '(\.xpix?|\.exe|\\Preferences)$') {
+                        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $full) | Out-Null
+                        Set-Content -LiteralPath $full -Value '' -Encoding ASCII
+                    }
+                    else { New-Item -ItemType Directory -Force -Path $full | Out-Null }
+                }
+            }
+            function global:Invoke-TestBrowserScan {
+                # Get-CEAIToolStateUncached over a fixture profile; nothing else on this machine is looked at.
+                param([string]$ProfilePath, [switch]$System)
+                InModuleScope CEAudit -Parameters @{ P = $ProfilePath; S = [bool]$System } {
+                    param($P, $S)
+                    $script:testBrowserProfile = $P
+                    Mock Get-CEUserProfilePath { $script:testBrowserProfile }
+                    Mock Get-CEInstalledSoftware { @() }
+                    Mock Get-CEStorePackageName { , @() }
+                    Mock Get-CEVsCodeBuiltInExtensionDir { , @() }
+                    Mock Get-CEProcessList { , @() }
+                    Get-CEAIToolStateUncached -Context ([pscustomobject]@{ IsSystem = $S; ConsoleUserSid = 'S-1-5-21-1-2-3-1001' })
+                }
+            }
+            function global:Get-TestBrowserMatch {
+                # The collector on its own, for the ids in the current catalog. One output object per match.
+                param([string]$ProfilePath)
+                InModuleScope CEAudit -Parameters @{ P = $ProfilePath } {
+                    param($P)
+                    $catalog = Get-CEAIToolCatalog
+                    $ids = Get-CEBrowserExtensionIdSet -Catalog $catalog
+                    $m = Get-CEBrowserExtensionList -ProfilePath $P -ChromiumIds $ids.Chromium -FirefoxIds $ids.Firefox
+                    $m
+                }
+            }
+            function global:Get-TestToolById { param($State, [string]$Id) @($State.Tools | Where-Object { $_.Id -eq $Id }) }
+        }
+        AfterEach {
+            InModuleScope CEAudit -Parameters @{ O = $global:CEOrigBrowserConfig } {
+                param($O)
+                (Get-CEConfig)['ai-tools'] = $O.Tools
+                (Get-CEConfig)['browser-profiles'] = $O.Browsers
+            }
+        }
+
+        It 'the shipped browser profile list is well formed' {
+            $list = Get-Content (Join-Path $script:RepoRoot 'config\browser-profiles.json') -Raw | ConvertFrom-Json
+            $list.lastReviewed | Should -Match '^\d{4}-\d{2}-\d{2}$'
+            "$($list.maxProfilesPerBrowser)" | Should -Match '^[1-9]\d*$'
+            "$($list.maxEntriesPerFolder)" | Should -Match '^[1-9]\d*$'
+            $names = @($list.windows | ForEach-Object { $_.name })
+            $names.Count | Should -BeGreaterThan 0
+            ($names | Sort-Object -Unique).Count | Should -Be $names.Count
+            InModuleScope CEAudit -Parameters @{ L = $list } {
+                param($L)
+                foreach ($b in @($L.windows)) {
+                    [string]$b.engine | Should -BeIn @('chromium', 'firefox') -Because $b.name
+                    Test-CERelativePathText ([string]$b.root) | Should -BeTrue -Because "$($b.name) root"
+                    $prop = $b.PSObject.Properties['installed']
+                    foreach ($i in @(if ($prop -and $null -ne $prop.Value) { $prop.Value })) {
+                        [string]$i.base | Should -BeIn @('programFiles', 'programFilesX86', 'profile') -Because $b.name
+                        Test-CERelativePathText ([string]$i.path) | Should -BeTrue -Because "$($b.name) installed path"
+                    }
+                }
+                # The shipped file loads without anything being dropped.
+                @((Get-CEBrowserProfileRoot).Browsers).Count | Should -Be @($L.windows).Count
+            }
+        }
+
+        It 'reads a partial browser-profiles.json override without failing' {
+            foreach ($json in '{}', '{ "windows": [] }', '{ "windows": [ { "name": "Chrome", "engine": "chromium", "root": "AppData\\Local\\Google\\Chrome\\User Data" } ] }') {
+                Set-TestBrowserConfig -Browsers $json
+                $r = InModuleScope CEAudit { Get-CEBrowserProfileRoot }
+                $r.MaxProfiles | Should -Be 64 -Because $json
+                $r.MaxEntries | Should -Be 2000 -Because $json
+            }
+            @($r.Browsers).Count | Should -Be 1
+            # Entries it can't use are dropped, not fatal.
+            Set-TestBrowserConfig -Browsers '{ "maxProfilesPerBrowser": "lots", "maxEntriesPerFolder": 99999, "windows": [ { "name": "A", "engine": "gecko", "root": "x" }, { "name": "B", "engine": "chromium", "root": "..\\x" }, { "engine": "chromium", "root": "x" }, { "name": "C", "engine": "chromium", "root": "x", "installed": [ { "base": "windows", "path": "a.exe" }, { "base": "profile", "path": "C:\\a.exe" } ] } ] }'
+            $r = InModuleScope CEAudit { Get-CEBrowserProfileRoot }
+            @($r.Browsers | ForEach-Object Name) | Should -Be @('C')
+            @($r.Browsers[0].Installed).Count | Should -Be 0
+            $r.MaxProfiles | Should -Be 64
+            $r.MaxEntries | Should -Be 10000
+        }
+
+        It 'finds AI browser extensions by folder name in Chromium and Firefox profiles' {
+            $p = Join-Path $TestDrive 'bx-profile'
+            New-TestTree $p @(
+                "$CETestChromeData\Profile 1\Extensions\$($CETestExtId.Claude)\1.0.93_0",
+                "$CETestChromeData\Profile 1\Extensions\$($CETestExtId.Claude)\1.0.94_0",
+                "AppData\Local\Microsoft\Edge\User Data\Default\Extensions\$($CETestExtId.ChatGptEdge)\1.26.901.11451_0",
+                "AppData\Local\Microsoft\Edge\User Data\Default\Extensions\$($CETestExtId.Other)\1.0_0",
+                'AppData\Local\Microsoft\Edge\User Data\Default\Extensions\Temp',
+                "AppData\Local\BraveSoftware\Brave-Browser\User Data\$($CETestExtId.ChatGpt)\1.0_0",
+                "AppData\Roaming\Opera Software\Opera Stable\Extensions\$($CETestExtId.Claude)\1.0_0",
+                'AppData\Roaming\Mozilla\Firefox\Profiles\ab12cd34.default-release\extensions\support@wordtune.com.xpi',
+                'AppData\Roaming\Mozilla\Firefox\Profiles\ab12cd34.default-release\extensions\x@y.xpix')
+            # A settings file holding a URL: it must never be opened.
+            Set-Content -LiteralPath (Join-Path $p "$CETestChromeData\Profile 1\Preferences") -Value '{ "homepage": "https://secret.example/" }' -Encoding ASCII
+            Set-TestBrowserConfig -Tools $CETestExtTools -Browsers $CETestBrowsers
+            $st = Invoke-TestBrowserScan -ProfilePath $p
+            $st.ProfileChecked | Should -BeTrue
+
+            $claude = @(Get-TestToolById $st 't-claude')
+            $claude.Count | Should -Be 1
+            $claude[0].Signals | Should -Contain "Google Chrome extension: $($CETestExtId.Claude) 1.0.94 (profile: Profile 1)"
+            $claude[0].Signals | Should -Contain "Opera extension: $($CETestExtId.Claude) 1.0 (profile: main)"
+            $claude[0].LeftoverOnly | Should -BeFalse
+            $claude[0].CanActOnDevice | Should -BeFalse
+
+            $chatgpt = @(Get-TestToolById $st 't-chatgpt')
+            @($chatgpt[0].Signals) | Should -Be @("Microsoft Edge extension: $($CETestExtId.ChatGptEdge) 1.26.901.11451 (profile: Default)") -Because 'a folder named like an id at the Brave root is not a profile'
+
+            $wordtune = @(Get-TestToolById $st 't-wordtune')
+            $wordtune[0].Signals.GetType().IsArray | Should -BeTrue -Because 'one signal is still a list on Windows PowerShell 5.1'
+            @($wordtune[0].Signals) | Should -Be @('Mozilla Firefox add-on: support@wordtune.com (profile: default-release)')
+
+            $all = @($st.Tools | ForEach-Object { $_.Signals }) -join "`n"
+            $all | Should -Not -Match 'x@y' -Because '*.xpi also matches .xpix on Windows PowerShell 5.1, and that is filtered out'
+            $all | Should -Not -Match 'secret\.example'
+            @(Get-TestBrowserMatch $p | Where-Object { $_.Id -eq $CETestExtId.Other }).Count | Should -Be 0 -Because 'only ids in the catalog are returned'
+        }
+
+        It 'labels matches from an uninstalled browser as a leftover, and changes the advice' {
+            $p = Join-Path $TestDrive 'bx-leftover'
+            New-TestTree $p @("$CETestChromeData\Profile 1\Extensions\$($CETestExtId.Claude)\1.0.94_0")
+            Set-TestBrowserConfig -Tools $CETestExtTools -Browsers @'
+{ "windows": [ { "name": "Google Chrome", "engine": "chromium", "root": "AppData\\Local\\Google\\Chrome\\User Data",
+  "installed": [ { "base": "profile", "path": "AppData\\Local\\Google\\Chrome\\Application\\chrome.exe" } ] } ] }
+'@
+            $claude = @(Get-TestToolById (Invoke-TestBrowserScan -ProfilePath $p) 't-claude')
+            @($claude[0].Signals) | Should -Be @("Google Chrome extension: $($CETestExtId.Claude) 1.0.94 (profile: Profile 1; leftover: Google Chrome is not installed)")
+            $claude[0].LeftoverOnly | Should -BeTrue
+
+            New-TestTree $p @('AppData\Local\Google\Chrome\Application\chrome.exe')
+            $claude = @(Get-TestToolById (Invoke-TestBrowserScan -ProfilePath $p) 't-claude')
+            @($claude[0].Signals) | Should -Be @("Google Chrome extension: $($CETestExtId.Claude) 1.0.94 (profile: Profile 1)")
+            $claude[0].LeftoverOnly | Should -BeFalse
+
+            $leftover = New-TestAITool 'Old Extension' -Service 'X' -CanAct $false -Id 'old-extension'
+            $leftover | Add-Member -NotePropertyName LeftoverOnly -NotePropertyValue $true
+            Set-TestAITools -Tools @($leftover, (New-TestAITool 'Cursor' -Service 'Cursor'))
+            $ai = InModuleScope CEAudit { Get-CEAiPosture -Context (Get-CEDeviceContext) }
+            @($ai.agents | Where-Object { $_.leftoverOnly } | ForEach-Object { $_.name }) | Should -Be @('Old Extension')
+            $r = Export-CEReport -Findings @(Invoke-CEAuditCore -Id 'SC-09') -Context (New-TestContext) -OutputPath (Join-Path $TestDrive 'leftover-report')
+            (Get-Content $r.Paths.Markdown -Raw) | Should -Match ([regex]::Escape('- Old Extension - only in the profile folder of a browser that is no longer installed'))
+            (Get-Content $r.Paths.Markdown -Raw) | Should -Match ([regex]::Escape('- Cursor - present'))
+            $mfa = @(Invoke-CEAuditCore -Id 'UA-07')
+            @($mfa | Where-Object Subject -eq 'X').Count | Should -Be 0 -Because 'a leftover profile does not show the service is in use'
+            @($mfa | Where-Object Subject -eq 'Cursor').Count | Should -Be 1
+        }
+
+        It 'the browser extension collector reads folder and file names only' {
+            InModuleScope CEAudit {
+                $names = 'Get-CEBrowserExtensionList', 'Get-CEPlainChildName', 'Get-CEChromiumExtensionVersion', 'Test-CEPlainDirectory', 'Test-CEPlainDirectoryChain',
+                    'Test-CERelativePathText', 'Get-CEBrowserProfileLabel', 'Get-CEBrowserExtensionIdSet', 'Test-CEFirefoxAddonId', 'Test-CEBrowserInstalled',
+                    'Get-CEBrowserProfileRoot', 'Format-CEBrowserExtensionEvidence', 'ConvertTo-CEBoundedInt'
+                $text = @($names | ForEach-Object { (Get-Command $_ -CommandType Function).ScriptBlock.ToString() }) -join "`n"
+                $text | Should -Not -Match 'Get-Content|ReadAll|OpenRead|OpenText|OpenWrite|StreamReader|FileStream|\.Open\(|ConvertFrom-Json|Import-Csv|Select-String|Get-Item|Get-ChildItem|Test-Path|Resolve-Path|Registry|Invoke-CENative|Invoke-Expression|Start-Process|-Recurse|\[IO\.File\]|&\s*\$'
+                # Listings stay lazy: routing the enumerable through an 'if' expression would read the whole folder first.
+                $list = (Get-Command Get-CEPlainChildName -CommandType Function).ScriptBlock.ToString()
+                $list | Should -Match '\$items = \$di\.EnumerateFiles'
+                $list | Should -Match '\$items = \$di\.EnumerateDirectories'
+                $list | Should -Not -Match '=\s*if\s*\('
+            }
+        }
+
+        It 'does not follow junctions below the profile while looking for browser extensions' {
+            Set-TestBrowserConfig -Tools $CETestExtTools -Browsers $CETestBrowsers
+            $links = New-Object System.Collections.ArrayList
+            try {
+                $ext = "Extensions\$($CETestExtId.Claude)\1.0_0"
+                $case = {
+                    # A profile, a target outside it holding a Chrome extension, and the link between them.
+                    param([string]$Name, [string]$Plain, [string]$Link, [string]$TargetTree)
+                    $root = Join-Path $TestDrive "bx-junction-$Name"
+                    New-TestTree (Join-Path $root 'profile') @($Plain)
+                    New-TestTree (Join-Path $root 'target') @($TargetTree)
+                    $l = Join-Path (Join-Path $root 'profile') $Link
+                    New-Item -ItemType Junction -Path $l -Target (Join-Path $root 'target') | Out-Null
+                    [void]$links.Add($l)
+                    return (Join-Path $root 'profile')
+                }
+                $cases = @{
+                    'a profile'          = & $case 'a' "$CETestChromeData\Profile 1" "$CETestChromeData\Profile 2" $ext
+                    'the browser folder' = & $case 'b' 'AppData\Local\Google' 'AppData\Local\Google\Chrome' "User Data\Profile 1\$ext"
+                    'Extensions'         = & $case 'c' "$CETestChromeData\Profile 1" "$CETestChromeData\Profile 1\Extensions" "$($CETestExtId.Claude)\1.0_0"
+                    'an extension'       = & $case 'd' "$CETestChromeData\Profile 1\Extensions" "$CETestChromeData\Profile 1\Extensions\$($CETestExtId.Claude)" '1.0_0'
+                }
+                foreach ($k in $cases.Keys) {
+                    @(Get-TestBrowserMatch $cases[$k]).Count | Should -Be 0 -Because "$k is a junction"
+                }
+                # The profile folder itself may be a link (profile containers, moved profiles): that one is followed.
+                $real = Join-Path $TestDrive 'bx-junction-e\real'
+                New-TestTree $real @("$CETestChromeData\Profile 1\$ext")
+                $viaLink = Join-Path $TestDrive 'bx-junction-e\profile'
+                New-Item -ItemType Junction -Path $viaLink -Target $real | Out-Null
+                [void]$links.Add($viaLink)
+                $m = @(Get-TestBrowserMatch $viaLink)
+                $m.Count | Should -Be 1
+                $m[0].Profile | Should -Be 'Profile 1'
+            }
+            finally {
+                # Remove the links themselves, never what they point to.
+                foreach ($l in $links) { if ([IO.Directory]::Exists($l)) { [IO.Directory]::Delete($l) } }
+            }
+        }
+
+        It 'does not follow a directory symbolic link below the profile' {
+            Set-TestBrowserConfig -Tools $CETestExtTools -Browsers $CETestBrowsers
+            $root = Join-Path $TestDrive 'bx-symlink'
+            New-TestTree (Join-Path $root 'profile') @("$CETestChromeData\Profile 1")
+            New-TestTree (Join-Path $root 'target') @("Extensions\$($CETestExtId.Claude)\1.0_0")
+            $link = Join-Path $root "profile\$CETestChromeData\Profile 2"
+            try { New-Item -ItemType SymbolicLink -Path $link -Target (Join-Path $root 'target') -ErrorAction Stop | Out-Null }
+            catch { Set-ItResult -Skipped -Because "this account can't create symbolic links: $($_.Exception.Message)"; return }
+            try { @(Get-TestBrowserMatch (Join-Path $root 'profile')).Count | Should -Be 0 }
+            finally { if ([IO.Directory]::Exists($link)) { [IO.Directory]::Delete($link) } }
+        }
+
+        It 'stops at the profile and folder limits in browser-profiles.json' {
+            $p = Join-Path $TestDrive 'bx-caps'
+            New-TestTree $p @(1..3 | ForEach-Object { "$CETestChromeData\Profile $_\Extensions\$($CETestExtId.Claude)\1.0_0" })
+            Set-TestBrowserConfig -Tools $CETestExtTools -Browsers ($CETestBrowsers -replace '"maxProfilesPerBrowser": 64', '"maxProfilesPerBrowser": 2')
+            @(Get-TestBrowserMatch $p).Count | Should -Be 2
+
+            $q = Join-Path $TestDrive 'bx-caps-entries'
+            New-TestTree $q @("$CETestChromeData\Default\Extensions\$($CETestExtId.Early)\1.0_0", "$CETestChromeData\Default\Extensions\$($CETestExtId.Claude)\1.0_0")
+            Set-TestBrowserConfig -Browsers ($CETestBrowsers -replace '"maxEntriesPerFolder": 2000', '"maxEntriesPerFolder": 1')
+            { Get-TestBrowserMatch $q } | Should -Not -Throw
+            @(Get-TestBrowserMatch $q).Count | Should -Be 0 -Because 'the first entry used up the listing limit'
+        }
+
+        It "looks in the signed-in user's profile when run as SYSTEM, and never on a network path" {
+            $p = Join-Path $TestDrive 'bx-system'
+            New-TestTree $p @("$CETestChromeData\Profile 1\Extensions\$($CETestExtId.Claude)\1.0_0")
+            Set-TestBrowserConfig -Tools $CETestExtTools -Browsers $CETestBrowsers
+            $st = Invoke-TestBrowserScan -ProfilePath $p -System
+            $st.ProfileChecked | Should -BeTrue
+            @(Get-TestToolById $st 't-claude')[0].Signals | Should -Contain "Google Chrome extension: $($CETestExtId.Claude) 1.0 (profile: Profile 1)"
+
+            $st = Invoke-TestBrowserScan -ProfilePath '' -System
+            $st.ProfileChecked | Should -BeFalse -Because 'no one is signed in'
+            @($st.Tools).Count | Should -Be 0
+
+            # A profile path on another machine is never listed.
+            @(Get-TestBrowserMatch '\\host\share\paul').Count | Should -Be 0
+            InModuleScope CEAudit {
+                $r = Get-CEBrowserExtensionList -ProfilePath '\\host\share\paul' -ChromiumIds @{ 'fcoeoabgfenejglbffodgkkbkcdhcgfn' = $true } -FirefoxIds @{}
+                ($null -eq $r) | Should -BeFalse
+                @($r).Count | Should -Be 0
+            }
+        }
     }
 }
 

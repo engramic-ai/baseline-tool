@@ -2,7 +2,9 @@
 # AI assistants and agents on the device (config/ai-tools.json), used by
 # UA-07 (MFA on their accounts), SC-09 (agents as remote access) and UA-10
 # (agents running with administrator rights). Read-only: installed programs,
-# the user's Store packages, profile folders, VS Code extensions and processes.
+# the user's Store packages, profile folders, VS Code extensions, the names of
+# browser extension folders in the user's browser profiles (no file there is
+# opened) and processes.
 # ---------------------------------------------------------------------------
 
 function Get-CEAIToolSignal {
@@ -21,11 +23,19 @@ function Get-CEAIToolSignal {
 }
 
 function Get-CEAIToolCatalog {
-    <# Catalog tools looked for on Windows, each with its Windows signals as .Signals. #>
+    <#
+        Catalog tools looked for on Windows, each with its Windows signals as .Signals. A tool found
+        only by its browser extensions (shared by every operating system) has an empty .Signals.
+        enabled: false in the windows block turns off every Windows signal, extensions included.
+    #>
     $out = New-Object System.Collections.ArrayList
     foreach ($t in @(Get-CEObjectValue (Get-CEConfig).'ai-tools' 'tools' @())) {
         $signals = Get-CEAIToolSignal -Tool $t
-        if ($null -eq $signals -or (Get-CEObjectValue $signals 'enabled' $true) -eq $false) { continue }
+        if ($null -eq $signals) {
+            if (@(Get-CEObjectValue $t 'browserExtensions' @()).Count -eq 0) { continue }
+            $signals = [pscustomobject]@{}
+        }
+        elseif ((Get-CEObjectValue $signals 'enabled' $true) -eq $false) { continue }
         [void]$out.Add([pscustomobject]@{ Tool = $t; Signals = $signals })
     }
     return , $out.ToArray()
@@ -183,6 +193,9 @@ function Get-CEAIToolStateUncached {
     foreach ($folder in $builtInDirs) {
         $builtIn += @(Get-ChildItem -LiteralPath $folder -Directory -ErrorAction SilentlyContinue | ForEach-Object { Get-CEVsCodeBuiltInExtensionId -Folder $_.FullName })
     }
+    # AI browser extensions: folder and file names in the user's browser profiles, only for ids in the catalog.
+    $extIds = Get-CEBrowserExtensionIdSet -Catalog $catalog
+    $browserExt = Get-CEBrowserExtensionList -ProfilePath $profilePath -ChromiumIds $extIds.Chromium -FirefoxIds $extIds.Firefox   # assign first: it returns ,array
     $processes = Get-CEProcessList
     $like = { param($value, $pattern) (-not $pattern) -or ("$value" -like $pattern) }
     $programText = { param($sw) if ($sw.Version -and $sw.Name -notlike "*$($sw.Version)*") { "Installed program: $($sw.Name) $($sw.Version)" } else { "Installed program: $($sw.Name)" } }
@@ -193,6 +206,7 @@ function Get-CEAIToolStateUncached {
         $t = $entry.Tool
         $w = $entry.Signals
         $signals = @()
+        $extAll = @()
         foreach ($p in @(Get-CEObjectValue $w 'programs' @())) {
             $signals += @($software | Where-Object { $_.Name -like [string]$p.name -and (& $like $_.Publisher ([string](Get-CEObjectValue $p 'publisher' ''))) } |
                 ForEach-Object { & $programText $_ })
@@ -211,6 +225,11 @@ function Get-CEAIToolStateUncached {
             # "github.copilot-chat-*" cover both.
             $signals += @($builtIn | Where-Object { $_ -like $pattern -or "$_-builtin" -like $pattern } | ForEach-Object { "VS Code built-in extension: $_" })
         }
+        foreach ($ext in @(Get-CEObjectValue $t 'browserExtensions' @())) {
+            $extId = [string](Get-CEObjectValue $ext 'id' '')
+            if ($extId) { $extAll += @($browserExt | Where-Object { $_.Id -eq $extId }) }
+        }
+        $signals += @($extAll | ForEach-Object { Format-CEBrowserExtensionEvidence $_ })
         $running = @()
         foreach ($spec in @(Get-CEObjectValue $w 'processes' @())) {
             $pathPattern = [string](Get-CEObjectValue $spec 'path' '')
@@ -225,6 +244,9 @@ function Get-CEAIToolStateUncached {
                 $running += $proc
             }
         }
+        # Found only in the profile of a browser that is no longer installed. Counted before duplicates
+        # are dropped, so each match stands for one signal.
+        $leftoverOnly = ($extAll.Count -gt 0 -and @($extAll | Where-Object { $_.BrowserFound }).Count -eq 0 -and $signals.Count -eq $extAll.Count -and $running.Count -eq 0)
         $signals = @($signals | Select-Object -Unique)
         if ($signals.Count -eq 0 -and $running.Count -eq 0) { continue }
         $canAct = [bool](Get-CEObjectValue $t 'canActOnDevice' $false)
@@ -241,7 +263,17 @@ function Get-CEAIToolStateUncached {
                 Elevated  = $(switch ($elevation) { 1 { $true } 0 { $false } default { $null } })
             }
         })
-        if ($procInfo.Count) { $signals += "Running: $((@($procInfo | ForEach-Object { "$($_.Image) (pid $($_.ProcessId))" })) -join ', ')" }
+        if ($procInfo.Count) {
+            # Agents keep every pid (UA-10 names them). A browser or chat app runs many processes of one
+            # image, so those are counted instead.
+            $runText = if ($canAct) { @($procInfo | ForEach-Object { "$($_.Image) (pid $($_.ProcessId))" }) }
+            else {
+                @(foreach ($g in @($procInfo | Group-Object -Property Image)) {
+                    if ($g.Count -eq 1) { "$($g.Name) (pid $($g.Group[0].ProcessId))" } else { "$($g.Name) ($($g.Count) processes)" }
+                })
+            }
+            $signals += "Running: $(@($runText) -join ', ')"
+        }
         [void]$tools.Add([pscustomobject]@{
             Id             = [string](Get-CEObjectValue $t 'id' '')
             Name           = [string](Get-CEObjectValue $t 'name' '')
@@ -250,16 +282,19 @@ function Get-CEAIToolStateUncached {
             Notes          = [string](Get-CEObjectValue $t 'notes' '')
             Signals        = $signals
             Processes      = $procInfo
+            LeftoverOnly   = $leftoverOnly
         })
     }
 
-    # Agent images whose path and command line couldn't be read: they may belong to a tool running
-    # elevated or as another user. node.exe is too common to report this way.
-    $agentImages = @($catalog | ForEach-Object { @(Get-CEObjectValue $_.Signals 'processes' @()) | Where-Object { (Get-CEObjectValue $_ 'path' '') -or (Get-CEObjectValue $_ 'commandLine' '') } | ForEach-Object { [string]$_.image } } |
+    # Agent images whose path and command line couldn't be read: they may belong to an agent that can
+    # act on the device running elevated or as another user. Only those tools count; browsers and chat
+    # apps are not agents UA-10 looks for. node.exe is too common to report this way.
+    $agentImages = @($catalog | Where-Object { [bool](Get-CEObjectValue $_.Tool 'canActOnDevice' $false) } |
+        ForEach-Object { @(Get-CEObjectValue $_.Signals 'processes' @()) | Where-Object { (Get-CEObjectValue $_ 'path' '') -or (Get-CEObjectValue $_ 'commandLine' '') } | ForEach-Object { [string]$_.image } } |
         Where-Object { $_ -and $_ -ne 'node.exe' } | Sort-Object -Unique)
     $hidden = @($processes | Where-Object { $agentImages -contains $_.Name -and -not $_.Path -and -not $_.CommandLine -and -not $claimed.ContainsKey($_.ProcessId) } |
         ForEach-Object { "$($_.Name) (pid $($_.ProcessId))" })
-    return [pscustomobject]@{ Tools = $tools.ToArray(); UninspectedProcesses = $hidden }
+    return [pscustomobject]@{ Tools = $tools.ToArray(); UninspectedProcesses = $hidden; ProfileChecked = [bool]$profilePath }
 }
 
 function Get-CEAiPosture {
@@ -285,6 +320,8 @@ function Get-CEAiPosture {
             running        = ($procs.Count -gt 0)
             elevated       = [bool](@($procs | Where-Object { $_.Elevated -eq $true }).Count)
             asSystem       = [bool](@($procs | Where-Object { $_.AsSystem }).Count)
+            # Found only in the profile folder of a browser that has since been uninstalled.
+            leftoverOnly   = [bool](Get-CEObjectValue $t 'LeftoverOnly' $false)
         }
     })
 

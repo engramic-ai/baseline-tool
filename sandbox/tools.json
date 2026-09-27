@@ -7,7 +7,7 @@
     "manual: true means the tool cannot be installed unattended (licence, sign-in or no public installer); it is reported as not testable rather than skipped silently.",
     "winget ids are best effort and drift: an id that fails is reported per tool, not fatal."
   ],
-  "lastReviewed": "2026-09-22",
+  "lastReviewed": "2026-09-26",
   "tools": [
     { "id": "vscode",  "name": "Visual Studio Code", "helper": true,
       "install": { "type": "winget", "id": "Microsoft.VisualStudioCode", "args": ["--override", "/VERYSILENT /NORESTART /MERGETASKS=!runcode,addtopath"] },
@@ -53,6 +53,37 @@
     { "id": "ollama",
       "install": { "type": "winget", "id": "Ollama.Ollama" }, "exe": "ollama app.exe" },
     { "id": "lm-studio",
-      "install": { "type": "winget", "id": "ElementLabs.LMStudio" }, "exe": "LM Studio.exe" }
+      "install": { "type": "winget", "id": "ElementLabs.LMStudio" }, "exe": "LM Studio.exe" },
+
+    { "id": "perplexity-comet",
+      "install": { "type": "winget", "id": "Perplexity.Comet" }, "exe": "comet.exe" },
+    { "id": "opera-neon", "manual": true, "reason": "not on winget; the installer's silent switches are not documented" },
+    { "id": "genspark-browser", "manual": true, "reason": "not on winget; the installer's silent switches are not documented" },
+
+    { "id": "claude-in-chrome", "manual": true, "reason": "browser extension: the lab cannot install extensions unattended yet; unit tests cover detection with fixture profiles" },
+    { "id": "chatgpt-extension", "manual": true, "reason": "browser extension: the lab cannot install extensions unattended yet; unit tests cover detection with fixture profiles" },
+    { "id": "chatgpt-search-extension", "manual": true, "reason": "browser extension: the lab cannot install extensions unattended yet; unit tests cover detection with fixture profiles" },
+    { "id": "perplexity-extension", "manual": true, "reason": "browser extension: the lab cannot install extensions unattended yet; unit tests cover detection with fixture profiles" },
+    { "id": "sider-extension", "manual": true, "reason": "browser extension: the lab cannot install extensions unattended yet; unit tests cover detection with fixture profiles" },
+    { "id": "monica-extension", "manual": true, "reason": "browser extension: the lab cannot install extensions unattended yet; unit tests cover detection with fixture profiles" },
+    { "id": "merlin-extension", "manual": true, "reason": "browser extension: the lab cannot install extensions unattended yet; unit tests cover detection with fixture profiles" },
+    { "id": "maxai-extension", "manual": true, "reason": "browser extension: the lab cannot install extensions unattended yet; unit tests cover detection with fixture profiles" },
+    { "id": "harpa-extension", "manual": true, "reason": "browser extension: the lab cannot install extensions unattended yet; unit tests cover detection with fixture profiles" },
+    { "id": "aitopia-extension", "manual": true, "reason": "browser extension: the lab cannot install extensions unattended yet; unit tests cover detection with fixture profiles" },
+    { "id": "aiprm-extension", "manual": true, "reason": "browser extension: the lab cannot install extensions unattended yet; unit tests cover detection with fixture profiles" },
+    { "id": "glasp-extension", "manual": true, "reason": "browser extension: the lab cannot install extensions unattended yet; unit tests cover detection with fixture profiles" },
+    { "id": "jetwriter-extension", "manual": true, "reason": "browser extension: the lab cannot install extensions unattended yet; unit tests cover detection with fixture profiles" },
+    { "id": "quillbot-extension", "manual": true, "reason": "browser extension: the lab cannot install extensions unattended yet; unit tests cover detection with fixture profiles" },
+    { "id": "wordtune-extension", "manual": true, "reason": "browser extension: the lab cannot install extensions unattended yet; unit tests cover detection with fixture profiles" },
+    { "id": "deepsider-extension", "manual": true, "reason": "browser extension: the lab cannot install extensions unattended yet; unit tests cover detection with fixture profiles" },
+    { "id": "liner-extension", "manual": true, "reason": "browser extension: the lab cannot install extensions unattended yet; unit tests cover detection with fixture profiles" },
+    { "id": "notegpt-extension", "manual": true, "reason": "browser extension: the lab cannot install extensions unattended yet; unit tests cover detection with fixture profiles" },
+    { "id": "chathub-extension", "manual": true, "reason": "browser extension: the lab cannot install extensions unattended yet; unit tests cover detection with fixture profiles" },
+    { "id": "compose-ai-extension", "manual": true, "reason": "browser extension: the lab cannot install extensions unattended yet; unit tests cover detection with fixture profiles" },
+    { "id": "manus-extension", "manual": true, "reason": "browser extension: the lab cannot install extensions unattended yet; unit tests cover detection with fixture profiles" },
+    { "id": "bardeen-extension", "manual": true, "reason": "browser extension: the lab cannot install extensions unattended yet; unit tests cover detection with fixture profiles" },
+    { "id": "brisk-teaching-extension", "manual": true, "reason": "browser extension: the lab cannot install extensions unattended yet; unit tests cover detection with fixture profiles" },
+    { "id": "tactiq-extension", "manual": true, "reason": "browser extension: the lab cannot install extensions unattended yet; unit tests cover detection with fixture profiles" },
+    { "id": "fathom-extension", "manual": true, "reason": "browser extension: the lab cannot install extensions unattended yet; unit tests cover detection with fixture profiles" }
   ]
 }

@@ -113,15 +113,39 @@ function Get-CEConfig {
     return $config
 }
 
+function Get-CEEnvironmentHook {
+    <#
+        Value of a development environment variable (CE_CHECKER_DATA, CE_CHECKER_PACKS),
+        or $null. Ignored when elevated: an elevated process started from a user's session
+        inherits that session's environment, so a standard user could otherwise point an
+        administrator's audit at folders they control and switch off the data-folder
+        permission checks. Elevated callers pass Import-Module -ArgumentList instead.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][string]$Name)
+    $value = [Environment]::GetEnvironmentVariable($Name)
+    if (-not $value) { return $null }
+    if (-not (Test-CEIsAdmin)) { return $value }
+    if (-not $script:CEIgnoredEnvHooks.ContainsKey($Name)) {
+        $script:CEIgnoredEnvHooks[$Name] = $true
+        Write-Warning "Ignoring the $Name environment variable because this audit is running as administrator. It is for development only; pass the folder with Import-Module -ArgumentList instead."
+    }
+    return $null
+}
+
 function Get-CEDataRoot {
     <#
         Machine-wide data folder used by the scheduled audit and Intune scripts.
-        CE_CHECKER_DATA overrides it (used by tests).
+        Moved by the module's import argument (tests, the scheduled audit's -DataRoot)
+        or, when not elevated, by CE_CHECKER_DATA.
     #>
     [CmdletBinding()]
     [OutputType([string])]
     param()
-    if ($env:CE_CHECKER_DATA) { return $env:CE_CHECKER_DATA }
+    if ($script:CEDataRootOverride) { return $script:CEDataRootOverride }
+    $fromEnv = Get-CEEnvironmentHook -Name 'CE_CHECKER_DATA'
+    if ($fromEnv) { return $fromEnv }
     $base = $env:ProgramData
     if (-not $base) { $base = [IO.Path]::GetTempPath() }
     return (Join-Path $base 'EngramicBaseline')
@@ -183,18 +207,71 @@ function Get-CEInstalledSoftware {
     return @($items | Sort-Object Name, Version -Unique)
 }
 
-function Get-CEWingetPath {
+function Test-CESignedBy {
     <#
-        Path to winget.exe, or $null. winget is a per-user app, so it isn't on
-        PATH for SYSTEM; in that case use the machine-wide App Installer package.
+        Whether a file has a valid Authenticode signature from one of $Publisher (the
+        signing certificate's common name). Anything unreadable counts as unsigned.
     #>
     [CmdletBinding()]
+    [OutputType([bool])]
+    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string[]]$Publisher)
+    try { $sig = Get-AuthenticodeSignature -LiteralPath $Path -ErrorAction Stop }
+    catch { return $false }
+    if (-not $sig -or "$($sig.Status)" -ne 'Valid' -or -not $sig.SignerCertificate) { return $false }
+    $m = [regex]::Match([string]$sig.SignerCertificate.Subject, '(?:^|,)\s*CN=(?:"([^"]*)"|([^,]*))')
+    if (-not $m.Success) { return $false }
+    $cn = ($m.Groups[1].Value + $m.Groups[2].Value).Trim()
+    return [bool]($Publisher -contains $cn)
+}
+
+function Resolve-CETrustedTool {
+    <#
+        The first candidate that exists and is signed by one of $Publisher, so a program
+        planted in a folder on PATH is never run, least of all by an elevated or SYSTEM
+        audit. List known install locations first and PATH last. Returns Path ($null if
+        none could be verified) and Refused (candidates found that failed the check).
+    #>
+    [CmdletBinding()]
+    param([string[]]$Candidate, [Parameter(Mandatory)][string[]]$Publisher)
+    $refused = New-Object System.Collections.ArrayList
+    foreach ($c in @($Candidate | Where-Object { $_ } | Select-Object -Unique)) {
+        if (-not (Test-Path -LiteralPath $c -PathType Leaf)) { continue }
+        if (Test-CESignedBy -Path $c -Publisher $Publisher) { return [pscustomobject]@{ Path = $c; Refused = $refused.ToArray() } }
+        Write-Verbose "Not running $c : it is not validly signed by $($Publisher -join ' or ')"
+        [void]$refused.Add($c)
+    }
+    return [pscustomobject]@{ Path = $null; Refused = $refused.ToArray() }
+}
+
+function Get-CEWingetCandidate {
+    <#
+        Places winget.exe may be, most trusted first. winget is a per-user app, so it isn't
+        on PATH for SYSTEM: use the machine-wide App Installer package, then the current
+        user's. The PATH entry is usually an app execution alias under the user's
+        %LOCALAPPDATA%, which can't be verified, so it comes last.
+    #>
+    [CmdletBinding()]
+    [OutputType([string[]])]
     param()
-    $cmd = Get-Command 'winget.exe' -ErrorAction SilentlyContinue
-    if ($cmd) { return $cmd.Source }
-    if (-not $env:ProgramFiles) { return $null }
-    $pattern = Join-Path $env:ProgramFiles 'WindowsApps\Microsoft.DesktopAppInstaller_*_x64__8wekyb3d8bbwe\winget.exe'
-    $found = @(Resolve-Path -Path $pattern -ErrorAction SilentlyContinue | ForEach-Object { $_.Path } | Sort-Object -Descending)
-    if ($found.Count) { return $found[0] }
-    return $null
+    $candidates = @()
+    if ($env:ProgramFiles) {
+        $pattern = Join-Path $env:ProgramFiles 'WindowsApps\Microsoft.DesktopAppInstaller_*_x64__8wekyb3d8bbwe\winget.exe'
+        $candidates += @(Resolve-Path -Path $pattern -ErrorAction SilentlyContinue | ForEach-Object { $_.Path } | Sort-Object -Descending)
+    }
+    if (Get-Command 'Get-AppxPackage' -ErrorAction SilentlyContinue) {
+        try {
+            $candidates += @(Get-AppxPackage -Name 'Microsoft.DesktopAppInstaller' -ErrorAction Stop |
+                Where-Object { $_.InstallLocation } | ForEach-Object { Join-Path $_.InstallLocation 'winget.exe' })
+        }
+        catch { Write-Verbose "Could not list the App Installer package: $_" }
+    }
+    $candidates += @(Get-Command 'winget.exe' -CommandType Application -ErrorAction SilentlyContinue | ForEach-Object { $_.Source })
+    return $candidates
+}
+
+function Resolve-CEWingetPath {
+    <# winget.exe signed by Microsoft: Path, or $null with Refused listing any copies that weren't. #>
+    [CmdletBinding()]
+    param()
+    return (Resolve-CETrustedTool -Candidate @(Get-CEWingetCandidate) -Publisher 'Microsoft Corporation')
 }

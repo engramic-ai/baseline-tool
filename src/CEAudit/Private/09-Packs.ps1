@@ -2,7 +2,8 @@
 # Feature packs: separately installed folders that add checks, remediations,
 # categories and config. The module loads them at import (CEAudit.psm1) from:
 #   <repo>\packs\*                               next to the module
-#   $env:CE_CHECKER_PACKS (path list)             development and tests
+#   Import-Module -ArgumentList $null, <folders>  development and tests
+#   $env:CE_CHECKER_PACKS (path list)             development, ignored when elevated
 #   %ProgramData%\EngramicBaseline\packs\*  installed copies
 # Audits run elevated or as SYSTEM, so packs under the data folder are refused
 # if anyone other than administrators could change them.
@@ -61,23 +62,29 @@ function Test-CEDataPathTrusted {
         predictable default %ProgramData% location, which a standard user could
         pre-create or tamper with before an administrator runs the tool; a forged
         config override or firmware cache there would control the verdict. A
-        non-elevated audit can only affect its own user, and CE_CHECKER_DATA is a
-        deliberate dev/test hook, so both are trusted.
+        non-elevated audit can only affect its own user, so it trusts any path.
+        There is deliberately no bypass for a moved data folder: an elevated audit
+        checks the permissions wherever the folder is.
     #>
     param([Parameter(Mandatory)][string]$Path)
-    if ($env:CE_CHECKER_DATA) { return $true }
     if (-not (Test-CEIsAdmin)) { return $true }
     return (@(Get-CEPathAclProblem -Path $Path).Count -eq 0)
 }
 
 function Get-CEPackSearchPath {
-    <# Folders that contain pack folders, with whether their permissions must be locked down. #>
+    <#
+        Folders that contain pack folders, with whether their permissions must be locked down.
+        Folders passed to Import-Module are trusted like the repo's own packs folder: they come
+        from the code importing the module. CE_CHECKER_PACKS is ignored when elevated
+        (Get-CEEnvironmentHook), since it could come from a standard user's environment.
+    #>
     $paths = New-Object System.Collections.ArrayList
     [void]$paths.Add([pscustomobject]@{ Path = (Join-Path $script:RepoRoot 'packs'); RequireLockedAcl = $false })
-    if ($env:CE_CHECKER_PACKS) {
-        foreach ($p in ($env:CE_CHECKER_PACKS -split [regex]::Escape([IO.Path]::PathSeparator))) {
-            if ($p) { [void]$paths.Add([pscustomobject]@{ Path = $p; RequireLockedAcl = $false }) }
-        }
+    $devPaths = @($script:CEPackPathOverride)
+    $fromEnv = Get-CEEnvironmentHook -Name 'CE_CHECKER_PACKS'
+    if ($fromEnv) { $devPaths += @($fromEnv -split [regex]::Escape([IO.Path]::PathSeparator)) }
+    foreach ($p in $devPaths) {
+        if ($p) { [void]$paths.Add([pscustomobject]@{ Path = $p; RequireLockedAcl = $false }) }
     }
     [void]$paths.Add([pscustomobject]@{ Path = (Join-Path (Get-CEDataRoot) 'packs'); RequireLockedAcl = $true })
     return ,$paths.ToArray()

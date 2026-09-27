@@ -1823,16 +1823,19 @@ Describe 'Firmware catalog (SU-08 with the catalog service)' {
     Context 'client' {
         BeforeEach {
             $script:dataRoot = Join-Path $TestDrive ([guid]::NewGuid().ToString('n'))
-            $env:CE_CHECKER_DATA = $script:dataRoot
-            InModuleScope CEAudit {
+            # The cache lives in a test folder the runner's own account can write to. CI runs
+            # elevated, where that folder would rightly be distrusted, so run these as a standard user.
+            Mock -ModuleName CEAudit Test-CEIsAdmin { $false }
+            InModuleScope CEAudit -Parameters @{ Root = $script:dataRoot } {
+                param($Root)
+                $script:CEDataRootOverride = $Root
                 $script:origCatalogCfg = (Get-CEConfig).'firmware-catalog'
                 (Get-CEConfig).'firmware-catalog' = [pscustomobject]@{ baseUrl = 'http://localhost:8787/'; timeoutSeconds = 5; cacheHours = 12; maxRecordAgeDays = 7 }
             }
             $script:hw = [pscustomobject]@{ Manufacturer = 'Dell Inc.'; SystemSku = '0CF1' }
         }
         AfterEach {
-            Remove-Item Env:\CE_CHECKER_DATA -ErrorAction SilentlyContinue
-            InModuleScope CEAudit { (Get-CEConfig).'firmware-catalog' = $script:origCatalogCfg }
+            InModuleScope CEAudit { $script:CEDataRootOverride = $null; (Get-CEConfig).'firmware-catalog' = $script:origCatalogCfg }
         }
 
         It 'ships turned on, pointing at the https service' {
@@ -2782,10 +2785,10 @@ Describe 'Security review fixes' {
             $data = Join-Path $TestDrive ([guid]::NewGuid().ToString('n'))
             New-Item -ItemType Directory -Force -Path (Join-Path $data 'packs\mypack') | Out-Null
             Set-Content -LiteralPath (Join-Path $data 'packs\mypack\pack.json') -Value '{ "id": "mypack", "name": "My pack", "version": "1.0.0" }'
-            $env:CE_CHECKER_DATA = $data
             try {
                 InModuleScope CEAudit -Parameters @{ Data = $data } {
                     param($Data)
+                    $script:CEDataRootOverride = $Data
                     $parent = Join-Path $Data 'packs'
                     # Only the parent folder is flagged as writable; the pack folder itself is clean.
                     Mock Get-CEPathAclProblem { if ($Path -eq $parent) { "$Path is writable by S-1-5-32-545" } else { @() } }
@@ -2796,20 +2799,16 @@ Describe 'Security review fixes' {
                     Should -Invoke Get-CEPathAclProblem -ParameterFilter { $Path -eq $parent } -Times 1 -Because 'the parent directory is checked'
                 }
             }
-            finally { Remove-Item Env:\CE_CHECKER_DATA -ErrorAction SilentlyContinue }
+            finally { InModuleScope CEAudit { $script:CEDataRootOverride = $null } }
         }
     }
 
     Context 'data-path trust when elevated' {
-        It 'trusts any path when not elevated or when CE_CHECKER_DATA is set' {
+        It 'trusts any path when not elevated' {
             InModuleScope CEAudit {
                 Mock Test-CEIsAdmin { $false }
                 Mock Get-CEPathAclProblem { @('writable by everyone') }
                 Test-CEDataPathTrusted -Path 'C:\whatever' | Should -BeTrue -Because 'a non-elevated audit only affects its own user'
-                Mock Test-CEIsAdmin { $true }
-                $env:CE_CHECKER_DATA = 'C:\test-data'
-                try { Test-CEDataPathTrusted -Path 'C:\whatever' | Should -BeTrue -Because 'the env override is a deliberate hook' }
-                finally { Remove-Item Env:\CE_CHECKER_DATA -ErrorAction SilentlyContinue }
             }
         }
 
@@ -2822,6 +2821,197 @@ Describe 'Security review fixes' {
                 Mock Get-CEPathAclProblem { @() }
                 Test-CEDataPathTrusted -Path 'C:\ProgramData\EngramicBaseline\config' | Should -BeTrue
             }
+        }
+    }
+}
+
+Describe 'Elevated audits cannot be steered by the environment or PATH' {
+    # An elevated process started from a user's session can inherit environment variables that
+    # user controls, and SYSTEM runs whatever comes first on the machine PATH. Neither may
+    # decide what the audit reads or runs.
+    Context 'CE_CHECKER_DATA and CE_CHECKER_PACKS' {
+        AfterEach {
+            Remove-Item Env:\CE_CHECKER_DATA -ErrorAction SilentlyContinue
+            Remove-Item Env:\CE_CHECKER_PACKS -ErrorAction SilentlyContinue
+            InModuleScope CEAudit { $script:CEDataRootOverride = $null; $script:CEPackPathOverride = @(); $script:CEIgnoredEnvHooks = @{}; $script:CEConfig = $null }
+        }
+
+        It 'still checks data-folder permissions when elevated with CE_CHECKER_DATA set' {
+            $env:CE_CHECKER_DATA = Join-Path $TestDrive 'user-data'
+            InModuleScope CEAudit {
+                Mock Test-CEIsAdmin { $true }
+                Mock Get-CEPathAclProblem { @('C:\x is writable by S-1-5-21-1-2-3-1001') }
+                Test-CEDataPathTrusted -Path 'C:\x' -WarningAction SilentlyContinue | Should -BeFalse -Because 'the variable no longer switches the check off'
+                Should -Invoke Get-CEPathAclProblem -Times 1 -Exactly
+            }
+        }
+
+        It 'also checks a data folder moved on the Import-Module line' {
+            InModuleScope CEAudit -Parameters @{ Root = (Join-Path $TestDrive 'moved') } {
+                param($Root)
+                $script:CEDataRootOverride = $Root
+                Mock Test-CEIsAdmin { $true }
+                Mock Get-CEPathAclProblem { @("$Path is writable by S-1-5-32-545") }
+                Get-CEDataRoot | Should -Be $Root
+                Test-CEDataPathTrusted -Path (Join-Path $Root 'config') | Should -BeFalse
+            }
+        }
+
+        It 'ignores CE_CHECKER_DATA when elevated, with a warning, and honours it otherwise' {
+            $userData = Join-Path $TestDrive 'user-data'
+            $env:CE_CHECKER_DATA = $userData
+            InModuleScope CEAudit -Parameters @{ UserData = $userData } {
+                param($UserData)
+                Mock Test-CEIsAdmin { $false }
+                Get-CEDataRoot | Should -Be $UserData -Because 'it is still a development hook for standard users'
+                Mock Test-CEIsAdmin { $true }
+                $root = Get-CEDataRoot -WarningVariable warned -WarningAction SilentlyContinue
+                $root | Should -Not -Be $UserData
+                $root | Should -Match 'EngramicBaseline$'
+                "$warned" | Should -Match 'Ignoring the CE_CHECKER_DATA environment variable'
+            }
+        }
+
+        It 'does not load a forged config override from a CE_CHECKER_DATA folder when elevated' {
+            $userData = Join-Path $TestDrive 'forged'
+            New-Item -ItemType Directory -Force -Path (Join-Path $userData 'config') | Out-Null
+            Set-Content -LiteralPath (Join-Path (Join-Path $userData 'config') 'thresholds.json') -Value '{ "patchWindowDays": 999 }'
+            $env:CE_CHECKER_DATA = $userData
+            InModuleScope CEAudit {
+                Mock Test-CEIsAdmin { $false }
+                (Get-CEConfig -Force).thresholds.patchWindowDays | Should -Be 999 -Because 'the fixture is valid and a standard user may steer their own audit'
+                Mock Test-CEIsAdmin { $true }
+                (Get-CEConfig -Force -WarningAction SilentlyContinue).thresholds.patchWindowDays | Should -Not -Be 999
+            }
+        }
+
+        It 'drops CE_CHECKER_PACKS folders when elevated but keeps folders passed to Import-Module' {
+            $envPacks = Join-Path $TestDrive 'env-packs'
+            $argPacks = Join-Path $TestDrive 'arg-packs'
+            $env:CE_CHECKER_PACKS = $envPacks
+            InModuleScope CEAudit -Parameters @{ EnvPacks = $envPacks; ArgPacks = $argPacks } {
+                param($EnvPacks, $ArgPacks)
+                $script:CEPackPathOverride = @($ArgPacks)
+                Mock Test-CEIsAdmin { $false }
+                $paths = Get-CEPackSearchPath
+                @($paths | ForEach-Object { $_.Path }) | Should -Contain $EnvPacks
+                Mock Test-CEIsAdmin { $true }
+                $paths = Get-CEPackSearchPath 3>$null
+                @($paths | ForEach-Object { $_.Path }) | Should -Not -Contain $EnvPacks
+                ($paths | Where-Object { $_.Path -eq $ArgPacks }).RequireLockedAcl | Should -BeFalse
+                ($paths | Where-Object { $_.Path -like '*packs' } | Select-Object -Last 1).RequireLockedAcl | Should -BeTrue -Because 'the data-folder packs are always checked'
+            }
+        }
+    }
+
+    Context 'signed native tools' {
+        BeforeAll {
+            $script:planted = Join-Path (Join-Path $TestDrive 'on-path') 'winget.exe'
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $script:planted) | Out-Null
+            Set-Content -LiteralPath $script:planted -Value 'not really winget'
+        }
+
+        It 'refuses an unsigned binary (real signature check, nothing mocked)' {
+            InModuleScope CEAudit -Parameters @{ Planted = $script:planted } {
+                param($Planted)
+                Test-CESignedBy -Path $Planted -Publisher 'Microsoft Corporation' | Should -BeFalse
+                $r = Resolve-CETrustedTool -Candidate @($Planted) -Publisher 'Microsoft Corporation'
+                $r.Path | Should -BeNullOrEmpty
+                $r.Refused | Should -Be @($Planted)
+            }
+        }
+
+        It 'accepts only a valid signature whose signer common name is the expected publisher' {
+            InModuleScope CEAudit -Parameters @{ Planted = $script:planted } {
+                param($Planted)
+                $sig = { param($status, $subject) [pscustomobject]@{ Status = $status; SignerCertificate = [pscustomobject]@{ Subject = $subject } } }
+                Mock Get-AuthenticodeSignature { & $sig 'Valid' 'CN=Contoso Ltd, O=Contoso Ltd, C=GB' }
+                Test-CESignedBy -Path $Planted -Publisher 'Microsoft Corporation' | Should -BeFalse -Because 'signed, but by someone else'
+                Mock Get-AuthenticodeSignature { & $sig 'Valid' 'CN=Contoso Ltd, O=Microsoft Corporation' }
+                Test-CESignedBy -Path $Planted -Publisher 'Microsoft Corporation' | Should -BeFalse -Because 'only the common name counts'
+                Mock Get-AuthenticodeSignature { & $sig 'HashMismatch' 'CN=Microsoft Corporation, O=Microsoft Corporation' }
+                Test-CESignedBy -Path $Planted -Publisher 'Microsoft Corporation' | Should -BeFalse -Because 'a tampered file'
+                Mock Get-AuthenticodeSignature { & $sig 'Valid' 'CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US' }
+                Test-CESignedBy -Path $Planted -Publisher 'Microsoft Corporation' | Should -BeTrue
+                Mock Get-AuthenticodeSignature { & $sig 'Valid' 'CN="Docker, Inc.", O="Docker, Inc.", C=US' }
+                Test-CESignedBy -Path $Planted -Publisher $script:CEDockerPublishers | Should -BeTrue
+                Mock Get-AuthenticodeSignature { throw 'The file cannot be accessed by the system.' }
+                Test-CESignedBy -Path $Planted -Publisher 'Microsoft Corporation' | Should -BeFalse -Because 'an app execution alias cannot be verified'
+            }
+        }
+
+        It 'looks for winget in the App Installer package before PATH' {
+            InModuleScope CEAudit {
+                Mock Resolve-Path { [pscustomobject]@{ Path = 'C:\Program Files\WindowsApps\Microsoft.DesktopAppInstaller_1.29.380.0_x64__8wekyb3d8bbwe\winget.exe' } }
+                Mock Get-AppxPackage { [pscustomobject]@{ InstallLocation = 'C:\Program Files\WindowsApps\Microsoft.DesktopAppInstaller_1.28.0.0_x64__8wekyb3d8bbwe' } }
+                Mock Get-Command {
+                    if ($Name -eq 'winget.exe') { return [pscustomobject]@{ Source = 'C:\Users\u\AppData\Local\Microsoft\WindowsApps\winget.exe' } }
+                    if ($Name -eq 'Get-AppxPackage') { return [pscustomobject]@{ Name = 'Get-AppxPackage' } }
+                }
+                $c = @(Get-CEWingetCandidate)
+                $c[0] | Should -Match 'DesktopAppInstaller_1\.29'
+                $c[1] | Should -Match 'DesktopAppInstaller_1\.28'
+                $c[-1] | Should -Match 'AppData\\Local'
+            }
+        }
+
+        It 'SU-05 does not run a winget found on PATH that is not signed by Microsoft, and says why' {
+            InModuleScope CEAudit -Parameters @{ Planted = $script:planted } {
+                param($Planted)
+                Mock Get-CEDeviceContext { New-TestContext }
+                Mock Get-Module { if ($Name -contains 'Microsoft.WinGet.Client') { return } Microsoft.PowerShell.Core\Get-Module @PesterBoundParameters }
+                Mock Resolve-Path { if ("$Path" -like '*DesktopAppInstaller*') { return } Microsoft.PowerShell.Management\Resolve-Path @PesterBoundParameters }
+                Mock Get-Command {
+                    if ($Name -contains 'winget.exe') { return [pscustomobject]@{ Source = $Planted } }
+                    if ($Name -contains 'Get-AppxPackage') { return }
+                    Microsoft.PowerShell.Core\Get-Command @PesterBoundParameters
+                }
+                $f = @(Invoke-CEAuditCore -Id 'SU-05')
+                $f.Count | Should -Be 1
+                $f[0].Status | Should -Be 'Manual'
+                $f[0].Actual | Should -Match 'could not be verified as signed by Microsoft'
+                $f[0].Actual | Should -Match ([regex]::Escape($Planted))
+                Should -Invoke Invoke-CENative -Times 0 -Exactly
+            }
+        }
+
+        It 'the winget remediation refuses an unverified winget instead of running it' {
+            InModuleScope CEAudit -Parameters @{ Planted = $script:planted } {
+                param($Planted)
+                Mock Resolve-CEWingetPath { [pscustomobject]@{ Path = $null; Refused = @($Planted) } }
+                Mock Get-CEDeviceContext { New-TestContext }
+                $r = Invoke-CERemediation -Id 'Winget-Upgrade' -Parameters @{ PackageId = '7zip.7zip' }
+                $r.Status | Should -Be 'Failed'
+                "$($r.Message)" | Should -Match 'not signed by Microsoft, so it was not run'
+                Should -Invoke Invoke-CENative -Times 0 -Exactly
+            }
+        }
+
+        It 'does not run a docker on PATH that is not signed by Docker, and notes it' {
+            $savedPf = $env:ProgramFiles
+            $env:ProgramFiles = Join-Path $TestDrive 'no-program-files'
+            try {
+                InModuleScope CEAudit -Parameters @{ Planted = $script:planted } {
+                    param($Planted)
+                    Mock Get-Command { if ($Name -contains 'docker.exe') { return [pscustomobject]@{ Source = $Planted } } Microsoft.PowerShell.Core\Get-Command @PesterBoundParameters }
+                    $d = Resolve-CEDockerPath
+                    $d.Path | Should -BeNullOrEmpty
+                    $d.Refused | Should -Be @($Planted)
+
+                    Mock Get-CEUserProfilePath { 'C:\Users\u' }
+                    Mock Get-CEWslDistribution { , @() }
+                    Mock Get-CEHyperVMachine { [pscustomobject]@{ Readable = $true; Message = ''; Machines = @(); NatMappings = @() } }
+                    Mock Get-CEVMwareMachine { , @() }
+                    Mock Get-CEVirtualBoxMachine { , @() }
+                    Mock Get-CEWslNetworkingMode { '' }
+                    Mock Get-CEVirtualisationListener { , @() }
+                    $st = Get-CEVirtualisationStateUncached -Context (New-TestContext)
+                    @($st.Containers).Count | Should -Be 0
+                    @($st.Notes) -join '; ' | Should -Match 'Docker containers were not checked: .* is not signed by Docker'
+                    Should -Invoke Invoke-CENative -Times 0 -Exactly
+                }
+            }
+            finally { $env:ProgramFiles = $savedPf }
         }
     }
 }
@@ -2878,17 +3068,14 @@ throw 'boom'
         }
         New-TestPack -Root $rootB -Folder 'good-again' -Manifest @{ id = 'good-pack'; name = 'Good pack copy'; version = '9.9.9' }
 
-        $script:savedPacksEnv = $env:CE_CHECKER_PACKS
-        $env:CE_CHECKER_PACKS = $rootA + [IO.Path]::PathSeparator + $rootB
+        # Pack folders go on the Import-Module line: CE_CHECKER_PACKS is ignored when elevated, as CI is.
         # 3>&1: warnings raised while the module loads aren't caught by -WarningVariable.
-        $script:packWarnings = @(Import-Module $script:modulePath -Force 3>&1)
+        $script:packWarnings = @(Import-Module $script:modulePath -Force -ArgumentList $null, @($rootA, $rootB) 3>&1)
         Set-TestTripwires
         $script:packs = @{}
         foreach ($p in @(Get-CEPack)) { $script:packs[(Split-Path -Leaf $p.Path)] = $p }
     }
     AfterAll {
-        $env:CE_CHECKER_PACKS = $script:savedPacksEnv
-        Remove-Item Env:\CE_CHECKER_DATA -ErrorAction SilentlyContinue
         Import-Module $script:modulePath -Force
         Set-TestTripwires
     }
@@ -2942,9 +3129,11 @@ throw 'boom'
         $data = Join-Path $TestDrive 'data-override'
         New-Item -ItemType Directory -Force -Path (Join-Path $data 'config') | Out-Null
         Set-Content -LiteralPath (Join-Path (Join-Path $data 'config') 'good-pack.json') -Value '{ "answer": 7 }'
-        $env:CE_CHECKER_DATA = $data
+        # The test folder is writable by the runner's account, which an elevated audit rightly distrusts.
+        Mock -ModuleName CEAudit Test-CEIsAdmin { $false }
+        InModuleScope CEAudit -Parameters @{ Data = $data } { param($Data) $script:CEDataRootOverride = $Data }
         try { (Get-CEConfig -Force).'good-pack'.answer | Should -Be 7 }
-        finally { Remove-Item Env:\CE_CHECKER_DATA; Get-CEConfig -Force | Out-Null }
+        finally { InModuleScope CEAudit { $script:CEDataRootOverride = $null }; Get-CEConfig -Force | Out-Null }
         (Get-CEConfig).'good-pack'.answer | Should -Be 42
     }
 
@@ -2978,18 +3167,11 @@ throw 'boom'
     It 'refuses a pack in the data folder that a standard user could change' -Skip:(-not ($PSVersionTable.PSVersion.Major -lt 6 -or $IsWindows)) {
         $data = Join-Path $TestDrive 'data-packs'
         New-TestPack -Root (Join-Path $data 'packs') -Folder 'user-owned' -Manifest @{ id = 'user-owned'; name = 'x'; version = '1.0.0' }
-        $env:CE_CHECKER_DATA = $data
-        $env:CE_CHECKER_PACKS = $null
-        try {
-            Import-Module $script:modulePath -Force -WarningAction SilentlyContinue
-            $p = Get-CEPack | Where-Object Id -eq 'user-owned'
-            $p.Status | Should -Be 'Skipped'
-            $p.Reason | Should -Match 'Not loaded because non-administrators could change it'
-        }
-        finally {
-            Remove-Item Env:\CE_CHECKER_DATA -ErrorAction SilentlyContinue
-            $env:CE_CHECKER_PACKS = $rootA + [IO.Path]::PathSeparator + $rootB
-        }
+        # A moved data folder: its packs get the same permission check as the default one.
+        Import-Module $script:modulePath -Force -WarningAction SilentlyContinue -ArgumentList $data
+        $p = Get-CEPack | Where-Object Id -eq 'user-owned'
+        $p.Status | Should -Be 'Skipped'
+        $p.Reason | Should -Match 'Not loaded because non-administrators could change it'
     }
 }
 

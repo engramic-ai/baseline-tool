@@ -7,7 +7,17 @@
       2. Check registry + all check definitions (Checks\*.ps1)
       3. Remediation library (Remediations\*.ps1)
       4. Reporting and changeset generation
+
+    Import-Module ... -ArgumentList <data folder>, <pack folders> moves the data
+    folder (default %ProgramData%\EngramicBaseline) and adds pack folders. Tests
+    and the scheduled audit's -DataRoot use this. Unlike the CE_CHECKER_DATA and
+    CE_CHECKER_PACKS environment variables it can't be inherited from a user's
+    session, so it still works when the audit is elevated (see Get-CEEnvironmentHook).
 #>
+param(
+    [string]$DataRootOverride,
+    [string[]]$PackPathOverride
+)
 
 Set-StrictMode -Version 2.0
 
@@ -22,6 +32,9 @@ $script:CEAIToolCache   = $null
 $script:CECurrentPack   = $null
 $script:CEPacks         = @()
 $script:CEPackConfigPaths = New-Object System.Collections.ArrayList
+$script:CEDataRootOverride = $DataRootOverride
+$script:CEPackPathOverride = @($PackPathOverride | Where-Object { $_ })
+$script:CEIgnoredEnvHooks = @{}
 
 $loadOrder = @('Private', 'Checks', 'Remediations', 'Public')
 foreach ($folder in $loadOrder) {

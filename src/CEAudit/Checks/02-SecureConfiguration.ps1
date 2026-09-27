@@ -200,11 +200,18 @@ Register-CECheck -Id 'SC-09' -Category 'SecureConfiguration' -Severity 'Medium' 
             }
         }
         # AI agents can run commands and change files on behalf of a cloud account, much like a remote access tool.
-        foreach ($tool in @((Get-CEAIToolState -Context $ctx).Tools | Where-Object { $_.CanActOnDevice })) {
+        $aiState = Get-CEAIToolState -Context $ctx
+        foreach ($tool in @($aiState.Tools | Where-Object { $_.CanActOnDevice })) {
             $results += New-CEResult -Status 'Warn' -Subject $tool.Name `
                 -Expected 'AI agents that can run commands or change files only where approved, with MFA on their account' `
                 -Actual "AI agent that can act on this device: $($tool.Name)" -Evidence @($tool.Signals) `
                 -Recommendation "Remove it if it isn't needed. If it is: record who approved it, make sure its account uses MFA (UA-07), don't run it with administrator rights (UA-10), and keep it asking before it runs commands or changes files. $($tool.Notes)".Trim()
+        }
+        # Places in the user's profile that could not be read may hold an agent that was not seen.
+        $notRead = Select-CENotRead -Records @(Get-CEObjectValue $aiState 'NotRead' @()) -Topics (Get-CEAIDetectionTopic -HidesTool)   # assign first: it returns ,array
+        if ($notRead.Count) {
+            $results += New-CENotReadResult -Records $notRead -Scope Machine -Expected 'Remote access tools and AI agents only where approved and protected with MFA' `
+                -Consequence 'an AI agent that can act on this device may not have been seen'
         }
         return $results
     }
@@ -277,25 +284,22 @@ Register-CECheck -Id 'SC-12' -Category 'SecureConfiguration' -Severity 'Medium' 
         $tooling = @($st.Wsl | Where-Object { $_.Tooling })
         if ($tooling.Count) { $items += "Container platform ($(@($tooling | ForEach-Object { $_.Name }) -join ', '))" }
         $items += @($st.Containers | ForEach-Object { "Container '$($_.Name)' ($($_.Image))" })
-        $evidence = @($items) + @($st.Notes)
+        $notRead = Select-CENotRead -Records @(Get-CEObjectValue $st 'NotRead' @()) -Topics @('profile', 'vm-inventory', 'vm-file')   # assign first: it returns ,array
+        $evidence = @($items) + @($st.Notes) + @($notRead | ForEach-Object { Format-CENotRead $_ })
         $expected = 'Each virtual machine, WSL distribution and container used for work meets the Cyber Essentials requirements, or is removed'
+        # Something not read may be a virtual machine, so there is no Pass then.
+        $notReadResult = if ($notRead.Count) { New-CENotReadResult -Records $notRead -Scope User -Expected $expected -Consequence 'a virtual machine may be missing from this list' }
 
         if ($items.Count -eq 0) {
             if (@($st.Notes).Count) {
-                # VM files skipped because this audit has more rights than the user are read only in the
-                # user's own session; rerunning elevated would skip them again.
-                $unread = @($st.UnreadVmFiles)
-                $vmFileNotes = @(Get-CEObjectValue $st 'VmFileNotes' @()) + @($unread)
-                $advice = @()
-                if (@($st.Notes | Where-Object { $vmFileNotes -notcontains $_ }).Count) { $advice += 'Run the audit again from an elevated prompt while signed in to check everything.' }
-                if ($unread.Count) { $advice += Get-CEUnreadVmFileAdvice }
-                if (@($vmFileNotes | Where-Object { $unread -notcontains $_ }).Count) { $advice += Get-CEVmFileNoteAdvice }
+                # Not about reading the profile: Hyper-V needs elevation, and a SYSTEM audit has no user session.
                 New-CEResult -Status 'Info' -Expected $expected -Actual "None found, but not everything could be checked: $(@($st.Notes) -join '; ')" -Evidence $evidence `
-                    -Recommendation ($advice -join ' ')
+                    -Recommendation 'Run the audit again from an elevated prompt while signed in to check everything.'
             }
-            else {
+            elseif (-not $notRead.Count) {
                 New-CEResult -Status 'Pass' -Expected $expected -Actual 'No virtual machines, WSL distributions or containers found' -Evidence $evidence
             }
+            if ($notRead.Count) { $notReadResult }
             return
         }
         New-CEResult -Status 'Manual' -Expected $expected -Actual "$($items.Count) found: $($items -join '; ')" -Evidence $evidence `
@@ -317,6 +321,7 @@ Register-CECheck -Id 'SC-12' -Category 'SecureConfiguration' -Severity 'Medium' 
                 -Actual "Windows drives (C: at /mnt/c) are mounted in: $($lines -join '; ')" -Evidence $evidence `
                 -Recommendation 'Anything running inside WSL can read and change your Windows files through /mnt/c. If you do not need that, add "[automount]" and "enabled = false" to /etc/wsl.conf in the distribution, then run "wsl --shutdown". If you do need it, record why.'
         }
+        if ($notRead.Count) { $notReadResult }
     }
 
 Register-CECheck -Id 'SC-13' -Category 'SecureConfiguration' -Severity 'High' -Scope 'User' `
@@ -328,24 +333,35 @@ Register-CECheck -Id 'SC-13' -Category 'SecureConfiguration' -Severity 'High' -S
         $mcp = Get-CEMcpInventory -Context $ctx
         $servers = @($mcp.mcpServers)
         $expected = 'AI agent credentials referenced via an environment variable or credential manager, not stored in plaintext config'
-        # Config files found but not read (behind a link, stored online only, or unreadable) are reported, never dropped.
-        $unread = @(@($mcp.mcpConfigsUnreadable) | ForEach-Object { "$($_.path) ($($_.toolId)): $($_.reason)" })
-        $unreadText = if ($unread.Count) { "; MCP config file(s) found but not read: $($unread -join '; ')" } else { '' }
-        # needsUserSession: skipped only because this audit has more rights than the user (a link, a file stored online only).
-        $userSession = @(@($mcp.mcpConfigsUnreadable) | ForEach-Object {
-                if ($_ -is [System.Collections.IDictionary]) { [bool]$_['needsUserSession'] } else { [bool](Get-CEObjectValue $_ 'needsUserSession' $false) }
-            })
-        $advice = @()
-        if ($userSession -contains $true) {
-            $advice += 'An elevated or SYSTEM audit does not follow the user''s junctions or symbolic links and does not download files stored online only. Run the audit without elevation while signed in as that user (the per-user probe, app\Invoke-CEUserProbe.ps1, runs this check; so do app\Invoke-CEAudit.ps1 and the GUI when not run as administrator) so these files are read.'
+        # What was not read is reported, never dropped: a config found and not read (file-content), or one whose
+        # existence could not be checked (existence: a symbolic link on the way, so it is not counted as found).
+        $records = Select-CENotRead -Records @($mcp.mcpConfigsUnreadable) -Topics @('mcp', 'profile')   # assign first: it returns ,array
+        $field = { param($r, $n, $d) Get-CENotReadField $r $n $d }
+        $line = {
+            param($r)
+            $path = [string](& $field $r 'path' '')
+            $tool = [string](& $field $r 'toolId' '')
+            $where = if ($path) { "$path ($tool)" } else { [string](& $field $r 'location' '') }
+            $count = [int](& $field $r 'count' 1)
+            "${where}$(if ($count -gt 1) { " ($count times)" }): $(& $field $r 'reason' '')"
         }
-        if ($userSession -contains $false) {
-            $advice += 'Check that each config file named can be read and is valid JSON, then run the audit again.'
+        $foundNotRead = @($records | Where-Object { (& $field $_ 'kind' '') -eq 'file-content' } | ForEach-Object { & $line $_ })
+        $notChecked = @($records | Where-Object { (& $field $_ 'kind' '') -ne 'file-content' } | ForEach-Object { & $line $_ })
+        $unread = @($foundNotRead) + @($notChecked)
+        $unreadText = ''
+        if ($foundNotRead.Count) { $unreadText += "; MCP config file(s) found, not read: $($foundNotRead -join '; ')" }
+        if ($notChecked.Count) { $unreadText += "; MCP config location(s) that could not be checked: $($notChecked -join '; ')" }
+        $advice = Get-CENotReadAdvice -Records $records -Scope User   # assign first: it returns ,array
+        if (@($records | Where-Object { [bool](& $field $_ 'needsUserSession' $false) }).Count) {
+            $advice += '(The per-user probe runs this check; so do app\Invoke-CEAudit.ps1 and the GUI when not run as administrator.)'
         }
         if (-not $servers.Count) {
             if ($unread.Count) {
+                $parts = @()
+                if ($foundNotRead.Count) { $parts += "$($foundNotRead.Count) MCP config file(s) were found, not read: $($foundNotRead -join '; ')" }
+                if ($notChecked.Count) { $parts += "$($notChecked.Count) MCP config location(s) could not be checked: $($notChecked -join '; ')" }
                 return New-CEResult -Status 'Manual' -Expected $expected `
-                    -Actual "No MCP servers were read, but $($unread.Count) MCP config file(s) were found and not read: $($unread -join '; ')" `
+                    -Actual "No MCP servers were read, but $($parts -join '; and ')" `
                     -Recommendation ($advice -join ' ') -Evidence $unread
             }
             return New-CEResult -Status 'NotApplicable' -Actual 'No MCP server configuration found for the recognised AI tools'
@@ -353,29 +369,34 @@ Register-CECheck -Id 'SC-13' -Category 'SecureConfiguration' -Severity 'High' -S
         if (@($servers | Where-Object { $_.transport -eq 'not-read' }).Count -eq $servers.Count) {
             return New-CEResult -Status 'Manual' -Expected $expected `
                 -Actual "MCP configuration is present, but shadow AI is collected per user; run as the signed-in user to check for plaintext credentials$unreadText" `
-                -Evidence $unread
+                -Recommendation ($advice -join ' ') -Evidence $unread
         }
         $plain = @()
         $plainAcl = @()
+        $plainAclUnread = @()
         foreach ($s in $servers) {
             $acl = [string]$s.configAclIssue
+            $aclUnread = [bool](Get-CENotReadField $s 'aclUnread' $false)
             foreach ($c in @($s.credentials)) {
                 if ($c.storage -ne 'plaintext-config') { continue }
                 $where = "$($s.serverName) in $($s.configPath): $($c.provider) $($c.type)"
-                if ($acl) { $plainAcl += "$where (config $acl)" } else { $plain += $where }
+                if ($acl) { $plainAcl += "$where (config $acl)" }
+                elseif ($aclUnread) { $plainAclUnread += "$where (permissions could not be read)" }
+                else { $plain += $where }
             }
         }
         if ($plainAcl.Count) {
             return New-CEResult -Status 'Fail' -Expected $expected `
                 -Actual "Plaintext credential(s) in a config other users can modify: $($plainAcl -join '; ')$unreadText" `
                 -Recommendation 'Move the value into a user environment variable and reference it (e.g. "${env:NAME}"), and restrict the config file so only its owner can write to it.' `
-                -Evidence (@($plainAcl) + @($unread))
+                -Evidence (@($plainAcl) + @($plainAclUnread) + @($plain) + @($unread))
         }
-        if ($plain.Count) {
+        if ($plain.Count -or $plainAclUnread.Count) {
+            $rec = 'Move the value to a user environment variable and reference it as "${env:NAME}" so the secret is not stored in the config file.'
+            if ($plainAclUnread.Count) { $rec += ' Check that only the file''s owner can change it: its permissions could not be read.' }
             return New-CEResult -Status 'Warn' -Expected $expected `
-                -Actual "Credential(s) held in plaintext config: $($plain -join '; ')$unreadText" `
-                -Recommendation 'Move the value to a user environment variable and reference it as "${env:NAME}" so the secret is not stored in the config file.' `
-                -Evidence (@($plain) + @($unread))
+                -Actual "Credential(s) held in plaintext config: $(@(@($plain) + @($plainAclUnread)) -join '; ')$unreadText" `
+                -Recommendation $rec -Evidence (@($plain) + @($plainAclUnread) + @($unread))
         }
         if ($unread.Count) {
             # A config that was not read may hold a plaintext credential, so this is not a Pass.

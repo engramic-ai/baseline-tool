@@ -22,6 +22,17 @@ function Get-CEAIToolSignal {
     return $null
 }
 
+function Get-CEAIDetectionTopic {
+    <#
+        The not-read topics (15-ProfileReads.ps1) that AI tool detection depends on. -HidesTool
+        leaves out 'browser-installed': a browser whose installed marker could not be checked still
+        has its tool reported, and its service kept, so SC-09 and UA-07 miss nothing because of it.
+    #>
+    param([switch]$HidesTool)
+    if ($HidesTool) { return , @('profile', 'vscode', 'vscode-builtin', 'paths', 'browser') }
+    return , @('profile', 'vscode', 'vscode-builtin', 'paths', 'browser', 'browser-installed')
+}
+
 function Get-CEAIToolCatalog {
     <#
         Catalog tools looked for on Windows, each with its Windows signals as .Signals. A tool found
@@ -45,34 +56,31 @@ function Get-CEVsCodeBuiltInExtensionDir {
     <#
         Folders holding the extensions VS Code ships with (Copilot Chat since 1.13x). The user
         installer puts them under the profile; the machine installer, which winget picks when
-        elevated, under Program Files. Only folders that exist are returned; under the profile,
-        unless -FollowLinks (an audit in the user's own session), only those reached through plain
-        folders (no junctions or symbolic links). Tests mock this.
+        elevated, under Program Files. Only folders that exist are returned. Under the profile they
+        are found through the profile read layer (-Above: the audit has more rights than the user),
+        which writes what it could not look at to -Log. Tests mock this.
     #>
-    param([string]$ProfilePath, [switch]$FollowLinks)
+    param([string]$ProfilePath, $Log, [bool]$Above = $true)
     $dirs = @()
-    # The user's own install: the user controls their profile, so through plain folders only unless -FollowLinks.
-    if ($ProfilePath -and (Test-CELocalFilePath $ProfilePath)) {
+    if (Test-CEProfileReady $ProfilePath) {
         foreach ($name in 'Microsoft VS Code', 'Microsoft VS Code Insiders') {
             $rel = "AppData\Local\Programs\$name"
-            if (-not (Test-CEPlainDirectoryChain -Base $ProfilePath -Relative $rel -FollowLinks:$FollowLinks)) { continue }
-            $install = Join-Path $ProfilePath $rel
-            $subs = Get-CEPlainChildName -Path $install -Max 64 -IncludeLinks:$FollowLinks   # assign first: it returns ,array
-            foreach ($sub in @('resources\app\extensions') + @($subs | ForEach-Object { "$_\resources\app\extensions" })) {
-                if (Test-CEPlainDirectoryChain -Base $install -Relative $sub -FollowLinks:$FollowLinks) { $dirs += Join-Path $install $sub }
+            # Older layouts: <install>\resources\app\extensions. Since 1.13x the app lives in a
+            # commit-hash subfolder: <install>\<hash>\resources\app\extensions. Each is gone into.
+            $subs = Get-CEProfileChildName -ProfilePath $ProfilePath -Relative $rel -Max 64 -Descend -Log $Log -Above $Above -Topic 'vscode-builtin'   # assign first: it returns ,array
+            foreach ($sub in @("$rel\resources\app\extensions") + @($subs | ForEach-Object { "$rel\$_\resources\app\extensions" })) {
+                if ((Test-CEProfileItem -ProfilePath $ProfilePath -Relative $sub -Log $Log -Above $Above -Topic 'vscode-builtin') -eq $true) { $dirs += Join-Path $ProfilePath $sub }
             }
         }
     }
     $installs = @()
-    # The 64-bit Program Files even from a 32-bit PowerShell (see Get-CEProgramFilesPath).
+    # The 64-bit Program Files even from a 32-bit PowerShell (see Get-CEProgramFilesPath). Only administrators can change these.
     foreach ($root in @((Get-CEProgramFilesPath 'programFiles'), (Get-CEProgramFilesPath 'programFilesX86') | Where-Object { $_ } | Select-Object -Unique)) {
         $installs += @('Microsoft VS Code', 'Microsoft VS Code Insiders' | ForEach-Object { Join-Path $root $_ })
     }
     foreach ($install in ($installs | Where-Object { Test-Path -LiteralPath $_ })) {
-        # Older layouts: <install>\resources\app\extensions. Since 1.13x the app lives in a
-        # commit-hash subfolder: <install>\<hash>\resources\app\extensions.
         $candidates = @((Join-Path $install 'resources\app\extensions'))
-        $subs = Get-CEPlainChildName -Path $install -Max 64   # assign first: it returns ,array
+        $subs = Get-CEMachineChildName -Path $install -Max 64   # assign first: it returns ,array
         $candidates += @($subs | ForEach-Object { Join-Path (Join-Path $install $_) 'resources\app\extensions' })
         $dirs += @($candidates | Where-Object { Test-Path -LiteralPath $_ })
     }
@@ -82,30 +90,38 @@ function Get-CEVsCodeBuiltInExtensionDir {
 function Get-CEVsCodeBuiltInExtensionId {
     <#
         Identity of a built-in extension folder: publisher.name from its package.json (the folder
-        itself is just "copilot" for GitHub Copilot Chat), falling back to the folder name. The
-        per-user install is in a profile the user controls, so package.json is read only when it
-        is at most 2 MB (Copilot Chat's is about 220 KB), and never beyond what is left of -Budget,
-        a byte count shared by every folder in one audit; the bytes read, not the characters they
-        decode to, come off it. Unless -FollowLinks (an audit in the user's own session), it is not
-        read when it is a link or stored online only (Read-CEBoundedText).
+        itself is just "copilot" for GitHub Copilot Chat), falling back to the folder name.
+        package.json is read only when it is at most 2 MB (Copilot Chat's is about 220 KB), and never
+        beyond what is left of -Budget, a byte count shared by every folder in one audit; the bytes
+        read, not the characters they decode to, come off it. A folder below -ProfilePath (the
+        per-user install, in a profile the user controls) is read through the profile read layer,
+        and a file it skips is recorded in -Log under -Location (one record per extensions folder).
+        Elsewhere (Program Files), unless -FollowLinks, a package.json that is a link or stored
+        online only is not read.
     #>
-    param([Parameter(Mandatory)][string]$Folder, [ref]$Budget, [switch]$FollowLinks)
+    param([Parameter(Mandatory)][string]$Folder, [ref]$Budget, [switch]$FollowLinks, [string]$ProfilePath, $Log, [bool]$Above = $true, [string]$Location)
     $fallback = (Split-Path -Leaf $Folder).ToLowerInvariant()
-    $max = [long]2MB
-    if ($null -ne $Budget) { $max = [Math]::Min($max, [long]$Budget.Value) }
-    if ($max -le 0) { return $fallback }
     $pkg = Join-Path $Folder 'package.json'
-    $bytes = [ref][long]0
-    $text = Read-CEBoundedText -Path $pkg -MaxBytes ([int]$max) -FollowLinks:$FollowLinks -ByteCount $bytes
+    $rel = Get-CERelativeToProfile -Path $pkg -ProfilePath $ProfilePath
+    if ($rel -and (Test-CEProfileReady $ProfilePath)) {
+        $text = Read-CEProfileFile -ProfilePath $ProfilePath -Relative $rel -MaxBytes 2MB -Budget $Budget -Log $Log -Above $Above -Topic 'vscode-builtin' -Location $Location
+    }
+    else {
+        $max = [long]2MB
+        if ($null -ne $Budget) { $max = [Math]::Min($max, [long]$Budget.Value) }
+        if ($max -le 0) { return $fallback }
+        $bytes = [ref][long]0
+        $text = Read-CEBoundedText -Path $pkg -MaxBytes ([int]$max) -FollowLinks:$FollowLinks -ByteCount $bytes
+        if ($null -ne $text -and $null -ne $Budget) { $Budget.Value = [long]$Budget.Value - [long]$bytes.Value }
+    }
     if ($null -eq $text) { return $fallback }
-    if ($null -ne $Budget) { $Budget.Value = [long]$Budget.Value - [long]$bytes.Value }
     try {
         $j = $text | ConvertFrom-Json -ErrorAction Stop
         $publisher = [string](Get-CEObjectValue $j 'publisher' '')
         $name = [string](Get-CEObjectValue $j 'name' '')
         if ($publisher -and $name) { return "$publisher.$name".ToLowerInvariant() }
     }
-    catch { Write-Verbose "Could not read ${pkg}: $($_.Exception.Message)" }
+    catch { Write-Verbose "Could not parse ${pkg}: $(Get-CEErrorTypeName $_)" }
     return $fallback
 }
 
@@ -193,7 +209,7 @@ namespace CEAudit {
 function Get-CEAIToolState {
     <# AI tools found on this device, gathered once per audit. #>
     param($Context)
-    $cacheKey = "$($Context.ComputerName)|$($Context.AuditTime.Ticks)|$($Context.IsElevated)"
+    $cacheKey = "$($Context.ComputerName)|$($Context.AuditTime.Ticks)|$($Context.IsElevated)|$($Context.IsSystem)"
     if ($script:CEAIToolCache -and $script:CEAIToolCache.Key -eq $cacheKey) { return $script:CEAIToolCache.State }
     $state = Get-CEAIToolStateUncached -Context $Context
     $script:CEAIToolCache = @{ Key = $cacheKey; State = $state }
@@ -206,32 +222,52 @@ function Get-CEAIToolStateUncached {
     $software = @(Get-CEInstalledSoftware)
     $store = Get-CEStorePackageName
     $profilePath = Get-CEUserProfilePath -Context $Context
-    # The profile belongs to the user: an audit with more rights than them (SYSTEM, or elevated) must
-    # not follow their links. In their own non-elevated session their links are followed.
-    $follow = -not (Test-CEAboveUserRights -Context $Context)
+    # The profile belongs to the user: an audit with more rights than them (SYSTEM, or elevated) reads
+    # it through the profile read layer's rules. Whatever could not be looked at is recorded in $log.
+    $above = Test-CEAboveUserRights -Context $Context
+    $log = New-CENotReadLog
+    $profileOk = Test-CEProfileReady $profilePath
+    if (-not $profilePath) {
+        Add-CENotRead -Log $log -Location '%USERPROFILE%' -Kind 'existence' -Reason $script:CENotReadText.NoProfile -Topic 'profile' `
+            -Remedy 'Run the audit while the person who uses this device is signed in at the console.'
+    }
+    elseif (-not $profileOk) {
+        Add-CENotRead -Log $log -Location '%USERPROFILE%' -Kind 'folder-listing' -Reason $script:CENotReadText.NotLocal -Topic 'profile' `
+            -Remedy 'Check the AI tools in this profile by hand.'
+    }
     $extensions = @()
     $builtIn = @()
-    if ($profilePath -and (Test-CELocalFilePath $profilePath)) {
+    if ($profileOk) {
         foreach ($folder in '.vscode\extensions', '.vscode-insiders\extensions') {
-            if (-not (Test-CEPlainDirectoryChain -Base $profilePath -Relative $folder -FollowLinks:$follow)) { continue }
             # Names only, and capped: listing a folder does not go into its children, so an extension
             # folder that is a link (as when developing one) still counts by name and is never followed.
-            $names = Get-CEPlainChildName -Path (Join-Path $profilePath $folder) -Max 5000 -IncludeLinks   # assign first: it returns ,array
+            $names = Get-CEProfileChildName -ProfilePath $profilePath -Relative $folder -Max 5000 -Log $log -Above $above -Topic 'vscode'   # assign first: it returns ,array
             $extensions += @($names)
         }
     }
     # Extensions VS Code ships with (Copilot Chat since 1.13x) live under the install, not the user's
     # extensions folder, in unversioned directories such as github.copilot-chat.
-    $builtInDirs = Get-CEVsCodeBuiltInExtensionDir -ProfilePath $profilePath -FollowLinks:$follow   # assign first: it returns ,array and @(...) would nest it
-    # Listings are capped, package.json reads share one byte budget, and with more rights than the user, links are skipped.
+    $builtInDirs = Get-CEVsCodeBuiltInExtensionDir -ProfilePath $(if ($profileOk) { $profilePath } else { '' }) -Log $log -Above $above   # assign first: it returns ,array and @(...) would nest it
+    # Listings are capped, and package.json reads share one byte budget.
     $pkgBudget = [long]32MB
     foreach ($folder in $builtInDirs) {
-        $names = Get-CEPlainChildName -Path $folder -Max 1000 -IncludeLinks:$follow   # assign first: it returns ,array
-        foreach ($n in $names) { $builtIn += Get-CEVsCodeBuiltInExtensionId -Folder (Join-Path $folder $n) -Budget ([ref]$pkgBudget) -FollowLinks:$follow }
+        $rel = if ($profileOk) { Get-CERelativeToProfile -Path $folder -ProfilePath $profilePath } else { $null }
+        if ($rel) {
+            # Names only here; each package.json is then read through the layer, and one record per folder stands for every skipped file.
+            $names = Get-CEProfileChildName -ProfilePath $profilePath -Relative $rel -Max 1000 -Log $log -Above $above -Topic 'vscode-builtin'
+            $loc = Get-CEProfileLocation $rel
+        }
+        else {
+            $names = Get-CEMachineChildName -Path $folder -Max 1000
+            $loc = ''
+        }
+        foreach ($n in $names) {
+            $builtIn += Get-CEVsCodeBuiltInExtensionId -Folder (Join-Path $folder $n) -Budget ([ref]$pkgBudget) -FollowLinks:(-not $above) -ProfilePath $(if ($profileOk) { $profilePath } else { '' }) -Log $log -Above $above -Location $loc
+        }
     }
     # AI browser extensions: folder and file names in the user's browser profiles, only for ids in the catalog.
     $extIds = Get-CEBrowserExtensionIdSet -Catalog $catalog
-    $browserExt = Get-CEBrowserExtensionList -ProfilePath $profilePath -ChromiumIds $extIds.Chromium -FirefoxIds $extIds.Firefox -StorePackages $store -FollowLinks:$follow   # assign first: it returns ,array
+    $browserExt = Get-CEBrowserExtensionList -ProfilePath $(if ($profileOk) { $profilePath } else { '' }) -ChromiumIds $extIds.Chromium -FirefoxIds $extIds.Firefox -StorePackages $store -Log $log -Above $above   # assign first: it returns ,array
     $processes = Get-CEProcessList
     $like = { param($value, $pattern) (-not $pattern) -or ("$value" -like $pattern) }
     $programText = { param($sw) if ($sw.Version -and $sw.Name -notlike "*$($sw.Version)*") { "Installed program: $($sw.Name) $($sw.Version)" } else { "Installed program: $($sw.Name)" } }
@@ -250,10 +286,10 @@ function Get-CEAIToolStateUncached {
         $keys = @(Get-CEObjectValue $w 'uninstallKeys' @())
         if ($keys.Count) { $signals += @($software | Where-Object { $keys -contains $_.KeyName } | ForEach-Object { & $programText $_ }) }
         foreach ($a in @(Get-CEObjectValue $w 'appx' @())) { if ($store -contains $a) { $signals += "Store app: $a" } }
-        if ($profilePath) {
+        if ($profileOk) {
             foreach ($rel in @(Get-CEObjectValue $w 'paths' @())) {
-                # Attributes only. With more rights than the user, only through plain folders; the item itself is never followed.
-                if (Test-CEPlainProfileItem -ProfilePath $profilePath -Relative $rel -FollowLinks:$follow) { $signals += "Found %USERPROFILE%\$rel" }
+                # Attributes only: the item itself is never followed. $null (a folder on the way was not passed) is recorded.
+                if ((Test-CEProfileItem -ProfilePath $profilePath -Relative ([string]$rel) -Log $log -Above $above -Topic 'paths') -eq $true) { $signals += "Found %USERPROFILE%\$rel" }
             }
         }
         foreach ($pattern in @(Get-CEObjectValue $w 'vscodeExtensions' @())) {
@@ -281,9 +317,9 @@ function Get-CEAIToolStateUncached {
                 $running += $proc
             }
         }
-        # Found only in the profile of a browser that is no longer installed. Counted before duplicates
-        # are dropped, so each match stands for one signal.
-        $leftoverOnly = ($extAll.Count -gt 0 -and @($extAll | Where-Object { $_.BrowserFound }).Count -eq 0 -and $signals.Count -eq $extAll.Count -and $running.Count -eq 0)
+        # Found only in the profile of a browser that is known not to be installed ($null, not checked, is
+        # not enough). Counted before duplicates are dropped, so each match stands for one signal.
+        $leftoverOnly = ($extAll.Count -gt 0 -and @($extAll | Where-Object { $_.BrowserFound -ne $false }).Count -eq 0 -and $signals.Count -eq $extAll.Count -and $running.Count -eq 0)
         $signals = @($signals | Select-Object -Unique)
         if ($signals.Count -eq 0 -and $running.Count -eq 0) { continue }
         $canAct = [bool](Get-CEObjectValue $t 'canActOnDevice' $false)
@@ -331,7 +367,8 @@ function Get-CEAIToolStateUncached {
         Where-Object { $_ -and $_ -ne 'node.exe' } | Sort-Object -Unique)
     $hidden = @($processes | Where-Object { $agentImages -contains $_.Name -and -not $_.Path -and -not $_.CommandLine -and -not $claimed.ContainsKey($_.ProcessId) } |
         ForEach-Object { "$($_.Name) (pid $($_.ProcessId))" })
-    return [pscustomobject]@{ Tools = $tools.ToArray(); UninspectedProcesses = $hidden; ProfileChecked = [bool]$profilePath }
+    # NotRead: what could not be looked at in the profile (15-ProfileReads.ps1), for the checks to report.
+    return [pscustomobject]@{ Tools = $tools.ToArray(); UninspectedProcesses = $hidden; NotRead = (Get-CENotReadRecordArray $log) }
 }
 
 function Get-CEAiPosture {
@@ -340,7 +377,10 @@ function Get-CEAiPosture {
         whether they are contained, and where they run (WSL, containers). A
         deviation is an agent running as administrator/SYSTEM or a distribution
         that logs in as root. Read-only; only meaningful in the user's own
-        session (Invoke-CEUserProbe.ps1).
+        session (Invoke-CEUserProbe.ps1). notRead lists every location that
+        could not be read (15-ProfileReads.ps1); scanComplete is false when one
+        of them could hide an AI tool, a virtual machine or an MCP config, and
+        then agentsFound, environments and contained describe only what was seen.
     #>
     [CmdletBinding()]
     param($Context)
@@ -386,6 +426,28 @@ function Get-CEAiPosture {
     $agentDeviations = @($agents | Where-Object { $_.elevated -or $_.asSystem }).Count + @($wslEnvs | Where-Object { $_.defaultUidRoot }).Count
     $deviations = [int]$agentDeviations + $plaintext
 
+    # Everything not read, once each (the three states can all record the missing profile).
+    $notRead = New-Object System.Collections.ArrayList
+    $seen = @{}
+    $all = @(Get-CEObjectValue $ai 'NotRead' @()) + @(Get-CEObjectValue $virt 'NotRead' @()) + @($mcp.mcpConfigsUnreadable)
+    foreach ($r in @($all | Where-Object { $null -ne $_ })) {
+        $rec = [ordered]@{
+            location         = [string](Get-CENotReadField $r 'Location' (Get-CENotReadField $r 'location' ''))
+            kind             = [string](Get-CENotReadField $r 'Kind' (Get-CENotReadField $r 'kind' ''))
+            reason           = [string](Get-CENotReadField $r 'Reason' (Get-CENotReadField $r 'reason' ''))
+            remedy           = [string](Get-CENotReadField $r 'Remedy' (Get-CENotReadField $r 'remedy' ''))
+            topic            = [string](Get-CENotReadField $r 'Topic' (Get-CENotReadField $r 'topic' ''))
+            needsUserSession = [bool](Get-CENotReadField $r 'NeedsUserSession' (Get-CENotReadField $r 'needsUserSession' $false))
+            count            = [int](Get-CENotReadField $r 'Count' (Get-CENotReadField $r 'count' 1))
+        }
+        $key = "$($rec.location)|$($rec.kind)|$($rec.reason)|$($rec.topic)"
+        if ($seen.ContainsKey($key)) { continue }
+        $seen[$key] = $true
+        [void]$notRead.Add($rec)
+    }
+    # Every topic can hide something a check looks for, except the version of an extension already found.
+    $scanComplete = (@($notRead | Where-Object { $_.topic -ne 'extension-version' }).Count -eq 0)
+
     return [ordered]@{
         agentsFound          = @($agents).Count
         contained            = ([int]$deviations -eq 0)
@@ -399,5 +461,7 @@ function Get-CEAiPosture {
         credentialsFound     = [int]$mcp.credentialsFound
         credentialsPlaintext = $plaintext
         scanBounds           = [string]$mcp.scanBounds
+        scanComplete         = $scanComplete
+        notRead              = @($notRead)
     }
 }

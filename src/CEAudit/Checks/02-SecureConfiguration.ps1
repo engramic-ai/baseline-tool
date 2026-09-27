@@ -282,8 +282,16 @@ Register-CECheck -Id 'SC-12' -Category 'SecureConfiguration' -Severity 'Medium' 
 
         if ($items.Count -eq 0) {
             if (@($st.Notes).Count) {
+                # VM files skipped because this audit has more rights than the user are read only in the
+                # user's own session; rerunning elevated would skip them again.
+                $unread = @($st.UnreadVmFiles)
+                $vmFileNotes = @(Get-CEObjectValue $st 'VmFileNotes' @()) + @($unread)
+                $advice = @()
+                if (@($st.Notes | Where-Object { $vmFileNotes -notcontains $_ }).Count) { $advice += 'Run the audit again from an elevated prompt while signed in to check everything.' }
+                if ($unread.Count) { $advice += Get-CEUnreadVmFileAdvice }
+                if (@($vmFileNotes | Where-Object { $unread -notcontains $_ }).Count) { $advice += Get-CEVmFileNoteAdvice }
                 New-CEResult -Status 'Info' -Expected $expected -Actual "None found, but not everything could be checked: $(@($st.Notes) -join '; ')" -Evidence $evidence `
-                    -Recommendation 'Run the audit again from an elevated prompt while signed in to check everything.'
+                    -Recommendation ($advice -join ' ')
             }
             else {
                 New-CEResult -Status 'Pass' -Expected $expected -Actual 'No virtual machines, WSL distributions or containers found' -Evidence $evidence
@@ -319,13 +327,33 @@ Register-CECheck -Id 'SC-13' -Category 'SecureConfiguration' -Severity 'High' -S
         param($ctx)
         $mcp = Get-CEMcpInventory -Context $ctx
         $servers = @($mcp.mcpServers)
+        $expected = 'AI agent credentials referenced via an environment variable or credential manager, not stored in plaintext config'
+        # Config files found but not read (behind a link, stored online only, or unreadable) are reported, never dropped.
+        $unread = @(@($mcp.mcpConfigsUnreadable) | ForEach-Object { "$($_.path) ($($_.toolId)): $($_.reason)" })
+        $unreadText = if ($unread.Count) { "; MCP config file(s) found but not read: $($unread -join '; ')" } else { '' }
+        # needsUserSession: skipped only because this audit has more rights than the user (a link, a file stored online only).
+        $userSession = @(@($mcp.mcpConfigsUnreadable) | ForEach-Object {
+                if ($_ -is [System.Collections.IDictionary]) { [bool]$_['needsUserSession'] } else { [bool](Get-CEObjectValue $_ 'needsUserSession' $false) }
+            })
+        $advice = @()
+        if ($userSession -contains $true) {
+            $advice += 'An elevated or SYSTEM audit does not follow the user''s junctions or symbolic links and does not download files stored online only. Run the audit without elevation while signed in as that user (the per-user probe, app\Invoke-CEUserProbe.ps1, runs this check; so do app\Invoke-CEAudit.ps1 and the GUI when not run as administrator) so these files are read.'
+        }
+        if ($userSession -contains $false) {
+            $advice += 'Check that each config file named can be read and is valid JSON, then run the audit again.'
+        }
         if (-not $servers.Count) {
+            if ($unread.Count) {
+                return New-CEResult -Status 'Manual' -Expected $expected `
+                    -Actual "No MCP servers were read, but $($unread.Count) MCP config file(s) were found and not read: $($unread -join '; ')" `
+                    -Recommendation ($advice -join ' ') -Evidence $unread
+            }
             return New-CEResult -Status 'NotApplicable' -Actual 'No MCP server configuration found for the recognised AI tools'
         }
-        $expected = 'AI agent credentials referenced via an environment variable or credential manager, not stored in plaintext config'
         if (@($servers | Where-Object { $_.transport -eq 'not-read' }).Count -eq $servers.Count) {
             return New-CEResult -Status 'Manual' -Expected $expected `
-                -Actual 'MCP configuration is present, but shadow AI is collected per user; run as the signed-in user to check for plaintext credentials'
+                -Actual "MCP configuration is present, but shadow AI is collected per user; run as the signed-in user to check for plaintext credentials$unreadText" `
+                -Evidence $unread
         }
         $plain = @()
         $plainAcl = @()
@@ -339,15 +367,21 @@ Register-CECheck -Id 'SC-13' -Category 'SecureConfiguration' -Severity 'High' -S
         }
         if ($plainAcl.Count) {
             return New-CEResult -Status 'Fail' -Expected $expected `
-                -Actual "Plaintext credential(s) in a config other users can modify: $($plainAcl -join '; ')" `
+                -Actual "Plaintext credential(s) in a config other users can modify: $($plainAcl -join '; ')$unreadText" `
                 -Recommendation 'Move the value into a user environment variable and reference it (e.g. "${env:NAME}"), and restrict the config file so only its owner can write to it.' `
-                -Evidence $plainAcl
+                -Evidence (@($plainAcl) + @($unread))
         }
         if ($plain.Count) {
             return New-CEResult -Status 'Warn' -Expected $expected `
-                -Actual "Credential(s) held in plaintext config: $($plain -join '; ')" `
+                -Actual "Credential(s) held in plaintext config: $($plain -join '; ')$unreadText" `
                 -Recommendation 'Move the value to a user environment variable and reference it as "${env:NAME}" so the secret is not stored in the config file.' `
-                -Evidence $plain
+                -Evidence (@($plain) + @($unread))
+        }
+        if ($unread.Count) {
+            # A config that was not read may hold a plaintext credential, so this is not a Pass.
+            return New-CEResult -Status 'Manual' -Expected $expected `
+                -Actual "$($servers.Count) MCP server(s) configured with no plaintext credentials$unreadText" `
+                -Recommendation ($advice -join ' ') -Evidence $unread
         }
         return New-CEResult -Status 'Pass' -Expected $expected `
             -Actual "$($servers.Count) MCP server(s) configured; no plaintext credentials found"

@@ -1346,7 +1346,7 @@ function Set-CEAiTab {
     $unreadable = @(Get-UiField $Ai 'mcpConfigsUnreadable' @()).Count
     $dot = ' ' + [char]0xB7 + ' '
     $meta = "$found config file$(if ($found -ne 1) { 's' }) found$dot$parsed parsed"
-    if ($unreadable) { $meta += "$dot$unreadable unreadable" }
+    if ($unreadable) { $meta += "$dot$unreadable not read" }
     $bounds = [string](Get-UiField $Ai 'scanBounds' '')
     if ($bounds) { $meta += "$dot$bounds" }
     $ui.AiMcpMeta.Text = $meta

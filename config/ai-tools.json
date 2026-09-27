@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "notes": "AI assistants, agents, AI browsers and AI browser extensions recognised on a device, by operating system (UA-07, SC-09, UA-10). Shared fields: id, name, vendor, service (the cloud account to attest MFA for; null when it varies or is local), canActOnDevice (the tool can run commands, edit files or control apps, so it is treated like a remote access tool) and sources. browserExtensions (shared by every operating system): the tool's browser extension ids, each with its store: chrome (Chrome Web Store; also used by Edge, Brave, Vivaldi, Opera, Arc and Comet), edge (Edge Add-ons), opera (Opera add-ons) or firefox (addons.mozilla.org add-on id). Every Chromium browser profile is checked for every chrome, edge and opera id, and every Firefox profile for every firefox id. Where each browser keeps its profiles is in browser-profiles.json. A tool with browserExtensions is looked for on an operating system even without a block for it; enabled: false in that block turns this off too. How to detect the tool is given per operating system: 'windows' now, with 'macos' and 'linux' to follow. A tool without a block for an operating system is not looked for there. Windows signals: programs (Add/Remove Programs name and optional publisher), uninstallKeys, appx (Store package name), processes (image, optional path and command line patterns), paths (under the user profile), vscodeExtensions (folder patterns under .vscode\\extensions) and mcpConfigs (MCP client configuration files). enabled: false in an operating system's block keeps the entry listed without detecting it there (e.g. apps preinstalled with Windows). Names were checked against vendor documentation, winget-pkgs manifests, npm and the browser extension stores; see sources. Candidate for hosting on the catalog service. schemaVersion changes only when an older reader would misread the file; a new optional field does not change it.",
+  "notes": "AI assistants, agents, AI browsers and AI browser extensions recognised on a device, by operating system (UA-07, SC-09, UA-10). Shared fields: id, name, vendor, service (the cloud account to attest MFA for; null when it varies or is local), canActOnDevice (the tool can run commands, edit files or control apps, so it is treated like a remote access tool) and sources. browserExtensions (shared by every operating system): the tool's browser extension ids, each with its store: chrome (Chrome Web Store; also used by Edge, Brave, Vivaldi, Opera, Arc and Comet), edge (Edge Add-ons), opera (Opera add-ons) or firefox (addons.mozilla.org add-on id). Every Chromium browser profile is checked for every chrome, edge and opera id, and every Firefox profile for every firefox id. Where each browser keeps its profiles is in browser-profiles.json. A tool with browserExtensions is looked for on an operating system even without a block for it; enabled: false in that block turns this off too. How to detect the tool is given per operating system: 'windows' now, with 'macos' and 'linux' to follow. A tool with neither a block for an operating system nor browserExtensions is not looked for there. Windows signals: programs (Add/Remove Programs name and optional publisher), uninstallKeys, appx (Store package name), processes (image, optional path and command line patterns), paths (under the user profile), vscodeExtensions (folder patterns under .vscode\\extensions) and mcpConfigs (MCP client configuration files). enabled: false in an operating system's block keeps the entry listed without detecting it there (e.g. apps preinstalled with Windows). Names were checked against vendor documentation, winget-pkgs manifests, npm and the browser extension stores; see sources. Candidate for hosting on the catalog service. schemaVersion changes only when an older reader would misread the file; a new optional field does not change it.",
   "lastReviewed": "2026-09-26",
   "tools": [
     {
@@ -617,7 +617,7 @@
           }
         ],
         "paths": [
-          "AppData\\Local\\Perplexity\\Comet"
+          "AppData\\Local\\Perplexity\\Comet\\Application"
         ],
         "vscodeExtensions": []
       },
@@ -636,7 +636,12 @@
       "canActOnDevice": false,
       "notes": "AI browser whose agents act on web pages for the person; outside agents can drive it through its MCP connector. Not the 2017 concept browser of the same name.",
       "windows": {
-        "programs": [],
+        "programs": [
+          {
+            "name": "Opera Neon*",
+            "publisher": "Opera*"
+          }
+        ],
         "uninstallKeys": [],
         "appx": [],
         "processes": [
@@ -689,7 +694,7 @@
           }
         ],
         "paths": [
-          "AppData\\Local\\GensparkSoftware\\Genspark-Browser"
+          "AppData\\Local\\GensparkSoftware\\Genspark-Browser\\Application"
         ],
         "vscodeExtensions": []
       },

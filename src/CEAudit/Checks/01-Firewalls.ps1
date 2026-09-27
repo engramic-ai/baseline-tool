@@ -157,7 +157,13 @@ Register-CECheck -Id 'FW-07' -Category 'Firewalls' -Severity 'Medium' `
     -Test {
         param($ctx)
         $st = Get-CEVirtualisationState -Context $ctx
-        $any = @($st.HyperV.Machines).Count + @($st.VMware).Count + @($st.VirtualBox).Count + @($st.Wsl).Count + @($st.Containers).Count + @($st.Listeners).Count
+        # VM files found but not read count as found: they may be bridged. UnreadVmFiles are those only an
+        # elevated or SYSTEM audit skips; the per-user probe does not run this check, so the advice for
+        # them is a full audit in the user's own session.
+        $vmFileNotes = @(Get-CEObjectValue $st 'VmFileNotes' @())
+        $unread = @($st.UnreadVmFiles)
+        $vmFileNotes += @($unread | Where-Object { $vmFileNotes -notcontains $_ })
+        $any = @($st.HyperV.Machines).Count + @($st.VMware).Count + @($st.VirtualBox).Count + @($st.Wsl).Count + @($st.Containers).Count + @($st.Listeners).Count + $vmFileNotes.Count
         if ($any -eq 0 -and -not $st.WslNetworking) {
             return New-CEResult -Status 'NotApplicable' -Actual 'No virtual machines, WSL distributions or containers found'
         }
@@ -178,6 +184,14 @@ Register-CECheck -Id 'FW-07' -Category 'Firewalls' -Severity 'Medium' `
         if ($st.WslNetworking) { $evidence += "WSL networkingMode=$($st.WslNetworking)" }
 
         if ($bridged.Count -eq 0 -and $published.Count -eq 0) {
+            if ($vmFileNotes.Count) {
+                $advice = @()
+                if ($unread.Count) { $advice += Get-CEUnreadVmFileAdvice -MachineCheck }
+                if (@($vmFileNotes | Where-Object { $unread -notcontains $_ }).Count) { $advice += Get-CEVmFileNoteAdvice }
+                return New-CEResult -Status 'Info' -Expected 'No bridged networking or ports published to the network' `
+                    -Actual "Virtual machine files found but not checked: $($vmFileNotes -join '; ')" -Evidence $evidence `
+                    -Recommendation ($advice -join ' ')
+            }
             $unchecked = if (@($st.Notes).Count) { " (not checked: $(@($st.Notes) -join '; '))" } else { '' }
             return New-CEResult -Status 'Pass' -Expected 'No bridged networking or ports published to the network' -Actual "Virtual machines and containers are not exposed to the network$unchecked" -Evidence $evidence
         }

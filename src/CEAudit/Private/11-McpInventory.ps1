@@ -237,9 +237,13 @@ function ConvertTo-CEMcpServers {
 function Get-CEMcpInventory {
     <#
         Per-user MCP inventory. In a machine / SYSTEM context, records presence,
-        path and ACL only (never opens a file). In the user's own session, parses
-        each config and classifies its credentials, storing nothing derived from
-        a credential value.
+        path and ACL only (never opens a file). Otherwise parses each config and
+        classifies its credentials, storing nothing derived from a credential value.
+        When the audit has more rights than the user (SYSTEM, or elevated; see
+        Test-CEAboveUserRights), only files reached through plain folders that are
+        not links themselves are looked at, and a file stored online only is not
+        downloaded. Such a file, or a link met on the way to it, is counted as found and
+        listed in mcpConfigsUnreadable with the reason and needsUserSession = true.
     #>
     [CmdletBinding()]
     param($Context)
@@ -255,10 +259,23 @@ function Get-CEMcpInventory {
     $patterns = Get-CECredentialPatterns
     $profilePath = Get-CEUserProfilePath -Context $Context
     $machineContext = [bool]$Context.IsSystem
+    $aboveUser = Test-CEAboveUserRights -Context $Context
 
     if ($profilePath) {
         foreach ($entry in (Get-CEMcpConfigCatalogue)) {
             if (-not $entry.RelPath) { continue }
+            # With more rights than the user, reach the file through plain folders only, and not through
+            # a link, so its presence, permissions and contents are never looked up elsewhere. A link
+            # met on the way is reported as found, not read, so SC-13 does not say there is no config.
+            if ($aboveUser) {
+                $linkWhy = Get-CEProfileFileLinkProblem -ProfilePath $profilePath -Relative $entry.RelPath
+                if ($linkWhy -eq 'missing') { continue }
+                if ($linkWhy) {
+                    $found++
+                    [void]$unreadable.Add([ordered]@{ path = $entry.RelPath; toolId = $entry.ToolId; reason = "not read: $linkWhy"; needsUserSession = $true })
+                    continue
+                }
+            }
             $full = Join-Path $profilePath $entry.RelPath
             if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { continue }
             $found++
@@ -274,6 +291,10 @@ function Get-CEMcpInventory {
                 continue
             }
 
+            if ($aboveUser) {
+                $skip = Get-CEUserFileSkipReason -Item (New-Object IO.FileInfo $full)
+                if ($skip) { [void]$unreadable.Add([ordered]@{ path = $entry.RelPath; toolId = $entry.ToolId; reason = "not read: $skip"; needsUserSession = $true }); continue }
+            }
             try {
                 $raw = Get-Content -LiteralPath $full -Raw -ErrorAction Stop
                 $cfg = ConvertFrom-CEJsonc -Text $raw
@@ -283,7 +304,7 @@ function Get-CEMcpInventory {
                 }
             }
             catch {
-                [void]$unreadable.Add([ordered]@{ path = $entry.RelPath; toolId = $entry.ToolId; reason = ([string]$_.Exception.Message) })
+                [void]$unreadable.Add([ordered]@{ path = $entry.RelPath; toolId = $entry.ToolId; reason = ([string]$_.Exception.Message); needsUserSession = $false })
             }
         }
     }

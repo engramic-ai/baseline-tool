@@ -177,32 +177,88 @@ function ConvertTo-CEDate {
     return [datetime]::ParseExact([string]$Value, 'yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture)
 }
 
+function ConvertFrom-CEUninstallKey {
+    <#
+        The values Get-CEInstalledSoftware uses from each subkey of an open Uninstall key (a
+        RegistryKey, or an object with the same methods in tests). A subkey that can't be read is
+        skipped on its own: RegistryKey.OpenSubKey throws SecurityException, rather than returning
+        $null, for a key whose ACL denies this account, and that must not hide the programs after it.
+    #>
+    param([Parameter(Mandatory)]$Key, [string]$View)
+    $out = New-Object System.Collections.ArrayList
+    foreach ($name in @($Key.GetSubKeyNames())) {
+        try {
+            $sub = $Key.OpenSubKey($name)
+            if (-not $sub) { continue }
+            try {
+                $entry = [ordered]@{ PSChildName = $name }
+                foreach ($v in 'DisplayName', 'DisplayVersion', 'Publisher', 'InstallDate', 'SystemComponent') {
+                    $value = $sub.GetValue($v)
+                    if ($null -ne $value) { $entry[$v] = $value }
+                }
+                [void]$out.Add([pscustomobject]$entry)
+            }
+            finally { $sub.Close() }
+        }
+        catch { Write-Verbose "Could not read the $View Uninstall subkey ${name}: $($_.Exception.Message)" }
+    }
+    return , $out.ToArray()
+}
+
+function Get-CEUninstallRegistryEntry {
+    <#
+        The values Get-CEInstalledSoftware uses from each subkey of the machine's Uninstall key in one
+        registry view: Registry64 (64-bit programs) or Registry32 (32-bit programs, WOW6432Node). The
+        view is opened explicitly, so a 32-bit PowerShell, whose HKLM:\SOFTWARE is redirected to
+        WOW6432Node, still sees 64-bit programs. On 32-bit Windows both views are the same key.
+        Tests mock this.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][ValidateSet('Registry64', 'Registry32')][string]$View)
+    $entries = @()
+    try {
+        $hive = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine, [Microsoft.Win32.RegistryView]$View)
+        try {
+            $key = $hive.OpenSubKey('SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall')
+            if ($key) {
+                try { $entries = ConvertFrom-CEUninstallKey -Key $key -View $View }
+                finally { $key.Close() }
+            }
+        }
+        finally { $hive.Close() }
+    }
+    catch { Write-Verbose "Could not read the $View Uninstall key: $($_.Exception.Message)" }
+    return , $entries
+}
+
 function Get-CEInstalledSoftware {
     <#
-        Installed programs from the uninstall registry keys (machine + current user).
+        Installed programs from the uninstall registry keys (machine, in both the 64-bit and 32-bit
+        registry views whatever the bitness of this PowerShell, and the current user).
         Deliberately avoids Win32_Product, which triggers MSI self-repair.
     #>
     [CmdletBinding()]
     param()
-    $paths = @(
-        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
-        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
-    )
-    # Per-user installs for the signed-in user (their hive when running as SYSTEM).
+    $raw = New-Object System.Collections.ArrayList
+    foreach ($view in 'Registry64', 'Registry32') {
+        $entries = Get-CEUninstallRegistryEntry -View $view   # assign first: it returns ,array
+        foreach ($e in $entries) { [void]$raw.Add($e) }
+    }
+    # Per-user installs for the signed-in user (their hive when running as SYSTEM). HKCU\Software is
+    # not redirected for 32-bit processes, so one path covers both.
     $userRoot = Get-CEUserRegistryRoot
-    if ($userRoot) { $paths += "$userRoot\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*" }
-    $items = foreach ($p in $paths) {
-        Get-ItemProperty -Path $p -ErrorAction SilentlyContinue |
-            Where-Object { $_.PSObject.Properties['DisplayName'] -and $_.DisplayName -and -not ($_.PSObject.Properties['SystemComponent'] -and $_.SystemComponent -eq 1) } |
-            ForEach-Object {
-                [pscustomobject]@{
-                    Name        = [string]$_.DisplayName
-                    Version     = if ($_.PSObject.Properties['DisplayVersion']) { [string]$_.DisplayVersion } else { '' }
-                    Publisher   = if ($_.PSObject.Properties['Publisher']) { [string]$_.Publisher } else { '' }
-                    InstallDate = if ($_.PSObject.Properties['InstallDate']) { [string]$_.InstallDate } else { '' }
-                    KeyName     = [string]$_.PSChildName
-                }
-            }
+    if ($userRoot) {
+        foreach ($e in @(Get-ItemProperty -Path "$userRoot\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*" -ErrorAction SilentlyContinue)) { [void]$raw.Add($e) }
+    }
+    $items = foreach ($r in $raw) {
+        if (-not ($r.PSObject.Properties['DisplayName'] -and $r.DisplayName) -or ($r.PSObject.Properties['SystemComponent'] -and $r.SystemComponent -eq 1)) { continue }
+        [pscustomobject]@{
+            Name        = [string]$r.DisplayName
+            Version     = if ($r.PSObject.Properties['DisplayVersion']) { [string]$r.DisplayVersion } else { '' }
+            Publisher   = if ($r.PSObject.Properties['Publisher']) { [string]$r.Publisher } else { '' }
+            InstallDate = if ($r.PSObject.Properties['InstallDate']) { [string]$r.InstallDate } else { '' }
+            KeyName     = [string]$r.PSChildName
+        }
     }
     return @($items | Sort-Object Name, Version -Unique)
 }

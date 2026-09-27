@@ -45,20 +45,35 @@ function Get-CEVsCodeBuiltInExtensionDir {
     <#
         Folders holding the extensions VS Code ships with (Copilot Chat since 1.13x). The user
         installer puts them under the profile; the machine installer, which winget picks when
-        elevated, under Program Files. Only folders that exist are returned. Tests mock this.
+        elevated, under Program Files. Only folders that exist are returned; under the profile,
+        unless -FollowLinks (an audit in the user's own session), only those reached through plain
+        folders (no junctions or symbolic links). Tests mock this.
     #>
-    param([string]$ProfilePath)
+    param([string]$ProfilePath, [switch]$FollowLinks)
+    $dirs = @()
+    # The user's own install: the user controls their profile, so through plain folders only unless -FollowLinks.
+    if ($ProfilePath -and (Test-CELocalFilePath $ProfilePath)) {
+        foreach ($name in 'Microsoft VS Code', 'Microsoft VS Code Insiders') {
+            $rel = "AppData\Local\Programs\$name"
+            if (-not (Test-CEPlainDirectoryChain -Base $ProfilePath -Relative $rel -FollowLinks:$FollowLinks)) { continue }
+            $install = Join-Path $ProfilePath $rel
+            $subs = Get-CEPlainChildName -Path $install -Max 64 -IncludeLinks:$FollowLinks   # assign first: it returns ,array
+            foreach ($sub in @('resources\app\extensions') + @($subs | ForEach-Object { "$_\resources\app\extensions" })) {
+                if (Test-CEPlainDirectoryChain -Base $install -Relative $sub -FollowLinks:$FollowLinks) { $dirs += Join-Path $install $sub }
+            }
+        }
+    }
     $installs = @()
-    if ($ProfilePath) { $installs += @('Microsoft VS Code', 'Microsoft VS Code Insiders' | ForEach-Object { Join-Path $ProfilePath "AppData\Local\Programs\$_" }) }
-    foreach ($root in @($env:ProgramFiles, ${env:ProgramFiles(x86)} | Where-Object { $_ })) {
+    # The 64-bit Program Files even from a 32-bit PowerShell (see Get-CEProgramFilesPath).
+    foreach ($root in @((Get-CEProgramFilesPath 'programFiles'), (Get-CEProgramFilesPath 'programFilesX86') | Where-Object { $_ } | Select-Object -Unique)) {
         $installs += @('Microsoft VS Code', 'Microsoft VS Code Insiders' | ForEach-Object { Join-Path $root $_ })
     }
-    $dirs = @()
     foreach ($install in ($installs | Where-Object { Test-Path -LiteralPath $_ })) {
         # Older layouts: <install>\resources\app\extensions. Since 1.13x the app lives in a
         # commit-hash subfolder: <install>\<hash>\resources\app\extensions.
         $candidates = @((Join-Path $install 'resources\app\extensions'))
-        $candidates += @(Get-ChildItem -LiteralPath $install -Directory -ErrorAction SilentlyContinue | ForEach-Object { Join-Path $_.FullName 'resources\app\extensions' })
+        $subs = Get-CEPlainChildName -Path $install -Max 64   # assign first: it returns ,array
+        $candidates += @($subs | ForEach-Object { Join-Path (Join-Path $install $_) 'resources\app\extensions' })
         $dirs += @($candidates | Where-Object { Test-Path -LiteralPath $_ })
     }
     return , @($dirs)
@@ -67,20 +82,31 @@ function Get-CEVsCodeBuiltInExtensionDir {
 function Get-CEVsCodeBuiltInExtensionId {
     <#
         Identity of a built-in extension folder: publisher.name from its package.json (the folder
-        itself is just "copilot" for GitHub Copilot Chat), falling back to the folder name.
+        itself is just "copilot" for GitHub Copilot Chat), falling back to the folder name. The
+        per-user install is in a profile the user controls, so package.json is read only when it
+        is at most 2 MB (Copilot Chat's is about 220 KB), and never beyond what is left of -Budget,
+        a byte count shared by every folder in one audit; the bytes read, not the characters they
+        decode to, come off it. Unless -FollowLinks (an audit in the user's own session), it is not
+        read when it is a link or stored online only (Read-CEBoundedText).
     #>
-    param([Parameter(Mandatory)][string]$Folder)
+    param([Parameter(Mandatory)][string]$Folder, [ref]$Budget, [switch]$FollowLinks)
+    $fallback = (Split-Path -Leaf $Folder).ToLowerInvariant()
+    $max = [long]2MB
+    if ($null -ne $Budget) { $max = [Math]::Min($max, [long]$Budget.Value) }
+    if ($max -le 0) { return $fallback }
     $pkg = Join-Path $Folder 'package.json'
-    if (Test-Path -LiteralPath $pkg) {
-        try {
-            $j = Get-Content -LiteralPath $pkg -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
-            $publisher = [string](Get-CEObjectValue $j 'publisher' '')
-            $name = [string](Get-CEObjectValue $j 'name' '')
-            if ($publisher -and $name) { return "$publisher.$name".ToLowerInvariant() }
-        }
-        catch { Write-Verbose "Could not read $pkg`: $($_.Exception.Message)" }
+    $bytes = [ref][long]0
+    $text = Read-CEBoundedText -Path $pkg -MaxBytes ([int]$max) -FollowLinks:$FollowLinks -ByteCount $bytes
+    if ($null -eq $text) { return $fallback }
+    if ($null -ne $Budget) { $Budget.Value = [long]$Budget.Value - [long]$bytes.Value }
+    try {
+        $j = $text | ConvertFrom-Json -ErrorAction Stop
+        $publisher = [string](Get-CEObjectValue $j 'publisher' '')
+        $name = [string](Get-CEObjectValue $j 'name' '')
+        if ($publisher -and $name) { return "$publisher.$name".ToLowerInvariant() }
     }
-    return (Split-Path -Leaf $Folder).ToLowerInvariant()
+    catch { Write-Verbose "Could not read ${pkg}: $($_.Exception.Message)" }
+    return $fallback
 }
 
 function Get-CEStorePackageName {
@@ -180,22 +206,32 @@ function Get-CEAIToolStateUncached {
     $software = @(Get-CEInstalledSoftware)
     $store = Get-CEStorePackageName
     $profilePath = Get-CEUserProfilePath -Context $Context
+    # The profile belongs to the user: an audit with more rights than them (SYSTEM, or elevated) must
+    # not follow their links. In their own non-elevated session their links are followed.
+    $follow = -not (Test-CEAboveUserRights -Context $Context)
     $extensions = @()
     $builtIn = @()
-    if ($profilePath) {
+    if ($profilePath -and (Test-CELocalFilePath $profilePath)) {
         foreach ($folder in '.vscode\extensions', '.vscode-insiders\extensions') {
-            $extensions += @(Get-ChildItem -LiteralPath (Join-Path $profilePath $folder) -Directory -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
+            if (-not (Test-CEPlainDirectoryChain -Base $profilePath -Relative $folder -FollowLinks:$follow)) { continue }
+            # Names only, and capped: listing a folder does not go into its children, so an extension
+            # folder that is a link (as when developing one) still counts by name and is never followed.
+            $names = Get-CEPlainChildName -Path (Join-Path $profilePath $folder) -Max 5000 -IncludeLinks   # assign first: it returns ,array
+            $extensions += @($names)
         }
     }
     # Extensions VS Code ships with (Copilot Chat since 1.13x) live under the install, not the user's
     # extensions folder, in unversioned directories such as github.copilot-chat.
-    $builtInDirs = Get-CEVsCodeBuiltInExtensionDir -ProfilePath $profilePath   # assign first: it returns ,array and @(...) would nest it
+    $builtInDirs = Get-CEVsCodeBuiltInExtensionDir -ProfilePath $profilePath -FollowLinks:$follow   # assign first: it returns ,array and @(...) would nest it
+    # Listings are capped, package.json reads share one byte budget, and with more rights than the user, links are skipped.
+    $pkgBudget = [long]32MB
     foreach ($folder in $builtInDirs) {
-        $builtIn += @(Get-ChildItem -LiteralPath $folder -Directory -ErrorAction SilentlyContinue | ForEach-Object { Get-CEVsCodeBuiltInExtensionId -Folder $_.FullName })
+        $names = Get-CEPlainChildName -Path $folder -Max 1000 -IncludeLinks:$follow   # assign first: it returns ,array
+        foreach ($n in $names) { $builtIn += Get-CEVsCodeBuiltInExtensionId -Folder (Join-Path $folder $n) -Budget ([ref]$pkgBudget) -FollowLinks:$follow }
     }
     # AI browser extensions: folder and file names in the user's browser profiles, only for ids in the catalog.
     $extIds = Get-CEBrowserExtensionIdSet -Catalog $catalog
-    $browserExt = Get-CEBrowserExtensionList -ProfilePath $profilePath -ChromiumIds $extIds.Chromium -FirefoxIds $extIds.Firefox   # assign first: it returns ,array
+    $browserExt = Get-CEBrowserExtensionList -ProfilePath $profilePath -ChromiumIds $extIds.Chromium -FirefoxIds $extIds.Firefox -StorePackages $store -FollowLinks:$follow   # assign first: it returns ,array
     $processes = Get-CEProcessList
     $like = { param($value, $pattern) (-not $pattern) -or ("$value" -like $pattern) }
     $programText = { param($sw) if ($sw.Version -and $sw.Name -notlike "*$($sw.Version)*") { "Installed program: $($sw.Name) $($sw.Version)" } else { "Installed program: $($sw.Name)" } }
@@ -216,7 +252,8 @@ function Get-CEAIToolStateUncached {
         foreach ($a in @(Get-CEObjectValue $w 'appx' @())) { if ($store -contains $a) { $signals += "Store app: $a" } }
         if ($profilePath) {
             foreach ($rel in @(Get-CEObjectValue $w 'paths' @())) {
-                if (Test-Path -LiteralPath (Join-Path $profilePath $rel)) { $signals += "Found %USERPROFILE%\$rel" }
+                # Attributes only. With more rights than the user, only through plain folders; the item itself is never followed.
+                if (Test-CEPlainProfileItem -ProfilePath $profilePath -Relative $rel -FollowLinks:$follow) { $signals += "Found %USERPROFILE%\$rel" }
             }
         }
         foreach ($pattern in @(Get-CEObjectValue $w 'vscodeExtensions' @())) {

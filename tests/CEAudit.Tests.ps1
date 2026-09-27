@@ -1101,6 +1101,7 @@ Describe 'Intune: status, discovery and compliance rules' {
         $root = Join-Path $TestDrive 'insecure'
         $st = New-TestStatus -Kind Insecure -DataRoot $root
         $st.schemaVersion | Should -Be 1
+        $st.platform | Should -Be 'windows'
         $st.autoFailCount | Should -BeGreaterThan 0
         $st.checks.'SU-05'.status | Should -Be 'Fail'
         $st.checks.'SU-05'.scope | Should -Be 'Machine'
@@ -1271,6 +1272,7 @@ Describe 'Per-user probe' {
         $LASTEXITCODE | Should -Be 0
         $s = Get-Content (Join-Path $root 'user-status.json') -Raw | ConvertFrom-Json
         $s.scope | Should -Be 'User'
+        $s.platform | Should -Be 'windows'
         $s.schemaVersion | Should -Be 1
         # same contract as the device status: self-describing checks, derived frameworks, plus the AI block
         $s.checks.'UA-10'.scope | Should -Be 'User'
@@ -2562,8 +2564,9 @@ Describe 'Virtual machines, WSL and containers (SC-12, FW-07)' {
 Describe 'AI tools (UA-07, SC-09, UA-10)' {
     BeforeAll {
         function global:New-TestAITool {
-            param([string]$Name, [string]$Service = 'Anthropic (Claude)', [bool]$CanAct = $true, [object[]]$Processes = @())
-            [pscustomobject]@{ Id = ($Name.ToLower() -replace '[^a-z0-9]+', '-'); Name = $Name; Service = $Service; CanActOnDevice = $CanAct; Notes = ''
+            param([string]$Name, [string]$Service = 'Anthropic (Claude)', [bool]$CanAct = $true, [object[]]$Processes = @(), [string]$Id)
+            if (-not $Id) { $Id = ($Name.ToLower() -replace '[^a-z0-9]+', '-') }
+            [pscustomobject]@{ Id = $Id; Name = $Name; Service = $Service; CanActOnDevice = $CanAct; Notes = ''
                 Signals = @("Store app: $Name"); Processes = $Processes }
         }
         function global:New-TestAgentProcess {
@@ -2601,13 +2604,20 @@ Describe 'AI tools (UA-07, SC-09, UA-10)' {
     It 'the shipped tool list is well formed' {
         $list = Get-Content (Join-Path (Join-Path $script:RepoRoot 'config') 'ai-tools.json') -Raw | ConvertFrom-Json
         $list.lastReviewed | Should -Match '^\d{4}-\d{2}-\d{2}$'
+        $list.schemaVersion | Should -Be 2
         $ids = @($list.tools | ForEach-Object { $_.id })
         ($ids | Sort-Object -Unique).Count | Should -Be $ids.Count
         foreach ($t in @($list.tools)) {
-            $signals = @($t.programs).Count + @($t.uninstallKeys).Count + @($t.appx).Count + @($t.processes).Count + @($t.paths).Count + @($t.vscodeExtensions).Count
+            # Detection signals live in a block per operating system; nothing Windows-specific at the top level.
+            foreach ($legacy in 'programs', 'uninstallKeys', 'appx', 'processes', 'paths', 'vscodeExtensions', 'mcpConfigs', 'enabled') {
+                $t.PSObject.Properties[$legacy] | Should -BeNullOrEmpty -Because "$($t.id): $legacy belongs in the windows block"
+            }
+            $w = $t.windows
+            $w | Should -Not -BeNullOrEmpty -Because $t.id
+            $signals = @($w.programs).Count + @($w.uninstallKeys).Count + @($w.appx).Count + @($w.processes).Count + @($w.paths).Count + @($w.vscodeExtensions).Count
             $signals | Should -BeGreaterThan 0 -Because $t.id
-            foreach ($proc in @($t.processes)) { $proc.image | Should -Match '^[\w. -]+\.exe$' -Because $t.id }
-            foreach ($prog in @($t.programs)) { ($prog.name -replace '[*?]', '').Length | Should -BeGreaterOrEqual 4 -Because "$($t.id) program pattern must not be too broad" }
+            foreach ($proc in @($w.processes)) { $proc.image | Should -Match '^[\w. -]+\.exe$' -Because $t.id }
+            foreach ($prog in @($w.programs)) { ($prog.name -replace '[*?]', '').Length | Should -BeGreaterOrEqual 4 -Because "$($t.id) program pattern must not be too broad" }
             @($t.sources).Count | Should -BeGreaterThan 0 -Because $t.id
             foreach ($u in @($t.sources)) { $u | Should -Match '^https://' -Because $t.id }
         }
@@ -2698,6 +2708,59 @@ Describe 'AI tools (UA-07, SC-09, UA-10)' {
         $f = @(Invoke-CEAuditCore -Id 'UA-10')
         $f[0].Status | Should -Be 'Manual'
         $f[0].Actual | Should -Be "Couldn't check: Claude Code: claude.exe pid 20 as PC\paul; Possible AI agent claude.exe (pid 30) (path not readable)"
+    }
+
+    It 'reads Windows signals from the windows block, and from the top level in older overrides' {
+        InModuleScope CEAudit {
+            $orig = (Get-CEConfig).'ai-tools'
+            try {
+                (Get-CEConfig).'ai-tools' = [pscustomobject]@{ tools = @(
+                    [pscustomobject]@{ id = 'grouped'; windows = [pscustomobject]@{ paths = @('.grouped') } },
+                    [pscustomobject]@{ id = 'off-here'; windows = [pscustomobject]@{ enabled = $false; paths = @('.off') } },
+                    [pscustomobject]@{ id = 'mac-only'; macos = [pscustomobject]@{ paths = @('.mac') } },
+                    [pscustomobject]@{ id = 'flat'; paths = @('.flat'); mcpConfigs = @([pscustomobject]@{ path = '.flat.json' }) }) }
+                $catalog = Get-CEAIToolCatalog
+                @($catalog | ForEach-Object { $_.Tool.id }) | Should -Be @('grouped', 'flat')
+                @($catalog[0].Signals.paths) | Should -Be @('.grouped')
+                @($catalog[1].Signals.paths) | Should -Be @('.flat') -Because 'an override written before signals were grouped still works'
+                $mcp = Get-CEMcpConfigCatalogue
+                @($mcp | ForEach-Object { $_.ToolId }) | Should -Be @('flat')
+            }
+            finally { (Get-CEConfig).'ai-tools' = $orig }
+        }
+    }
+
+    It 'SC-09 warns about every agent that can act on the device' {
+        Set-TestAITools -Tools @((New-TestAITool 'Claude Code' -Id 'claude-code'), (New-TestAITool 'Cursor' -Service 'Cursor' -Id 'cursor'))
+        $f = @(Invoke-CEAuditCore -Id 'SC-09' | Where-Object { $_.Subject -in 'Claude Code', 'Cursor' })
+        $f.Count | Should -Be 2
+        foreach ($x in $f) { $x.Status | Should -Be 'Warn' }
+    }
+
+    It 'reports how many AI tools it found, what it cannot see, and names what the paid tier adds' {
+        Set-TestAITools -Tools @((New-TestAITool 'Claude Code' -Id 'claude-code'), (New-TestAITool 'Cursor' -Service 'Cursor' -Id 'cursor'))
+        $r = Export-CEReport -Findings @(Invoke-CEAuditCore -Id 'SC-09') -Context (New-TestContext) -OutputPath (Join-Path $TestDrive 'ai-report')
+        $md = Get-Content $r.Paths.Markdown -Raw
+        $html = Get-Content $r.Paths.Html -Raw
+        $md | Should -Match ([regex]::Escape('**2 AI tools found**'))
+        $md | Should -Match ([regex]::Escape('- Claude Code - present'))
+        $md | Should -Match ([regex]::Escape("It can't see AI used in a browser tab."))
+        $md | Should -Match 'approved, across all its devices, is part of the Engramic Baseline paid tier\.'
+        $html | Should -Match ([regex]::Escape('<strong>2 AI tools found</strong>'))
+        $html | Should -Match ([regex]::Escape("It can't see AI used in a browser tab."))
+        $html | Should -Match 'is part of the Engramic Baseline paid tier\.</p>'
+        foreach ($text in $md, $html) { $text | Should -Not -Match '[Uu]pgrade' }
+
+        Set-TestAITools -Tools @(New-TestAITool 'Claude Code' -Id 'claude-code')
+        $r = Export-CEReport -Findings @(Invoke-CEAuditCore -Id 'SC-09') -Context (New-TestContext) -OutputPath (Join-Path $TestDrive 'ai-report-1')
+        (Get-Content $r.Paths.Markdown -Raw) | Should -Match ([regex]::Escape('**1 AI tool found**'))
+
+        Set-TestAITools -Tools @()
+        $r = Export-CEReport -Findings @(Invoke-CEAuditCore -Id 'SC-09') -Context (New-TestContext) -OutputPath (Join-Path $TestDrive 'ai-report-0')
+        $md = Get-Content $r.Paths.Markdown -Raw
+        $md | Should -Match ([regex]::Escape('**0 AI tools found**'))
+        $md | Should -Not -Match 'paid tier' -Because 'the note only follows a list of tools'
+        (Get-Content $r.Paths.Html -Raw) | Should -Not -Match 'paid tier'
     }
 }
 

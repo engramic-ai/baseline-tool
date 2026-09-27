@@ -88,6 +88,7 @@ try {
     $status = [pscustomobject]@{
         schemaVersion = 1
         scope         = 'User'
+        platform      = 'windows'
         toolVersion   = [string](Get-CEToolVersion)
         computerName  = [string]$ctx.ComputerName
         user          = [string]$ctx.RunningAs

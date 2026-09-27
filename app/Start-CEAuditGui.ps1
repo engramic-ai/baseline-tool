@@ -1370,10 +1370,15 @@ function Set-CEAiTab {
     $vmUnread = @($notRead | Where-Object { @('', 'profile', 'vm-inventory', 'vm-file') -contains [string](Get-UiField $_ 'topic' '') }).Count
     if (@(Get-UiField $Ai 'environments' @()).Count -eq 0 -and -not $vmUnread) { [void]$ui.AiEnvs.Children.Add((New-CEAiLine -Text 'No VMs, WSL distributions or containers found.')) }
     if ($notRead.Count) {
-        $lines = @($notRead | ForEach-Object {
-                $count = [int](Get-UiField $_ 'count' 1)
-                "$(Get-UiField $_ 'location' '') ($(Get-UiField $_ 'kind' '')$(if ($count -gt 1) { ", $count times" })): $(Get-UiField $_ 'reason' '')"
-            })
+        $describe = {
+            param($r)
+            $count = [int](Get-UiField $r 'count' 1)
+            "$(Get-UiField $r 'location' '') ($(Get-UiField $r 'kind' '')$(if ($count -gt 1) { ", $count times" })): $(Get-UiField $r 'reason' '')"
+        }
+        # A browser whose installed marker could not be checked hides no AI tool; what is unknown is whether a
+        # tool in its profile is a leftover. Same words as $script:CEAIBrowserInstalledLead in the report.
+        $browserLines = @($notRead | Where-Object { [string](Get-UiField $_ 'topic' '') -eq 'browser-installed' } | ForEach-Object { & $describe $_ })
+        $lines = @($notRead | Where-Object { [string](Get-UiField $_ 'topic' '') -ne 'browser-installed' } | ForEach-Object { & $describe $_ })
         # The same advice as the report: why links were skipped, and the user's session, only where a record needs them; then each record's own fix.
         $linkReasons = @('a symbolic link on the way', 'a junction on the way', 'a junction or symbolic link', 'it is a junction or symbolic link', 'it is stored online only', 'a reparse point of a kind')
         $advice = @()
@@ -1386,7 +1391,10 @@ function Set-CEAiTab {
         elseif ($user) { $advice += "To read those skipped because the audit ran with more rights than the user, $toRead." }
         $advice += @($notRead | ForEach-Object { [string](Get-UiField $_ 'remedy' '') } | Where-Object { $_ } | Select-Object -Unique)
         $lead = if ($scanComplete) { 'Not read (none of these could hide an AI tool, but what else they hold, such as a virtual machine or an MCP config, was not checked)' } else { 'Not read, so the AI tools found may be incomplete' }
-        $text = "${lead}: $($lines -join '; '). $($advice -join ' ')".TrimEnd()
+        $parts = @()
+        if ($lines.Count) { $parts += "${lead}: $($lines -join '; ')." }
+        if ($browserLines.Count) { $parts += "Whether these browsers are still installed could not be checked, so the AI extensions found in their profiles are listed as installed, though they may be left over from a browser that was removed: $($browserLines -join '; ')." }
+        $text = "$($parts -join ' ') $($advice -join ' ')".TrimEnd()
         [void]$ui.AiEnvs.Children.Add((New-CEAiLine -Text $text -Bad))
     }
 

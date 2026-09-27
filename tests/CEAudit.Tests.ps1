@@ -1058,6 +1058,19 @@ Describe 'Desktop app result rendering' {
         $ui.AiAgentsEmpty.Text | Should -Be 'No recognised AI tools found in this session.'
         @($ui.AiEnvs.Children) | Should -Not -Contain 'No VMs, WSL distributions or containers found.'
         @($ui.AiEnvs.Children | Where-Object { $_ -like 'BAD: Not read (none of these could hide an AI tool*%USERPROFILE%\VMs\a.vmx*' }).Count | Should -Be 1
+        # A browser whose installed files could not be checked gets its own explanation, not "could hide an AI tool".
+        $browserOnly = [ordered]@{ agentsFound = 1; contained = $true; deviations = 0; agents = @(); environments = @(); scanComplete = $true
+            notRead = @([ordered]@{ location = '%USERPROFILE%\AppData\Local\Google\Chrome\Application\chrome.exe'; kind = 'existence'; reason = 'a symbolic link on the way is not followed by an elevated or SYSTEM audit (it could point off this computer)'; remedy = ''; topic = 'browser-installed'; needsUserSession = $true; count = 1 }) }
+        $ui.AiEnvs.Children.Clear()
+        Set-CEAiTab -Ai $browserOnly -Findings $script:guiResult.Findings
+        $line = @($ui.AiEnvs.Children | Where-Object { $_ -like 'BAD: *' })
+        $line.Count | Should -Be 1
+        $line[0] | Should -BeLike 'BAD: Whether these browsers are still installed could not be checked, so the AI extensions found in their profiles are listed as installed, though they may be left over from a browser that was removed: %USERPROFILE%\AppData\Local\Google\Chrome\Application\chrome.exe (existence)*'
+        $line[0] | Should -Not -Match 'could hide an AI tool|may be incomplete'
+        $browserOnly.notRead = @($browserOnly.notRead) + @($vmOnly.notRead)
+        $ui.AiEnvs.Children.Clear()
+        Set-CEAiTab -Ai $browserOnly -Findings $script:guiResult.Findings
+        @($ui.AiEnvs.Children | Where-Object { $_ -like 'BAD: Not read (none of these could hide an AI tool*: %USERPROFILE%\VMs\a.vmx (file-content): *. Whether these browsers are still installed could not be checked*: %USERPROFILE%\AppData\Local\Google\Chrome\Application\chrome.exe*' }).Count | Should -Be 1
         $ui.AiEnvs.Children.Clear()
         Set-CEAiTab -Ai $gone -Findings $script:guiResult.Findings
         @($ui.AiEnvs.Children | Where-Object { $_ -like '*To read these, run the audit without elevation*' }).Count | Should -Be 1
@@ -6209,8 +6222,23 @@ namespace CETest {
         @(Invoke-CEAuditCore -Id 'UA-07' | Where-Object Subject -eq 'Anthropic (Claude)').Count | Should -Be 1
         @(Invoke-CEAuditCore -Id 'SC-09' | Where-Object Subject -eq 'Not read').Count | Should -Be 0
         $rep = Export-CEReport -Findings @(Invoke-CEAuditCore -Id 'SC-09') -Context (New-TestContext) -OutputPath (Join-Path $TestDrive 'layer-browser-installed')
-        (Get-Content $rep.Paths.Markdown -Raw) | Should -Match ([regex]::Escape('%USERPROFILE%\AppData\Local\Google\Chrome\Application\chrome.exe'))
-        (Get-Content $rep.Paths.Markdown -Raw) | Should -Match ([regex]::Escape('- Claude Code - present'))
+        $md = Get-Content $rep.Paths.Markdown -Raw
+        $html = Get-Content $rep.Paths.Html -Raw
+        $browserLead = 'Whether these browsers are still installed could not be checked, so the AI extensions found in their profiles are listed as installed, though they may be left over from a browser that was removed'
+        $md | Should -Match ([regex]::Escape("${browserLead}:$([Environment]::NewLine)$([Environment]::NewLine)- %USERPROFILE%\AppData\Local\Google\Chrome\Application\chrome.exe"))
+        $md | Should -Match ([regex]::Escape('- Claude Code - present'))
+        $html | Should -Match ([regex]::Escape("$browserLead.</div><ul><li>%USERPROFILE%\AppData\Local\Google\Chrome\Application\chrome.exe"))
+        foreach ($text in $md, $html) {
+            $text | Should -Not -Match 'could hide an AI tool|may be incomplete' -Because 'the record hides no AI tool; what is unknown is whether the browser is still installed'
+        }
+        # With another record as well, each is listed under its own explanation.
+        $vm = [ordered]@{ Location = '%USERPROFILE%\VMs\a.vmx'; Kind = 'file-content'; Reason = 'it could not be read (IOException)'; Remedy = ''; Topic = 'vm-file'; NeedsUserSession = $false; Count = 1 }
+        Set-TestLayerAI -Tools @($claude) -NotRead @($bi, $vm)
+        $rep = Export-CEReport -Findings @(Invoke-CEAuditCore -Id 'SC-09') -Context (New-TestContext) -OutputPath (Join-Path $TestDrive 'layer-browser-installed-mixed')
+        $md = Get-Content $rep.Paths.Markdown -Raw
+        $html = Get-Content $rep.Paths.Html -Raw
+        $md | Should -Match ('None of them could hide an AI tool[^\r\n]*:\s+- ' + [regex]::Escape('%USERPROFILE%\VMs\a.vmx (file not read)') + '[^\r\n]*\s+' + [regex]::Escape("${browserLead}:") + '\s+- ' + [regex]::Escape('%USERPROFILE%\AppData\Local\Google\Chrome\Application\chrome.exe'))
+        $html | Should -Match ('None of these could hide an AI tool[^<]*</div><ul><li>' + [regex]::Escape('%USERPROFILE%\VMs\a.vmx') + '[^<]*</li></ul><div[^>]*>' + [regex]::Escape("$browserLead.") + '</div><ul><li>' + [regex]::Escape('%USERPROFILE%\AppData\Local\Google\Chrome\Application\chrome.exe'))
     }
 
     It 'SECURITY.md says what the read layer does, and no longer what it did' {

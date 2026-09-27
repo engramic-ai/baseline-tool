@@ -191,10 +191,15 @@ Register-CECheck -Id 'UA-07' -Category 'UserAccessControl' -Severity 'Critical' 
             if (-not $detected.ContainsKey($tool.Service)) { $detected[$tool.Service] = $tool.Name }
         }
         # Places in the user's profile that could not be read may hold an AI tool whose service is not listed here.
+        # That is a note, never a lower status: the verdict is about the services found and their attestations,
+        # and a SYSTEM audit often cannot read some places, so the result (and CEMfaAttested) would flap.
         $notRead = Select-CENotRead -Records @(Get-CEObjectValue $aiState 'NotRead' @()) -Topics (Get-CEAIDetectionTopic -HidesTool)   # assign first: it returns ,array
         if ($notRead.Count) {
-            New-CENotReadResult -Records $notRead -Scope Machine -Expected 'MFA enforced for all users and admins of every cloud service' `
-                -Consequence 'a cloud service an AI tool uses may be missing from this list'
+            $lines = @($notRead | ForEach-Object { Format-CENotRead $_ })
+            $advice = Get-CENotReadAdvice -Records $notRead -Scope Machine   # assign first: it returns ,array
+            New-CEResult -Status 'Info' -Subject 'Not read' -Expected 'MFA enforced for all users and admins of every cloud service' `
+                -Actual "$($notRead.Count) location(s) could not be read, so an AI tool, and the cloud service it uses, may be missing from this list. The per-user probe or an audit without elevation may find more AI tools and their services: $($lines -join '; ')" `
+                -Recommendation ((@($advice) + 'Attest MFA in config/cloud-services.json for any service they add.') -join ' ') -Evidence $lines
         }
 
         $names = @(@($detected.Keys) + @($services.Keys | Where-Object { $null -ne $services[$_].mfaEnforced }) | Sort-Object -Unique)

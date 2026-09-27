@@ -5504,7 +5504,7 @@ namespace CETest {
         }
     }
 
-    It 'records a Manual in SC-09 and UA-07 when a junction on the way leads through a symbolic link, and keeps UA-07 when a browser could not be checked' {
+    It 'records a Manual in SC-09 and a note in UA-07 when a junction on the way leads through a symbolic link, and keeps UA-07 when a browser could not be checked' {
         $root = Join-Path $TestDrive 'layer-ai'
         $p = Join-Path $root 'profile'
         New-Item -ItemType Directory -Force -Path $p | Out-Null
@@ -5531,10 +5531,8 @@ namespace CETest {
         @($st.Elevated.NotRead | ForEach-Object { "$($_.Topic)|$($_.Location)|$($_.Reason)" }) | Should -Be @('vscode|%USERPROFILE%\.vscode\extensions|a junction on the way leads through a symbolic link or to a location the audit does not recognise')
         @($st.User.Tools).Count | Should -Be 1 -Because "the user's own session follows their links"
         Set-TestLayerAI -NotRead @($st.Elevated.NotRead)
-        foreach ($id in 'SC-09', 'UA-07') {
-            $f = @(Invoke-CEAuditCore -Id $id)
-            @($f | Where-Object { $_.Subject -eq 'Not read' }).Status | Should -Be 'Manual' -Because $id
-        }
+        @(Invoke-CEAuditCore -Id 'SC-09' | Where-Object { $_.Subject -eq 'Not read' }).Status | Should -Be 'Manual'
+        @(Invoke-CEAuditCore -Id 'UA-07' | Where-Object { $_.Subject -eq 'Not read' }).Status | Should -Be 'Info' -Because 'UA-07 judges the services found; what was not read is a note'
         (@(Invoke-CEAuditCore -Id 'UA-10'))[0].Status | Should -Be 'NotApplicable' -Because 'UA-10 judges running processes'
         (@(@(Invoke-CEAuditCore -Id 'UA-10'))[0].Evidence) -join "`n" | Should -Match 'Not read in the profile: %USERPROFILE%\\\.vscode\\extensions'
 
@@ -5658,9 +5656,12 @@ namespace CETest {
         $f[0].Actual | Should -Match 'found, not read: \.cursor\\mcp\.json \(cursor\)'
     }
 
-    It 'rolls a check with a Pass and a not-read record up to Manual, and CE+ TC1 to Check' {
+    It 'keeps UA-07 Pass, and CEMfaAttested true, when every service is attested and some places were not read' {
+        # UA-07 judges the services found and their attestations. A SYSTEM audit often cannot read some places in
+        # the profile, so what was not read is a note: a lower status would flap the Intune compliance result.
         $claude = [pscustomobject]@{ Id = 'claude-code'; Name = 'Claude Code'; Service = 'Anthropic (Claude)'; CanActOnDevice = $true; Notes = ''; Signals = @('Store app: Claude'); Processes = @() }
-        Set-TestLayerAI -Tools @($claude) -NotRead @([ordered]@{ Location = '%USERPROFILE%\.vscode\extensions'; Kind = 'folder-listing'; Reason = 'x'; Remedy = ''; Topic = 'vscode'; NeedsUserSession = $true; Count = 1 })
+        Set-TestLayerAI -Tools @($claude) -NotRead @([ordered]@{ Location = '%USERPROFILE%\.vscode\extensions'; Kind = 'folder-listing'; Reason = 'x'; Remedy = ''; Topic = 'vscode'; NeedsUserSession = $true; Count = 1 },
+            [ordered]@{ Location = '%USERPROFILE%\AppData\Local\Google\Chrome\User Data'; Kind = 'folder-listing'; Reason = 'y'; Remedy = ''; Topic = 'browser'; NeedsUserSession = $true; Count = 1 })
         InModuleScope CEAudit -Parameters @{ D = (Get-Date).ToString('yyyy-MM-dd') } {
             param($D)
             $script:layerCloud = (Get-CEConfig).'cloud-services'
@@ -5669,11 +5670,53 @@ namespace CETest {
         }
         try {
             $f = @(Invoke-CEAuditCore -Id 'UA-07')
-            @($f | ForEach-Object Status | Sort-Object -Unique) | Should -Be @('Manual', 'Pass')
-            $map = InModuleScope CEAudit -Parameters @{ F = $f } { param($F) Get-CEStatusCheckMap -Findings $F }
+            @($f | Where-Object Subject -ne 'Not read' | ForEach-Object Status | Sort-Object -Unique) | Should -Be @('Pass')
+            $note = @($f | Where-Object Subject -eq 'Not read')
+            @($note | ForEach-Object Status) | Should -Be @('Info')
+            $note[0].Actual | Should -Match '^2 location\(s\) could not be read, so an AI tool, and the cloud service it uses, may be missing from this list\. The per-user probe or an audit without elevation may find more AI tools and their services: '
+            $note[0].Actual | Should -Match ([regex]::Escape('%USERPROFILE%\.vscode\extensions (folder not listed): x'))
+            $note[0].Recommendation | Should -Match 'full audit without elevation while signed in as that user'
+            $root = Join-Path $TestDrive 'layer-mfa'
+            InModuleScope CEAudit -Parameters @{ F = $f; Root = $root } {
+                param($F, $Root)
+                $map = Get-CEStatusCheckMap -Findings $F
+                $map['UA-07'].status | Should -Be 'Pass'
+                $status = ConvertTo-CEStatus -Findings $F -Summary (Get-CESummary -Findings $F) -Context $global:CETestCtx -ReportFolder 'X'
+                New-Item -ItemType Directory -Path $Root -Force | Out-Null
+                Write-CEStatus -Status $status -Path (Join-Path $Root 'status.json') | Out-Null
+            }
+            . (Join-Path $script:RepoRoot 'intune\Discover-CECompliance.ps1')
+            (Get-CEComplianceData -DataRoot $root -Installed $true -NoKick).CEMfaAttested | Should -BeTrue
+            # A service without an attestation is still Manual, not read or not.
+            InModuleScope CEAudit { (Get-CEConfig).'cloud-services'.services = @((Get-CEConfig).'cloud-services'.services | Where-Object name -ne 'Anthropic (Claude)') }
+            $map = InModuleScope CEAudit { Get-CEStatusCheckMap -Findings @(Invoke-CEAuditCore -Id 'UA-07') }
             $map['UA-07'].status | Should -Be 'Manual'
         }
         finally { InModuleScope CEAudit { (Get-CEConfig).'cloud-services' = $script:layerCloud } }
+    }
+
+    It 'does not say an agent that can act may be hidden in SC-09 when only browser extension folders were not read' {
+        $rec = { param([string]$Topic) [ordered]@{ Location = "%USERPROFILE%\$Topic"; Kind = 'folder-listing'; Reason = 'r'; Remedy = ''; Topic = $Topic; NeedsUserSession = $true; Count = 1 } }
+        InModuleScope CEAudit { (Get-CEConfig)['ai-tools'] = ('{ "schemaVersion": 2, "tools": [ { "id": "t-ext", "name": "Ext", "canActOnDevice": false, "browserExtensions": [ { "store": "chrome", "id": "fcoeoabgfenejglbffodgkkbkcdhcgfn" } ] }, { "id": "t-code", "name": "Code", "canActOnDevice": true, "windows": { "paths": [ ".code" ] } } ] }' | ConvertFrom-Json) }
+        Set-TestLayerAI -NotRead @(& $rec 'browser')
+        $f = @(Invoke-CEAuditCore -Id 'SC-09' | Where-Object Subject -eq 'Not read')
+        @($f | ForEach-Object Status) | Should -Be @('Info') -Because 'every tool found by a browser extension cannot act on the device'
+        $f[0].Actual | Should -Not -Match 'an AI agent that can act on this device may not have been seen'
+        $f[0].Actual | Should -Match 'an AI browser extension may not have been seen'
+        # With a record that can hide an agent as well, it is Manual, and names only that record.
+        Set-TestLayerAI -NotRead @((& $rec 'browser'), (& $rec 'paths'))
+        $f = @(Invoke-CEAuditCore -Id 'SC-09' | Where-Object Subject -eq 'Not read')
+        @($f | ForEach-Object Status) | Should -Be @('Manual')
+        $f[0].Actual | Should -Be '1 location(s) could not be read, so an AI agent that can act on this device may not have been seen: %USERPROFILE%\paths (folder not listed): r'
+        # A catalog override with an agent found by its browser extension makes those folders count.
+        InModuleScope CEAudit { (Get-CEConfig)['ai-tools'].tools[0].canActOnDevice = $true }
+        Set-TestLayerAI -NotRead @(& $rec 'browser')
+        $f = @(Invoke-CEAuditCore -Id 'SC-09' | Where-Object Subject -eq 'Not read')
+        @($f | ForEach-Object Status) | Should -Be @('Manual')
+        $f[0].Actual | Should -Match 'an AI agent that can act on this device may not have been seen'
+    }
+
+    It 'rolls a check with a Pass and a not-read record up to Manual, and CE+ TC1 to Check' {
         Set-TestDevice -Kind Secure
         $global:CETestVirt = [pscustomobject]@{ HyperV = [pscustomobject]@{ Readable = $true; Message = ''; Machines = @(); NatMappings = @() }; VMware = @(); VirtualBox = @(); Wsl = @()
             WslNetworking = ''; Containers = @(); Listeners = @(); Notes = @(); NotRead = @([ordered]@{ Location = '%USERPROFILE%\VMs\a.vmx'; Kind = 'file-content'; Reason = 'x'; Remedy = ''; Topic = 'vm-file'; NeedsUserSession = $true; Count = 1 }) }
@@ -6184,7 +6227,7 @@ namespace CETest {
         @($st.User.Tools[0].Signals) | Should -Be @('VS Code built-in extension: github.copilot-chat') -Because "the user's own session reads through their junction"
         @($st.User.NotRead).Count | Should -Be 0
         Set-TestLayerAI -Tools @($st.Elevated.Tools) -NotRead @($st.Elevated.NotRead)
-        @(Invoke-CEAuditCore -Id 'UA-07' | Where-Object Subject -eq 'Not read').Status | Should -Be 'Manual'
+        @(Invoke-CEAuditCore -Id 'UA-07' | Where-Object Subject -eq 'Not read').Status | Should -Be 'Info'
     }
 
     It 'gives each record the advice it needs, and keeps UA-07 and SC-09 when only a browser could not be checked' {

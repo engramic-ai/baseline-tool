@@ -207,11 +207,24 @@ Register-CECheck -Id 'SC-09' -Category 'SecureConfiguration' -Severity 'Medium' 
                 -Actual "AI agent that can act on this device: $($tool.Name)" -Evidence @($tool.Signals) `
                 -Recommendation "Remove it if it isn't needed. If it is: record who approved it, make sure its account uses MFA (UA-07), don't run it with administrator rights (UA-10), and keep it asking before it runs commands or changes files. $($tool.Notes)".Trim()
         }
-        # Places in the user's profile that could not be read may hold an agent that was not seen.
-        $notRead = Select-CENotRead -Records @(Get-CEObjectValue $aiState 'NotRead' @()) -Topics (Get-CEAIDetectionTopic -HidesTool)   # assign first: it returns ,array
+        # Places in the user's profile that could not be read may hold an agent that was not seen. Browser
+        # extension folders hide only tools that cannot act on the device, so they are a note, not a Manual.
+        $expected = 'Remote access tools and AI agents only where approved and protected with MFA'
+        $records = @(Get-CEObjectValue $aiState 'NotRead' @())
+        $notRead = Select-CENotRead -Records $records -Topics (Get-CEAIDetectionTopic -CanAct)   # assign first: it returns ,array
         if ($notRead.Count) {
-            $results += New-CENotReadResult -Records $notRead -Scope Machine -Expected 'Remote access tools and AI agents only where approved and protected with MFA' `
+            $results += New-CENotReadResult -Records $notRead -Scope Machine -Expected $expected `
                 -Consequence 'an AI agent that can act on this device may not have been seen'
+        }
+        else {
+            $other = Select-CENotRead -Records $records -Topics (Get-CEAIDetectionTopic -HidesTool)   # assign first: it returns ,array
+            if ($other.Count) {
+                $lines = @($other | ForEach-Object { Format-CENotRead $_ })
+                $advice = Get-CENotReadAdvice -Records $other -Scope Machine   # assign first: it returns ,array
+                $results += New-CEResult -Status 'Info' -Subject 'Not read' -Expected $expected `
+                    -Actual "$($other.Count) location(s) could not be read, so an AI browser extension may not have been seen (none of these can hide an agent that can act on this device): $($lines -join '; ')" `
+                    -Recommendation ($advice -join ' ') -Evidence $lines
+            }
         }
         return $results
     }

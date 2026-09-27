@@ -85,8 +85,11 @@ elevated. All of these reads go through one layer (`src/CEAudit/Private/15-Profi
    the profile is shown as the inventory names it), what was not read, why, and how to
    read it. Only what Windows says is not there counts as missing: a folder or file the
    tool may not look at (for example because of its permissions) is recorded too. The
-   checks that depend on it (SC-09, SC-12, SC-13, FW-07 and UA-07) are then Manual,
-   never Pass or Not applicable, and the records appear in the
+   checks whose verdict is about what may be there (SC-09, SC-12, SC-13 and FW-07) are
+   then Manual, never Pass or Not applicable. UA-07 judges the cloud services it found
+   and their MFA attestations, so it adds a note instead and keeps its status. SC-09 also
+   only adds a note when the places not read can hide only AI browser extensions, which
+   cannot act on the device. The records appear in the
    report, the GUI and the `ai.notRead` block of `user-status.json` (with
    `ai.scanComplete`, which is `false` only when a location not read could hide an AI
    tool). Machine-scope checks name a full audit without elevation, signed

@@ -27,8 +27,17 @@ function Get-CEAIDetectionTopic {
         The not-read topics (15-ProfileReads.ps1) that AI tool detection depends on. -HidesTool
         leaves out 'browser-installed': a browser whose installed marker could not be checked still
         has its tool reported, and its service kept, so SC-09 and UA-07 miss nothing because of it.
+        -CanAct keeps only the topics that can hide an agent that can act on the device (SC-09):
+        'browser' (browser extension folders) only when a catalog tool with canActOnDevice is found
+        by its browser extensions, which none in the shipped catalog is.
     #>
-    param([switch]$HidesTool)
+    param([switch]$HidesTool, [switch]$CanAct)
+    if ($CanAct) {
+        $catalog = Get-CEAIToolCatalog   # assign first: it returns ,array
+        $byExtension = @($catalog | Where-Object { [bool](Get-CEObjectValue $_.Tool 'canActOnDevice' $false) -and @(Get-CEObjectValue $_.Tool 'browserExtensions' @()).Count })
+        if ($byExtension.Count) { return , @('profile', 'vscode', 'vscode-builtin', 'paths', 'browser') }
+        return , @('profile', 'vscode', 'vscode-builtin', 'paths')
+    }
     if ($HidesTool) { return , @('profile', 'vscode', 'vscode-builtin', 'paths', 'browser') }
     return , @('profile', 'vscode', 'vscode-builtin', 'paths', 'browser', 'browser-installed')
 }

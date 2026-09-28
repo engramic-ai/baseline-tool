@@ -1226,6 +1226,168 @@ Describe 'Intune: status, discovery and compliance rules' {
         @($eval.Rules | Where-Object State -eq 'NonCompliant').SettingName | Should -Be @('CEAuditAgeHours')
     }
 
+    It 'one failed audit stays compliant; three in a row, or two over 72 hours, do not; a success resets the count' {
+        # A single transient failure never flips compliance, a stale result does (CEAuditAgeHours), and
+        # so does an audit that keeps failing: 3 runs in a row, or 2 or more over 72 hours.
+        function global:Add-TestAuditFailure {
+            param([string]$Root, [datetime]$At)
+            InModuleScope CEAudit -Parameters @{ Root = $Root; At = $At } {
+                param($Root, $At)
+                Mock Test-CEIsAdmin { $false }
+                Write-CEAuditFailure -DataRoot $Root -Message 'The audit failed' -Now $At
+            }
+        }
+        function global:Get-TestFailureVerdict {
+            param([string]$Root, [datetime]$At, [string]$RulesPath)
+            $data = Get-CEComplianceData -DataRoot $Root -Installed $true -Elevated $false -NoKick -Now $At
+            $eval = Test-CEComplianceRules -DiscoveryOutput ($data | ConvertTo-Json -Compress) -RulesPath $RulesPath
+            [pscustomobject]@{ Data = $data; Compliant = $eval.Compliant; NonCompliant = @($eval.Rules | Where-Object State -eq 'NonCompliant' | ForEach-Object { $_.SettingName }) }
+        }
+        $root = Join-Path $TestDrive 'failed-runs'
+        New-TestStatus -Kind Secure -DataRoot $root -AttestMfa | Out-Null
+        $now = [datetime]::UtcNow
+        $errPath = Join-Path $root 'last-error.json'
+
+        $v = Get-TestFailureVerdict -Root $root -At $now -RulesPath $script:strictRules
+        $v.Data.CEAuditFailedRuns | Should -Be 0
+        $v.Data.CEAuditFailingHours | Should -Be 0
+        $v.Compliant | Should -BeTrue
+
+        # One failed run: reported (CEAuditError), but compliance does not change.
+        $r = Add-TestAuditFailure -Root $root -At $now.AddHours(-2)
+        $r.FailedRuns | Should -Be 1
+        $v = Get-TestFailureVerdict -Root $root -At $now -RulesPath $script:strictRules
+        $v.Data.CEAuditError | Should -BeTrue
+        $v.Data.CEAuditFailedRuns | Should -Be 1
+        $v.Data.CEAuditFailingHours | Should -Be 0 -Because 'the hours only count once at least 2 runs have failed'
+        $v.Compliant | Should -BeTrue -Because 'one failed run never flips compliance'
+
+        # Two in a row, 2 hours apart: still compliant.
+        Add-TestAuditFailure -Root $root -At $now.AddHours(-1) | Out-Null
+        $v = Get-TestFailureVerdict -Root $root -At $now -RulesPath $script:strictRules
+        $v.Data.CEAuditFailedRuns | Should -Be 2
+        $v.Data.CEAuditFailingHours | Should -Be 2
+        $v.Compliant | Should -BeTrue
+
+        # Three in a row: not compliant, under every rules file, before the result goes stale.
+        $r = Add-TestAuditFailure -Root $root -At $now
+        $r.FailedRuns | Should -Be 3
+        $saved = Get-Content -LiteralPath $errPath -Raw | ConvertFrom-Json
+        $saved.FailedRuns | Should -Be 3
+        $first = if ($saved.FirstFailure -is [datetime]) { $saved.FirstFailure.ToUniversalTime() } else { [datetime]::Parse($saved.FirstFailure, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime() }
+        $first | Should -Be $now.AddHours(-2) -Because 'the first failure since the last success is carried over'
+        $v = Get-TestFailureVerdict -Root $root -At $now -RulesPath $script:strictRules
+        $v.Data.CEAuditAgeHours | Should -BeLessThan 72
+        $v.NonCompliant | Should -Be @('CEAuditFailedRuns')
+        ($v.Data | ConvertTo-Json -Compress) | Should -Match '"CEAuditFailedRuns":3'
+        foreach ($rules in @($script:softRules, $script:fwRules)) {
+            (Get-TestFailureVerdict -Root $root -At $now -RulesPath $rules).NonCompliant | Should -Contain 'CEAuditFailedRuns'
+        }
+
+        # A successful audit removes last-error.json, so both counts start again.
+        InModuleScope CEAudit -Parameters @{ Root = $root } { param($Root) Mock Test-CEIsAdmin { $false }; Clear-CEAuditFailure -DataRoot $Root }
+        Test-Path -LiteralPath $errPath | Should -BeFalse
+        $v = Get-TestFailureVerdict -Root $root -At $now -RulesPath $script:strictRules
+        $v.Data.CEAuditFailedRuns | Should -Be 0
+        $v.Compliant | Should -BeTrue
+        (Add-TestAuditFailure -Root $root -At $now).FailedRuns | Should -Be 1 -Because 'the count starts again after a success'
+        InModuleScope CEAudit -Parameters @{ Root = $root } { param($Root) Mock Test-CEIsAdmin { $false }; Clear-CEAuditFailure -DataRoot $Root }
+
+        # Two failed runs over 72 hours with no success between: not compliant. (status.json is kept fresh
+        # here so only this rule is tested; on a real device the audit age has usually passed 72 too, but
+        # this rule still holds when an administrator relaxes the audit-age limit.)
+        Add-TestAuditFailure -Root $root -At $now.AddHours(-80) | Out-Null
+        $v = Get-TestFailureVerdict -Root $root -At $now -RulesPath $script:strictRules
+        $v.Data.CEAuditFailingHours | Should -Be 0 -Because 'one failed run, however long ago, is not a run of failures'
+        $v.Compliant | Should -BeTrue
+        Add-TestAuditFailure -Root $root -At $now.AddHours(-1) | Out-Null
+        $v = Get-TestFailureVerdict -Root $root -At $now -RulesPath $script:strictRules
+        $v.Data.CEAuditFailedRuns | Should -Be 2
+        $v.Data.CEAuditFailingHours | Should -Be 80
+        $v.NonCompliant | Should -Be @('CEAuditFailingHours')
+        foreach ($rules in @($script:softRules, $script:fwRules)) {
+            (Get-TestFailureVerdict -Root $root -At $now -RulesPath $rules).NonCompliant | Should -Contain 'CEAuditFailingHours'
+        }
+        # Just under 72 hours is still compliant.
+        $v = Get-TestFailureVerdict -Root $root -At $now.AddHours(-9) -RulesPath $script:softRules
+        $v.Data.CEAuditFailingHours | Should -Be 71
+        $v.NonCompliant | Should -Not -Contain 'CEAuditFailingHours'
+
+        # A last-error.json from before failures were counted (or the user probe's shape) is one failed run.
+        Set-Content -LiteralPath $errPath -Value ('{ "Time": "' + $now.AddHours(-5).ToString('o') + '", "Message": "Access to the path is denied." }')
+        $v = Get-TestFailureVerdict -Root $root -At $now -RulesPath $script:strictRules
+        $v.Data.CEAuditFailedRuns | Should -Be 1
+        $v.Compliant | Should -BeTrue
+        $r = Add-TestAuditFailure -Root $root -At $now
+        $r.FailedRuns | Should -Be 2
+        $r.FirstFailure | Should -Be $now.AddHours(-5).ToString('o') -Because 'its Time is the first failure'
+        # Unreadable counts as one failed run too, never as a pass or a crash.
+        Set-Content -LiteralPath $errPath -Value 'not json'
+        (Get-CEComplianceData -DataRoot $root -Installed $true -Elevated $false -NoKick -Now $now).CEAuditFailedRuns | Should -Be 1
+        Remove-Item -LiteralPath $errPath
+    }
+
+    It 'every rules file flags repeated audit failures and leaves CEAuditError for reporting' {
+        foreach ($f in @($script:strictRules, $script:softRules, $script:fwRules)) {
+            $rules = @((Get-Content -LiteralPath $f -Raw | ConvertFrom-Json).Rules)
+            $runs = @($rules | Where-Object SettingName -eq 'CEAuditFailedRuns')
+            $runs.Count | Should -Be 1 -Because $f
+            $runs[0].Operator | Should -Be 'LessThan'
+            $runs[0].DataType | Should -Be 'Int64'
+            $runs[0].Operand | Should -Be 3
+            $runs[0].RemediationStrings[0].Title | Should -Match '\{ActualValue\} times in a row'
+            $hours = @($rules | Where-Object SettingName -eq 'CEAuditFailingHours')
+            $hours.Count | Should -Be 1 -Because $f
+            $hours[0].Operator | Should -Be 'LessThan'
+            $hours[0].DataType | Should -Be 'Int64'
+            $hours[0].Operand | Should -Be 72
+            $hours[0].RemediationStrings[0].Title | Should -Match '\{ActualValue\} hours'
+            @($rules | Where-Object SettingName -eq 'CEAuditAgeHours').Count | Should -Be 1 -Because 'a stale result still flips compliance'
+            @($rules | Where-Object SettingName -eq 'CEAuditError').Count | Should -Be 0 -Because 'one failed run must not flip compliance'
+        }
+    }
+
+    It 'compliance scripts treat a last-error.json a standard user could have written like an untrusted status.json' {
+        # A user who could change last-error.json could reset the count of failed audits, so as SYSTEM it
+        # gets the same trust check as status.json, and failing it reports no trustworthy data at all.
+        $root = Join-Path $TestDrive 'trust-last-error'
+        New-TestStatus -Kind Secure -DataRoot $root -AttestMfa | Out-Null
+        $errPath = Join-Path $root 'last-error.json'
+        [ordered]@{ Time = [datetime]::UtcNow.ToString('o'); Message = 'x'; Where = ''; FailedRuns = 1; FirstFailure = [datetime]::UtcNow.ToString('o') } |
+            ConvertTo-Json | Set-Content -LiteralPath $errPath -Encoding UTF8
+        $locked = @(
+            [pscustomobject]@{ IdentityReference = [Security.Principal.SecurityIdentifier]::new('S-1-5-18'); FileSystemRights = [Security.AccessControl.FileSystemRights]::FullControl; AccessControlType = [Security.AccessControl.AccessControlType]::Allow }
+            [pscustomobject]@{ IdentityReference = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'); FileSystemRights = [Security.AccessControl.FileSystemRights]::FullControl; AccessControlType = [Security.AccessControl.AccessControlType]::Allow }
+        )
+        $global:TestLastErrorOwner = 'S-1-5-18'
+        $global:TestLockedRules = $locked
+        Mock Get-Acl {
+            $owner = if ($LiteralPath -like '*last-error.json') { $global:TestLastErrorOwner } else { 'S-1-5-18' }
+            $acl = New-Object psobject
+            $acl | Add-Member -MemberType ScriptMethod -Name GetOwner -Value ([scriptblock]::Create("param(`$type) [Security.Principal.SecurityIdentifier]::new('$owner')"))
+            $acl | Add-Member -MemberType ScriptMethod -Name GetAccessRules -Value { param($explicit, $inherited, $type) $global:TestLockedRules }
+            return $acl
+        }
+        Get-CEStatusTrustProblem -DataRoot $root | Should -BeNullOrEmpty
+        $data = Get-CEComplianceData -DataRoot $root -Installed $true -Elevated $true -NoKick
+        $data.CEAuditFailedRuns | Should -Be 1
+        (Test-CEComplianceRules -DiscoveryOutput ($data | ConvertTo-Json -Compress) -RulesPath $script:strictRules).Compliant | Should -BeTrue
+
+        $global:TestLastErrorOwner = 'S-1-5-21-1-2-3-1001'
+        Get-CEStatusTrustProblem -DataRoot $root | Should -Match 'last-error\.json is owned by S-1-5-21-1-2-3-1001'
+        $data = Get-CEComplianceData -DataRoot $root -Installed $true -Elevated $true -NoKick
+        $data.CEAuditFailedRuns | Should -Be 99999
+        $data.CEAuditFailingHours | Should -Be 99999
+        $data.CEAutoFailCount | Should -Be -1 -Because 'an untrusted data folder counts as no data, as for status.json'
+        $eval = Test-CEComplianceRules -DiscoveryOutput ($data | ConvertTo-Json -Compress) -RulesPath $script:softRules
+        $eval.Compliant | Should -BeFalse
+        $bad = @($eval.Rules | Where-Object State -eq 'NonCompliant' | ForEach-Object { $_.SettingName })
+        $bad | Should -Contain 'CEAuditFailedRuns'
+        $bad | Should -Contain 'CEAuditFailingHours'
+        # A standard user running it can only mislead themselves, so it is read as it is.
+        (Get-CEComplianceData -DataRoot $root -Installed $true -Elevated $false -NoKick).CEAuditFailedRuns | Should -Be 1
+    }
+
     It 'never reports compliant when nothing is installed or no audit has run' {
         $data = Get-CEComplianceData -DataRoot (Join-Path $TestDrive 'empty') -Installed $false -Elevated $false -NoKick
         $data.CEAutoFailCount | Should -Be -1
@@ -2285,11 +2447,11 @@ Describe 'Headless scheduled audit' {
         # It is set true only after Initialize-CEDataFolder has run for all three folders.
         $setTrue = $text.IndexOf('$foldersReady = $true')
         $setTrue | Should -BeGreaterThan $init -Because 'set only after the folders are set up'
-        # The catch writes last-error.json only under the guard (anchor on the actual Set-Content write,
-        # not the explanatory comment that also names last-error.json).
+        # The catch writes last-error.json only under the guard (anchor on the actual write, not the
+        # explanatory comment that also names last-error.json).
         $catchIdx = $text.IndexOf("`ncatch {")
         $guardInCatch = $text.IndexOf('if ($foldersReady) {', $catchIdx)
-        $lastErrorWrite = $text.IndexOf("Set-Content -LiteralPath (Join-Path `$DataRoot 'last-error.json')", $catchIdx)
+        $lastErrorWrite = $text.IndexOf('Write-CEAuditFailure -DataRoot $DataRoot', $catchIdx)
         $guardInCatch | Should -BeGreaterThan $catchIdx
         $lastErrorWrite | Should -BeGreaterThan $guardInCatch -Because 'last-error.json is written only into a data root that was set up'
         # The finally runs housekeeping only under the guard.
@@ -2300,6 +2462,101 @@ Describe 'Headless scheduled audit' {
         $guardInFinally | Should -BeLessThan $house -Because 'old report folders are deleted only when the folders were set up and trusted'
         # The old comment that claimed it writes last-error.json "even" into an untrusted root is gone.
         $text | Should -Not -Match "don't create last-error.json in a folder we don't trust" -Because 'the comment now matches the guarded code'
+    }
+}
+
+Describe 'Counting failed machine audits (last-error.json)' {
+    It 'reads the previous last-error.json only when trusted, and moves an untrusted one OUT of the data folder instead' {
+        $pd = Join-Path $TestDrive 'pd-failcount'
+        $root = Join-Path $pd 'EngramicBaseline'
+        New-Item -ItemType Directory -Force -Path $root | Out-Null
+        $errPath = Join-Path $root 'last-error.json'
+        InModuleScope CEAudit -Parameters @{ Root = $root; Pd = $pd; ErrPath = $errPath } {
+            param($Root, $Pd, $ErrPath)
+            $script:CEDataRootOverride = $Root
+            try {
+                Mock Test-CEIsWindows { $true }
+                Mock Test-CEIsAdmin { $true }
+                Mock Write-CEEventEntry { }
+                $global:TestUntrustedLastError = $false
+                $global:TestUntrustedRoot = $false
+                Mock Get-CEDataPathProblem {
+                    if ($global:TestUntrustedLastError -and $Path -like '*last-error.json') { "$Path is owned by S-1-5-21-1-2-3-1001" }
+                    elseif ($global:TestUntrustedRoot -and $Path -like '*EngramicBaseline') { "$Path is owned by S-1-5-21-1-2-3-1001" }
+                }
+                $now = [datetime]::UtcNow
+                (Write-CEAuditFailure -DataRoot $Root -Message 'one' -Now $now.AddHours(-3)).FailedRuns | Should -Be 1
+                (Write-CEAuditFailure -DataRoot $Root -Message 'two' -Now $now.AddHours(-2)).FailedRuns | Should -Be 2
+                @(Get-ChildItem -LiteralPath $Root -Filter '*.tmp' -File).Count | Should -Be 0 -Because 'written to a temporary name and renamed into place'
+
+                # A forged count (say one a user reset to 0 so the device never flips) is not read.
+                $global:TestUntrustedLastError = $true
+                Set-Content -LiteralPath $ErrPath -Value '{ "FailedRuns": 0, "FirstFailure": "2099-01-01T00:00:00Z", "Message": "forged" }'
+                $r = Write-CEAuditFailure -DataRoot $Root -Message 'three' -Now $now -WarningVariable w -WarningAction SilentlyContinue
+                $r.FailedRuns | Should -Be 1 -Because 'an untrusted count is never carried over'
+                $r.FirstFailure | Should -Be $now.ToString('o')
+                $aside = @(Get-ChildItem -LiteralPath $Pd -File -Filter 'EngramicBaseline.untrusted-*-last-error.json')
+                $aside.Count | Should -Be 1 -Because 'moved out of the data folder, beside it, never deleted'
+                Get-Content -LiteralPath $aside[0].FullName -Raw | Should -Match 'forged'
+                @(Get-ChildItem -LiteralPath $Root -Force -Filter '*.untrusted-*').Count | Should -Be 0
+                "$w" | Should -Match ([regex]::Escape($aside[0].FullName))
+                Should -Invoke Write-CEEventEntry -Times 1 -Exactly -ParameterFilter { $Id -eq 1003 -and $Message -like "*$($aside[0].FullName)*" }
+                (Get-Content -LiteralPath $ErrPath -Raw | ConvertFrom-Json).Message | Should -Be 'three'
+
+                # After a success an untrusted file is moved aside too, never deleted; a trusted one is removed.
+                Clear-CEAuditFailure -DataRoot $Root -WarningAction SilentlyContinue
+                Test-Path -LiteralPath $ErrPath | Should -BeFalse
+                @(Get-ChildItem -LiteralPath $Pd -File -Filter 'EngramicBaseline.untrusted-*-last-error.json').Count | Should -Be 2
+                $global:TestUntrustedLastError = $false
+                Write-CEAuditFailure -DataRoot $Root -Message 'four' -Now $now | Out-Null
+                Clear-CEAuditFailure -DataRoot $Root
+                Test-Path -LiteralPath $ErrPath | Should -BeFalse
+                @(Get-ChildItem -LiteralPath $Pd -File -Filter 'EngramicBaseline.untrusted-*-last-error.json').Count | Should -Be 2 -Because 'a trusted file is simply removed'
+                Clear-CEAuditFailure -DataRoot $Root
+                Should -Invoke Write-CEEventEntry -Times 2 -Exactly
+
+                # Nothing is written into a data folder that is not trusted.
+                $global:TestUntrustedRoot = $true
+                { Write-CEAuditFailure -DataRoot $Root -Message 'five' -Now $now } | Should -Throw '*Did not record the failure*'
+                Test-Path -LiteralPath $ErrPath | Should -BeFalse
+            }
+            finally {
+                $script:CEDataRootOverride = $null
+                Remove-Variable -Name TestUntrustedLastError, TestUntrustedRoot -Scope Global -ErrorAction SilentlyContinue
+            }
+        }
+    }
+
+    It 'the scheduled audit counts failed runs in a fresh process, carrying the first failure time over' {
+        $pwshExe = (Get-Process -Id $PID).Path
+        $root = Join-Path $TestDrive 'headless-failing'
+        # A config override that is not JSON makes the run fail after the data folders are set up.
+        New-Item -ItemType Directory -Path (Join-Path $root 'config') -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path (Join-Path $root 'config') 'scheduled-audit.json') -Value 'not json'
+        $auditScript = Join-Path $script:RepoRoot 'app\Invoke-CEScheduledAudit.ps1'
+        $errPath = Join-Path $root 'last-error.json'
+        & $pwshExe -NoProfile -File $auditScript -DataRoot $root *> $null
+        $LASTEXITCODE | Should -Be 1
+        $one = Get-Content -LiteralPath $errPath -Raw | ConvertFrom-Json
+        $one.FailedRuns | Should -Be 1
+        & $pwshExe -NoProfile -File $auditScript -DataRoot $root *> $null
+        $LASTEXITCODE | Should -Be 1
+        $two = Get-Content -LiteralPath $errPath -Raw | ConvertFrom-Json
+        $two.FailedRuns | Should -Be 2
+        "$($two.FirstFailure)" | Should -Be "$($one.FirstFailure)"
+        "$($two.Time)" | Should -Not -Be "$($one.Time)"
+        Test-Path -LiteralPath (Join-Path $root 'status.json') | Should -BeFalse -Because 'a failed run never writes status.json'
+    }
+
+    It 'only the scheduled machine audit counts failures; the user probe never does' {
+        $audit = (Get-Content -LiteralPath (Join-Path $script:RepoRoot 'app\Invoke-CEScheduledAudit.ps1') -Raw) -replace '\r\n', "`n"
+        $audit | Should -Match 'Write-CEAuditFailure -DataRoot \$DataRoot '
+        $audit | Should -Match 'Clear-CEAuditFailure -DataRoot \$DataRoot'
+        $audit.IndexOf('Clear-CEAuditFailure') | Should -BeGreaterThan $audit.IndexOf('Write-CEStatus -Status') -Because 'the count is reset only once the new status.json is written'
+        $probe = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'app\Invoke-CEUserProbe.ps1') -Raw
+        $probe | Should -Not -Match 'Write-CEAuditFailure|FailedRuns'
+        $probe | Should -Match "Join-Path \`$base 'EngramicBaseline'" -Because 'its data folder is the user''s own, which Intune never reads'
+        $probe | Should -Match '\$base = \$env:LOCALAPPDATA'
     }
 }
 

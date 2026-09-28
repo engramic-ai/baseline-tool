@@ -11,7 +11,9 @@
                           Remediations scripts
       reports\<time>\     Full HTML / Markdown / JSON report and changeset
       logs\               Transcript of each run
-      last-error.json     Only if the last run failed
+      last-error.json     Only if the last run failed: the error, and the number
+                          of failed runs in a row with the time of the first
+                          (Write-CEAuditFailure)
 
     It also writes an Application event log entry (source
     EngramicBaseline, IDs 1000-1002, and 1003 when an untrusted data folder
@@ -19,7 +21,10 @@
 
     If a run fails, status.json is left alone so the audit age keeps growing
     and the device eventually reports as non-compliant for having no recent
-    audit, rather than falsely passing.
+    audit, rather than falsely passing. last-error.json counts the failed runs
+    since the last success, so Intune can also flag a device whose audit keeps
+    failing (3 in a row, or failing for 72 hours) before its result goes stale;
+    one failed run on its own changes nothing. A successful run removes it.
 
 .PARAMETER DataRoot
     Machine data folder. Default: %ProgramData%\EngramicBaseline
@@ -94,7 +99,9 @@ try {
     $report = Export-CEReport -Findings $findings -Context $ctx -OutputPath $folder
     $status = ConvertTo-CEStatus -Findings $findings -Summary $report.Summary -Context $ctx -ReportFolder $folder
     $statusPath = Write-CEStatus -Status $status -Path (Join-Path $DataRoot 'status.json')
-    Remove-Item -LiteralPath (Join-Path $DataRoot 'last-error.json') -ErrorAction SilentlyContinue
+    # This run succeeded, so the count of failed runs starts again.
+    try { Clear-CEAuditFailure -DataRoot $DataRoot }
+    catch { Write-Warning "Could not remove last-error.json after a successful audit: $($_.Exception.Message)" }
     try { Write-CEEventLog -Status $status } catch { Write-Warning "Could not write event log: $_" }
 
     $fwLine = @($status.frameworks.Keys | ForEach-Object { $v = $status.frameworks[$_]; if ($null -ne $v.metPct) { "$_=$($v.metPct)%" } })
@@ -105,18 +112,16 @@ try {
 }
 catch {
     $exitCode = 1
-    Write-Warning "Audit failed: $($_.Exception.Message)"
+    $failure = $_
+    Write-Warning "Audit failed: $($failure.Exception.Message)"
     # Record the failure ONLY into a data root that was set up and is trusted. If Initialize-CEDataFolder
     # itself failed - which is exactly when $DataRoot may be a folder or junction a standard user controls
     # - do not write last-error.json (a SYSTEM write could land through the user's junction). The task's
     # non-zero exit and the stale status.json are the signal instead.
     if ($foldersReady) {
         try {
-            [pscustomobject]@{
-                Time    = (Get-Date).ToUniversalTime().ToString('o')
-                Message = $_.Exception.Message
-                Where   = [string]$_.InvocationInfo.PositionMessage
-            } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $DataRoot 'last-error.json') -Encoding UTF8
+            $record = Write-CEAuditFailure -DataRoot $DataRoot -Message $failure.Exception.Message -Where ([string]$failure.InvocationInfo.PositionMessage)
+            Write-Warning "Failed runs in a row: $($record.FailedRuns), the first at $($record.FirstFailure) (UTC)."
         }
         catch { Write-Warning "Could not record the failure: $($_.Exception.Message)" }
     }

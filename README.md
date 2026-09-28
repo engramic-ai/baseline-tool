@@ -152,7 +152,7 @@ Alternatively, download the ready-made package from [Releases](https://github.co
 | **Custom compliance** | `Discover-CECompliance.ps1` plus a rules file, so each device reports compliant or not compliant, with user-facing reasons in Company Portal. There's a lenient rules file (automatic fails, supported OS, antivirus, audit freshness), a strict one (the full Cyber Essentials check set) and one that gates on framework coverage. |
 | **Remediations** (optional) | A tenant-wide report with one line per device showing the compliance state, counts and failing check IDs. It can also apply fixes you allow-list. |
 
-Compliance is based on the last scheduled audit. A device that hasn't completed an audit in 72 hours is **not compliant**, so a broken install can't pass silently.
+Compliance is based on the last scheduled audit. A device that hasn't completed an audit in 72 hours is **not compliant**, so a broken install can't pass silently. One failed audit never changes compliance, but an audit that keeps failing does, before its result goes stale: 3 failed runs in a row, or 2 or more over 72 hours with no success between (`CEAuditFailedRuns`, `CEAuditFailingHours`; see [docs/INTUNE.md](docs/INTUNE.md#when-a-failed-audit-makes-a-device-non-compliant)).
 
 ## The checks in detail
 

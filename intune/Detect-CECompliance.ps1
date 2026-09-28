@@ -13,19 +13,20 @@
 
 function Get-CEStatusTrustProblem {
     <#
-        Why status.json can't be trusted, or '' when it can: the data folder or the file is a link
-        (junction or symbolic link), is owned by someone other than SYSTEM, Administrators or
-        TrustedInstaller, or has permissions that let anyone else change it. Only the SYSTEM audit
-        should write it, and a standard user who could change either could make the device look
-        compliant. The owner alone is not enough: a hard link to a file the user can write, such as
-        their ntuser.ini, keeps that file's administrator owner. The same function is in
+        Why status.json or last-error.json can't be trusted, or '' when they can: the data folder or
+        either file is a link (junction or symbolic link), is owned by someone other than SYSTEM,
+        Administrators or TrustedInstaller, or has permissions that let anyone else change it. Only
+        the SYSTEM audit should write them, and a standard user who could change any of them could
+        make the device look compliant (or reset its count of failed audits). The owner alone is not
+        enough: a hard link to a file the user can write, such as their ntuser.ini, keeps that file's
+        administrator owner. A file that is not there is not a problem. The same function is in
         Detect-CECompliance.ps1 and Discover-CECompliance.ps1 (each is uploaded on its own).
     #>
     param([string]$DataRoot)
     $trusted = @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
     # Rights that let someone change, delete or re-permission it, including GENERIC_WRITE and GENERIC_ALL.
     $writeRights = 2 -bor 4 -bor 16 -bor 64 -bor 256 -bor 65536 -bor 262144 -bor 524288 -bor 0x40000000 -bor 0x10000000
-    foreach ($path in @($DataRoot, (Join-Path $DataRoot 'status.json'))) {
+    foreach ($path in @($DataRoot, (Join-Path $DataRoot 'status.json'), (Join-Path $DataRoot 'last-error.json'))) {
         $attributes = $null
         try { $attributes = [IO.File]::GetAttributes($path) } catch { continue }
         if ($attributes -band [IO.FileAttributes]::ReparsePoint) { return "$path is a link (junction or symbolic link)" }
@@ -57,12 +58,13 @@ $statusPath = Join-Path $dataRoot 'status.json'
 
 # Intune runs this as SYSTEM. A standard user running it can only mislead themselves. Exit 1 on an
 # untrusted status.json runs the remediation script, whose SYSTEM audit moves an untrusted data folder
-# aside and makes a fresh, locked one (or replaces an untrusted status.json); nothing needs reinstalling.
+# aside and makes a fresh, locked one (or replaces an untrusted status.json, or moves an untrusted
+# last-error.json aside); nothing needs reinstalling.
 $elevated = (New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if ($elevated) {
     $problem = Get-CEStatusTrustProblem -DataRoot $dataRoot
     if ($problem) {
-        Write-Output "UNTRUSTED: $problem, so status.json may be forged. The next SYSTEM audit (the remediation script runs one) moves an untrusted data folder aside to %ProgramData%\EngramicBaseline.untrusted-<id> and writes a fresh status.json; check that folder, then delete it."
+        Write-Output "UNTRUSTED: $problem, so the audit result may be forged. The next SYSTEM audit (the remediation script runs one) moves an untrusted data folder or last-error.json aside to %ProgramData%\EngramicBaseline.untrusted-<id> and writes a fresh status.json; check what was moved, then delete it."
         exit 1
     }
 }

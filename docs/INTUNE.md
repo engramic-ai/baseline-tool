@@ -27,6 +27,12 @@ Remediations (optional, daily)
 
 The full audit doesn't run inside the compliance script, because checking Windows Update can take minutes and discovery scripts have a 10-minute limit. The compliance script only reads the result of the last scheduled audit. If that result is more than a day old, the compliance script starts the audit task, so the next evaluation has fresh data. If no audit has succeeded for 72 hours, the device reports as **not compliant**. A broken install therefore can't pass silently.
 
+A failed audit is handled like this (see [When a failed audit makes a device non-compliant](#when-a-failed-audit-makes-a-device-non-compliant)):
+
+- **One failed run never flips compliance.** Updates, restarts and network drops make the odd run fail, and the last good result still stands.
+- **A stale result does.** A failed run leaves `status.json` alone, so its age keeps growing until `CEAuditAgeHours` passes 72.
+- **An audit that keeps failing does, before its result goes stale:** 3 failed runs in a row (`CEAuditFailedRuns`), or 2 or more failed runs over 72 hours with no successful audit between them (`CEAuditFailingHours`).
+
 ### Shadow AI is per-user
 
 The AI agents, WSL distributions and MCP servers a person uses live in **their** profile and **their** WSL VM, which the SYSTEM audit cannot see - each user gets their own WSL session. So those checks are **User-scope** (`Register-CECheck -Scope User`) and run as the signed-in user via `Invoke-CEUserProbe.ps1`, which writes `%LOCALAPPDATA%\EngramicBaseline\user-status.json` in the same shape as the device `status.json` (self-describing `checks`, derived `frameworks`) plus an **`ai`** block: the agents found, whether they are `contained` (none running as admin, no root distribution) and a `deviations` count, the `environments` they run in (WSL distributions, containers), the **MCP servers** each recognised agent is wired to (`ai.mcpServers`), and an `ai.credentialsPlaintext` count of agent credentials found stored in plaintext (never the values themselves - see [SECURITY.md](../SECURITY.md)). A user-context Intune remediation can key off `ai.deviations` / `ai.contained` (a plaintext credential also counts as a deviation) or the standalone `ai.credentialsPlaintext`. Both status files carry `platform` (`windows`), so results from other operating systems can sit alongside them later. The installer registers a second scheduled task, `\EngramicBaseline\User probe`, with a **Users-group principal** so each signed-in user runs their own instance in their own session (at logon and daily). Pass `-NoUserProbeTask` to `Install-CEChecker.ps1` to skip it.
@@ -163,9 +169,9 @@ To upgrade, bump `ModuleVersion` in `src/CEAudit/CEAudit.psd1` and `$required` i
 
 | Rules file | Device is compliant when |
 |---|---|
-| `compliance-rules-autofail-only.json` (**start here**) | The tool is installed, an audit ran within 72 hours, there are no automatic-fail items (overdue updates or apps), Windows is supported, and antivirus is on and current |
+| `compliance-rules-autofail-only.json` (**start here**) | The tool is installed, an audit ran within 72 hours and isn't repeatedly failing, there are no automatic-fail items (overdue updates or apps), Windows is supported, and antivirus is on and current |
 | `compliance-rules.json` | All of the above, **plus** no failing Cyber Essentials checks, the everyday account is a standard user, and MFA is attested for cloud services |
-| `compliance-rules-frameworks.json` | Installed, audited within 72 hours, no automatic-fail or failing controls, **and** at least 80% of the applicable Cyber Essentials v3.3 controls met (`CEv33MetPct`). Shadow-AI posture is enforced separately, via a user-context remediation on `ai.deviations` (SYSTEM compliance can't see per-user AI). |
+| `compliance-rules-frameworks.json` | Installed, audited within 72 hours and not repeatedly failing, no automatic-fail or failing controls, **and** at least 80% of the applicable Cyber Essentials v3.3 controls met (`CEv33MetPct`). Shadow-AI posture is enforced separately, via a user-context remediation on `ai.deviations` (SYSTEM compliance can't see per-user AI). |
 
 Suggested rollout:
 
@@ -180,7 +186,9 @@ Suggested rollout:
 | `CECheckerInstalled` | Boolean | Detection key present |
 | `CEToolVersion` | String | Version that produced the last audit |
 | `CEAuditAgeHours` | Int64 | Hours since the last successful audit (99999 if none) |
-| `CEAuditError` | Boolean | The most recent run failed (see `logs\`) |
+| `CEAuditError` | Boolean | The most recent run failed (see `logs\`). For reporting only: no rules file uses it, because one failed run shouldn't flip compliance |
+| `CEAuditFailedRuns` | Int64 | SYSTEM audits that have failed in a row since the last successful one (0 when the last run succeeded; 99999 if `last-error.json` can't be trusted) |
+| `CEAuditFailingHours` | Int64 | Hours since the first of those failed runs; 0 unless at least 2 runs have failed (99999 if unknown or `last-error.json` can't be trusted) |
 | `CEAutoFailCount` | Int64 | v3.3 automatic-fail controls currently failing (-1 if unknown) |
 | `CEFailCount` | Int64 | Failing Cyber Essentials controls (-1 if unknown) |
 | `CEReviewCount` | Int64 | Cyber Essentials controls needing review or attestation |
@@ -196,6 +204,20 @@ Suggested rollout:
 | `CEFailing` | String | IDs of failing findings (up to 400 characters) |
 
 Any of these can be used in your own rules file. Unknown values are always reported as failing values.
+
+### When a failed audit makes a device non-compliant
+
+Every rules file has these three audit rules. Intune requires all of a policy's rules to pass, so any one of them makes the device non-compliant:
+
+| Rule | Non-compliant when | Why |
+|---|---|---|
+| `CEAuditAgeHours` LessEquals 72 | No audit has succeeded for more than 72 hours | The last result is too old to describe the device |
+| `CEAuditFailedRuns` LessThan 3 | 3 or more runs in a row have failed | The audit is broken, not unlucky; don't wait for the result to go stale |
+| `CEAuditFailingHours` LessThan 72 | 2 or more runs have failed and the first was 72 or more hours ago, with no successful audit between | A device that is often off may fail only once or twice in 3 days. With the default audit-age limit this usually coincides with a stale result, but it still holds if you relax that limit |
+
+One failed run changes none of these, so a single transient failure never flips compliance; `CEAuditError` reports it without failing a rule. The scheduled audit keeps the count in `last-error.json`: the number of failed runs in a row and the UTC time of the first, carried over from the previous `last-error.json` only if that file passes the same trust check as `status.json` (otherwise it is moved aside to `C:\ProgramData\EngramicBaseline.untrusted-<id>-last-error.json`, event 1003, and the count starts again at 1). A successful audit deletes it, which resets both counts. The discovery script applies that trust check too: if `last-error.json` could have been changed by a standard user, it reports the device as having no trustworthy data, like an untrusted `status.json`. The per-user probe (`Invoke-CEUserProbe.ps1`) keeps its own `last-error.json` in the user's profile and never affects these counts. If the audit can't even set up the data folder, it writes no `last-error.json` (see the scheduled task's exit code and logs), and `CEAuditAgeHours` catches it.
+
+To change the thresholds, edit the operands in your copy of the rules file, as for the audit age.
 
 ## 5. Remediations (optional)
 
@@ -226,7 +248,7 @@ Out of the box, the remediation script only runs a fresh audit. To have it fix t
 | Latest result | `C:\ProgramData\EngramicBaseline\status.json` |
 | Full reports | `C:\ProgramData\EngramicBaseline\reports\` (last 14 kept) |
 | Run logs | `C:\ProgramData\EngramicBaseline\logs\` |
-| Last failure | `C:\ProgramData\EngramicBaseline\last-error.json` |
+| Last failure | `C:\ProgramData\EngramicBaseline\last-error.json`: the error, `FailedRuns` (failed runs in a row) and `FirstFailure` (UTC). Removed by the next successful audit |
 | Event log | Application log, source `EngramicBaseline`: 1000 clean (no attention, no auto-fail), 1001 attention items present, 1002 auto-fail controls failing. Their text includes the status JSON, so the Azure Monitor Agent / Log Analytics can collect it with a Windows event data collection rule. 1003 means something in the data folder could not be trusted: a link was removed, or the folder (or a folder or file in it) was moved aside, and the text names where to. |
 | Run it now | `Start-ScheduledTask -TaskPath '\EngramicBaseline\' -TaskName Audit` |
 
@@ -242,7 +264,7 @@ Out of the box, the remediation script only runs a fresh audit. To have it fix t
 |---|---|
 | Win32 app shows *failed* | `C:\ProgramData\EngramicBaseline\logs\install-*.log` and `C:\ProgramData\Microsoft\IntuneManagementExtension\Logs\AppWorkload.log` |
 | Compliance shows *error* / *not applicable* for the custom settings | The discovery script didn't return JSON; see `HealthScripts.log` in the IME logs folder |
-| `CEAuditAgeHours` keeps growing | `Get-ScheduledTaskInfo -TaskPath '\EngramicBaseline\' -TaskName Audit`, then `last-error.json` and `logs\audit-*.log` |
+| `CEAuditAgeHours`, `CEAuditFailedRuns` or `CEAuditFailingHours` non-compliant | `Get-ScheduledTaskInfo -TaskPath '\EngramicBaseline\' -TaskName Audit`, then `last-error.json` and `logs\audit-*.log` |
 | SU-08 only reports BIOS age, never "latest for this model" | Open the device's `findings.json` and look for the `Firmware catalog:` line in the SU-08 evidence. `Error - Firmware catalog unreachable` means the device can't reach `baseline.engramic.ai` over HTTPS as SYSTEM (see [Network access](#network-access)); `Unsupported` means the make isn't Dell, HP or Lenovo |
 | A config override or pack is missing after the install | Look for event 1003 in the Application log, or a warning in `logs\install-*.log`: the data folder was moved aside to `C:\ProgramData\EngramicBaseline.untrusted-<id>`. Stage config overrides in the package, or deploy them after the app (see [Config overrides and packs](#config-overrides-and-packs)) |
 | Everything says `CEMfaAttested` is false | Expected until `config/cloud-services.json` records MFA for each service. Use the lenient rules until then. |

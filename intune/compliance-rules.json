@@ -29,6 +29,34 @@
       ]
     },
     {
+      "SettingName": "CEAuditFailedRuns",
+      "Operator": "LessThan",
+      "DataType": "Int64",
+      "Operand": 3,
+      "MoreInfoUrl": "https://github.com/engramic-ai/baseline-tool#readme",
+      "RemediationStrings": [
+        {
+          "Language": "en_US",
+          "Title": "The Cyber Essentials check on this device has failed {ActualValue} times in a row.",
+          "Description": "Restart the device and leave it switched on and connected for a while so the daily check can run again. If this keeps happening, contact IT."
+        }
+      ]
+    },
+    {
+      "SettingName": "CEAuditFailingHours",
+      "Operator": "LessThan",
+      "DataType": "Int64",
+      "Operand": 72,
+      "MoreInfoUrl": "https://github.com/engramic-ai/baseline-tool#readme",
+      "RemediationStrings": [
+        {
+          "Language": "en_US",
+          "Title": "The Cyber Essentials check on this device has been failing for {ActualValue} hours.",
+          "Description": "Restart the device and leave it switched on and connected for a while so the daily check can run again. If this keeps happening, contact IT."
+        }
+      ]
+    },
+    {
       "SettingName": "CEAutoFailCount",
       "Operator": "IsEquals",
       "DataType": "Int64",

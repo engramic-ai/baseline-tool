@@ -1218,6 +1218,24 @@ Describe 'Intune: status, discovery and compliance rules' {
         (Get-Content (Join-Path $script:intune 'Detect-CEChecker.ps1') -Raw) | Should -Match ([regex]::Escape("[version]'$v'"))
     }
 
+    It 'the install takes back and locks the data folder before creating, logging or copying anything' {
+        # %ProgramData% lets standard users create folders, and the SYSTEM audit trusts config
+        # overrides there, so a folder a user made first must be taken back before it is used.
+        $text = (Get-Content (Join-Path $script:intune 'Install-CEChecker.ps1') -Raw) -replace '\r\n', "`n"
+        $firstCopy = $text.IndexOf('Copy-Item')
+        $firstCopy | Should -BeGreaterThan 0
+        $lock = $text.IndexOf('Set-CELockedAcl -Path $dataRoot')
+        $text.IndexOf('Reset-CEFolderOwner -Path $dataRoot') | Should -BeIn (1..$lock)
+        $lock | Should -BeLessThan $text.IndexOf("foreach (`$name in @('logs', 'reports', 'config'))")
+        $lock | Should -BeLessThan $firstCopy
+        $lock | Should -BeLessThan $text.IndexOf('Start-Transcript')
+        $text | Should -Match '(?m)^\s+Reset-CEFolderOwner -Path \$d$' -Because 'each subfolder is taken back too'
+        $text | Should -Match "(?m)^\`$takeown = Join-Path \`$system32 'takeown\.exe'$"
+        $text | Should -Match "(?m)^\`$icacls = Join-Path \`$system32 'icacls\.exe'$"
+        $text | Should -Not -Match '&\s*(icacls|takeown)(\.exe)?\b' -Because 'native tools run by full path, not through PATH'
+        $text | Should -Match 'if \(\$transcribing\) \{ Stop-Transcript' -Because 'a failure before logging starts must not hide the real error'
+    }
+
     It 'Remediations detection prints a summary and exits 1 when not ready, 0 when ready' {
         $pwshExe = (Get-Process -Id $PID).Path
         $detect = Join-Path $script:intune 'Detect-CECompliance.ps1'
@@ -3004,6 +3022,43 @@ Describe 'Security review fixes' {
                 Test-CEDataPathTrusted -Path 'C:\ProgramData\EngramicBaseline\config' | Should -BeFalse
                 Mock Get-CEPathAclProblem { @() }
                 Test-CEDataPathTrusted -Path 'C:\ProgramData\EngramicBaseline\config' | Should -BeTrue
+            }
+        }
+
+        It 'loads a config override when elevated only if the data folder, the config folder and the file are admin-only' {
+            # A file keeps the owner who created it, so a file a standard user dropped into the config
+            # folder before it was locked must be refused on its own, as pack files are.
+            $data = Join-Path $TestDrive 'per-file-override'
+            $cfgDir = Join-Path $data 'config'
+            New-Item -ItemType Directory -Force -Path $cfgDir | Out-Null
+            Set-Content -LiteralPath (Join-Path $cfgDir 'firmware-catalog.json') -Value '{ "baseUrl": "https://catalog.example.com" }'
+            Set-Content -LiteralPath (Join-Path $cfgDir 'network.json') -Value '{ "proxyUrl": "http://proxy.contoso.com:3128" }'
+            Set-Content -LiteralPath (Join-Path $cfgDir 'thresholds.jsonbak') -Value '{ "not": "config" }'
+            $global:TestOverrideRoot = $data
+            InModuleScope CEAudit -Parameters @{ Data = $data } {
+                param($Data)
+                $script:CEDataRootOverride = $Data
+                try {
+                    Mock Test-CEIsAdmin { $true }
+                    Mock Get-CEPathAclProblem { if ($Path -like '*firmware-catalog.json') { @("$Path is owned by S-1-5-21-1-2-3-1001") } }
+                    Get-CEConfig -Force -WarningVariable warned -WarningAction SilentlyContinue | Out-Null
+                    (Get-CEConfig).'firmware-catalog'.baseUrl | Should -Be 'https://baseline.engramic.ai' -Because 'a user-owned file is refused'
+                    (Get-CEConfig).network.proxyUrl | Should -Be 'http://proxy.contoso.com:3128' -Because 'an admin-only file beside it still loads'
+                    ($warned -join ' ') | Should -Match 'firmware-catalog\.json'
+                    Should -Invoke Get-CEPathAclProblem -ParameterFilter { $Path -like '*network.json' }
+                    Should -Invoke Get-CEPathAclProblem -Times 0 -Exactly -ParameterFilter { $Path -like '*.jsonbak' } -Because 'only .json files are config'
+                    (Get-CEConfig).Keys | Should -Not -Contain 'thresholds.jsonbak'
+
+                    Mock Get-CEPathAclProblem { if ($Path -eq $global:TestOverrideRoot) { @("$Path is owned by S-1-5-21-1-2-3-1001") } }
+                    Get-CEConfig -Force -WarningAction SilentlyContinue | Out-Null
+                    (Get-CEConfig).network.proxyUrl | Should -Be '' -Because 'whoever owns the data folder could replace the config folder'
+
+                    Mock Get-CEPathAclProblem { }
+                    Get-CEConfig -Force | Out-Null
+                    (Get-CEConfig).'firmware-catalog'.baseUrl | Should -Be 'https://catalog.example.com'
+                    (Get-CEConfig).network.proxyUrl | Should -Be 'http://proxy.contoso.com:3128'
+                }
+                finally { $script:CEDataRootOverride = $null; Get-CEConfig -Force -WarningAction SilentlyContinue | Out-Null }
             }
         }
     }

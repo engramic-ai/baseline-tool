@@ -76,11 +76,15 @@ $taskPath = '\EngramicBaseline\'
 $taskName = 'Audit'
 $userTaskName = 'User probe'
 
-foreach ($d in @($dataRoot, (Join-Path $dataRoot 'logs'), (Join-Path $dataRoot 'reports'), (Join-Path $dataRoot 'config'))) {
-    if (-not (Test-Path -LiteralPath $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
-}
 $log = Join-Path $dataRoot ("logs\install-{0}.log" -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
-Start-Transcript -LiteralPath $log | Out-Null
+# Native tools by full path, never through PATH.
+$system32 = [Environment]::GetFolderPath('System')
+$icacls = Join-Path $system32 'icacls.exe'
+$takeown = Join-Path $system32 'takeown.exe'
+# SYSTEM, Administrators, TrustedInstaller.
+$trustedOwners = @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
+
+$transcribing = $false
 
 function Set-CELockedAcl {
     <# SYSTEM and Administrators: full control. Users: read (optional). SIDs keep this locale independent. #>
@@ -88,11 +92,50 @@ function Set-CELockedAcl {
     $grants = @('*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F')
     if ($UsersRead) { $grants += '*S-1-5-32-545:(OI)(CI)RX' }
     $icaclsArgs = @($Path, '/inheritance:r', '/grant:r') + $grants + @('/Q')
-    & icacls.exe @icaclsArgs | Out-Null
+    & $icacls @icaclsArgs | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "icacls failed on $Path (exit $LASTEXITCODE)" }
+}
+
+function Reset-CEFolderOwner {
+    <#
+        Makes Administrators the owner of a folder (not its contents) and drops any permission
+        set on the folder itself, so it only inherits from its parent. A standard user who created
+        the folder first keeps no control over it. Files inside keep their owner, which is how an
+        elevated audit recognises ones a user planted (Get-CEConfig refuses them).
+    #>
+    param([string]$Path)
+    & $takeown /F $Path /A | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "takeown failed on $Path (exit $LASTEXITCODE)" }
+    & $icacls $Path /reset /Q | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "icacls failed on $Path (exit $LASTEXITCODE)" }
 }
 
 try {
+    # --- Data folder: lock it before anything is written there -------------
+    # %ProgramData% lets standard users create files and folders, and the data
+    # folder holds config overrides that the SYSTEM audit trusts. Lock it, and
+    # take back any folder a user created first, before creating anything inside.
+    if (-not (Test-Path -LiteralPath $dataRoot)) { New-Item -ItemType Directory -Path $dataRoot -Force | Out-Null }
+    Reset-CEFolderOwner -Path $dataRoot
+    Set-CELockedAcl -Path $dataRoot
+    foreach ($name in @('logs', 'reports', 'config')) {
+        $d = Join-Path $dataRoot $name
+        if (-not (Test-Path -LiteralPath $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
+        Reset-CEFolderOwner -Path $d
+    }
+    # Users may read config overrides (the desktop app uses them); status and reports stay admin-only.
+    & $icacls (Join-Path $dataRoot 'config') /grant '*S-1-5-32-545:(OI)(CI)RX' /Q | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "icacls failed on the config folder (exit $LASTEXITCODE)" }
+    # Log only once the data folder is locked, so no one else can read or plant the log.
+    Start-Transcript -LiteralPath $log | Out-Null
+    $transcribing = $true
+    foreach ($file in @(Get-ChildItem -LiteralPath (Join-Path $dataRoot 'config') -File -Force -ErrorAction SilentlyContinue)) {
+        $owner = (Get-Acl -LiteralPath $file.FullName).GetOwner([Security.Principal.SecurityIdentifier]).Value
+        if ($trustedOwners -notcontains $owner) {
+            Write-Warning "Config override $($file.Name) is owned by $owner, not an administrator, so audits running as administrator or SYSTEM ignore it. Check it, then save it again as administrator or delete it."
+        }
+    }
+
     $manifest = Import-PowerShellDataFile -Path (Join-Path $packageRoot 'src\CEAudit\CEAudit.psd1')
     $version = [string]$manifest.ModuleVersion
     Write-Host "Installing Engramic Baseline $version to $InstallPath"
@@ -128,9 +171,6 @@ try {
     }
     if (-not $swapped) { Move-Item -LiteralPath $staging -Destination $InstallPath }
     Set-CELockedAcl -Path $InstallPath -UsersRead
-    Set-CELockedAcl -Path $dataRoot
-    # Users may read config overrides (the desktop app uses them); status and reports stay admin-only.
-    & icacls.exe (Join-Path $dataRoot 'config') /grant '*S-1-5-32-545:(OI)(CI)RX' /Q | Out-Null
 
     # --- Event log source ----------------------------------------------------
     # Register the source by writing its registry key directly. The managed
@@ -227,6 +267,6 @@ catch {
     $exit = 1
 }
 finally {
-    Stop-Transcript | Out-Null
+    if ($transcribing) { Stop-Transcript | Out-Null }
 }
 exit $exit

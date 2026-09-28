@@ -95,16 +95,24 @@ function Get-CEConfig {
     $folders = @($ConfigPath)
     # Pack config comes after the shipped files (packs can't reuse their names) and before overrides.
     if ($script:CEPackConfigPaths) { $folders += @($script:CEPackConfigPaths) }
-    $overrideDir = Join-Path (Get-CEDataRoot) 'config'
+    $dataRoot = Get-CEDataRoot
+    $overrideDir = Join-Path $dataRoot 'config'
     if ((Test-Path -LiteralPath $overrideDir) -and ($overrideDir -ne $ConfigPath)) {
-        # An elevated audit must not load overrides a standard user could have planted.
-        if (Test-CEDataPathTrusted -Path $overrideDir) { $folders += $overrideDir }
+        # An elevated audit must not load overrides a standard user could have planted or could
+        # change: the data folder (whose owner could replace config), the config folder, and then
+        # each file below (a file keeps the owner who created it, even in a folder locked later).
+        if ((Test-CEDataPathTrusted -Path $dataRoot) -and (Test-CEDataPathTrusted -Path $overrideDir)) { $folders += $overrideDir }
         else { Write-Warning "Ignoring config overrides in $overrideDir : standard users can change it." }
     }
 
     $config = @{}
     foreach ($folder in $folders) {
-        foreach ($file in (Get-ChildItem -Path $folder -Filter '*.json' -ErrorAction SilentlyContinue)) {
+        foreach ($file in (Get-ChildItem -Path $folder -Filter '*.json' -File -ErrorAction SilentlyContinue)) {
+            if ($file.Extension -ne '.json') { continue }
+            if ($folder -eq $overrideDir -and -not (Test-CEDataPathTrusted -Path $file.FullName)) {
+                Write-Warning "Ignoring the config override $($file.FullName) : a standard user owns it or can change it."
+                continue
+            }
             $key = [IO.Path]::GetFileNameWithoutExtension($file.Name)
             $config[$key] = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json
         }

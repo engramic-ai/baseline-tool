@@ -104,7 +104,7 @@ If you'd rather not build it yourself, every release ships these same files: dow
 - `config/auto-remediation.json`: fixes the Remediations script may apply automatically (off by default).
 - `config/scheduled-audit.json`: checks to skip in the unattended audit.
 
-You can also change settings on individual devices without rebuilding. A file with the same name in `%ProgramData%\EngramicBaseline\config\` replaces the packaged one.
+You can also change settings on individual devices without rebuilding. A file with the same name in `%ProgramData%\EngramicBaseline\config\` replaces the packaged one. The install makes Administrators the owner of that folder and of `%ProgramData%\EngramicBaseline`, and locks both, before it creates anything there. The SYSTEM audit ignores (with a warning) any file in the folder that a standard user owns or can change, so deploy these files from an Intune script or as administrator.
 
 ## 3. Create the Win32 app
 

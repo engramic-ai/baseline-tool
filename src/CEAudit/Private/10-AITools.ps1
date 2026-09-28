@@ -5,6 +5,32 @@
 # the user's Store packages, profile folders, VS Code extensions and processes.
 # ---------------------------------------------------------------------------
 
+function Get-CEAIToolSignal {
+    <#
+        How to detect a catalog tool on Windows: its 'windows' block, or $null when it has none (a
+        tool that only runs elsewhere). An override written before signals were grouped by operating
+        system keeps them at the top level; those are read as the Windows signals.
+    #>
+    param($Tool)
+    $block = Get-CEObjectValue $Tool 'windows'
+    if ($null -ne $block) { return $block }
+    foreach ($name in 'programs', 'uninstallKeys', 'appx', 'processes', 'paths', 'vscodeExtensions', 'mcpConfigs') {
+        if ($null -ne $Tool.PSObject.Properties[$name]) { return $Tool }
+    }
+    return $null
+}
+
+function Get-CEAIToolCatalog {
+    <# Catalog tools looked for on Windows, each with its Windows signals as .Signals. #>
+    $out = New-Object System.Collections.ArrayList
+    foreach ($t in @(Get-CEObjectValue (Get-CEConfig).'ai-tools' 'tools' @())) {
+        $signals = Get-CEAIToolSignal -Tool $t
+        if ($null -eq $signals -or (Get-CEObjectValue $signals 'enabled' $true) -eq $false) { continue }
+        [void]$out.Add([pscustomobject]@{ Tool = $t; Signals = $signals })
+    }
+    return , $out.ToArray()
+}
+
 function Get-CEVsCodeBuiltInExtensionDir {
     <#
         Folders holding the extensions VS Code ships with (Copilot Chat since 1.13x). The user
@@ -140,7 +166,7 @@ function Get-CEAIToolState {
 
 function Get-CEAIToolStateUncached {
     param($Context)
-    $catalog = @(Get-CEObjectValue (Get-CEConfig).'ai-tools' 'tools' @() | Where-Object { (Get-CEObjectValue $_ 'enabled' $true) -ne $false })
+    $catalog = Get-CEAIToolCatalog   # assign first: it returns ,array
     $software = @(Get-CEInstalledSoftware)
     $store = Get-CEStorePackageName
     $profilePath = Get-CEUserProfilePath -Context $Context
@@ -163,28 +189,30 @@ function Get-CEAIToolStateUncached {
 
     $tools = New-Object System.Collections.ArrayList
     $claimed = @{}
-    foreach ($t in $catalog) {
+    foreach ($entry in $catalog) {
+        $t = $entry.Tool
+        $w = $entry.Signals
         $signals = @()
-        foreach ($p in @(Get-CEObjectValue $t 'programs' @())) {
+        foreach ($p in @(Get-CEObjectValue $w 'programs' @())) {
             $signals += @($software | Where-Object { $_.Name -like [string]$p.name -and (& $like $_.Publisher ([string](Get-CEObjectValue $p 'publisher' ''))) } |
                 ForEach-Object { & $programText $_ })
         }
-        $keys = @(Get-CEObjectValue $t 'uninstallKeys' @())
+        $keys = @(Get-CEObjectValue $w 'uninstallKeys' @())
         if ($keys.Count) { $signals += @($software | Where-Object { $keys -contains $_.KeyName } | ForEach-Object { & $programText $_ }) }
-        foreach ($a in @(Get-CEObjectValue $t 'appx' @())) { if ($store -contains $a) { $signals += "Store app: $a" } }
+        foreach ($a in @(Get-CEObjectValue $w 'appx' @())) { if ($store -contains $a) { $signals += "Store app: $a" } }
         if ($profilePath) {
-            foreach ($rel in @(Get-CEObjectValue $t 'paths' @())) {
+            foreach ($rel in @(Get-CEObjectValue $w 'paths' @())) {
                 if (Test-Path -LiteralPath (Join-Path $profilePath $rel)) { $signals += "Found %USERPROFILE%\$rel" }
             }
         }
-        foreach ($pattern in @(Get-CEObjectValue $t 'vscodeExtensions' @())) {
+        foreach ($pattern in @(Get-CEObjectValue $w 'vscodeExtensions' @())) {
             $signals += @($extensions | Where-Object { $_ -like $pattern } | ForEach-Object { "VS Code extension: $_" })
             # Built-in folders carry no version suffix; match them as if they had one so patterns like
             # "github.copilot-chat-*" cover both.
             $signals += @($builtIn | Where-Object { $_ -like $pattern -or "$_-builtin" -like $pattern } | ForEach-Object { "VS Code built-in extension: $_" })
         }
         $running = @()
-        foreach ($spec in @(Get-CEObjectValue $t 'processes' @())) {
+        foreach ($spec in @(Get-CEObjectValue $w 'processes' @())) {
             $pathPattern = [string](Get-CEObjectValue $spec 'path' '')
             $cmdPattern = [string](Get-CEObjectValue $spec 'commandLine' '')
             $image = [string](Get-CEObjectValue $spec 'image' '')
@@ -227,7 +255,7 @@ function Get-CEAIToolStateUncached {
 
     # Agent images whose path and command line couldn't be read: they may belong to a tool running
     # elevated or as another user. node.exe is too common to report this way.
-    $agentImages = @($catalog | ForEach-Object { @(Get-CEObjectValue $_ 'processes' @()) | Where-Object { (Get-CEObjectValue $_ 'path' '') -or (Get-CEObjectValue $_ 'commandLine' '') } | ForEach-Object { [string]$_.image } } |
+    $agentImages = @($catalog | ForEach-Object { @(Get-CEObjectValue $_.Signals 'processes' @()) | Where-Object { (Get-CEObjectValue $_ 'path' '') -or (Get-CEObjectValue $_ 'commandLine' '') } | ForEach-Object { [string]$_.image } } |
         Where-Object { $_ -and $_ -ne 'node.exe' } | Sort-Object -Unique)
     $hidden = @($processes | Where-Object { $agentImages -contains $_.Name -and -not $_.Path -and -not $_.CommandLine -and -not $claimed.ContainsKey($_.ProcessId) } |
         ForEach-Object { "$($_.Name) (pid $($_.ProcessId))" })

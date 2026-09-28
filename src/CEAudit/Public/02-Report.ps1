@@ -3,6 +3,10 @@
 # Source kept ASCII-only so Windows PowerShell 5.1 reads it correctly.
 # ---------------------------------------------------------------------------
 
+# One sentence under the AI section when AI tools are found, naming what the paid tier adds.
+# Set it to '' to leave it out of the report.
+$script:CEAIPaidTierNote = 'Recording which of these tools your organisation has approved, across all its devices, is part of the Engramic Baseline paid tier.'
+
 $script:CEPlusTestCases = @(
     @{ Id = 'TC1'; Name = 'Remote vulnerability assessment'; Scope = 'Internet-facing services. Tested externally by the assessor; this device audit only covers local firewall exposure.' },
     @{ Id = 'TC2'; Name = 'Check patching (authenticated scan)'; Scope = 'OS and application fixes older than 14 days (CVSS >= 7, critical/high, or unrated).' },
@@ -11,6 +15,12 @@ $script:CEPlusTestCases = @(
     @{ Id = 'TC4'; Name = 'Check MFA configuration'; Scope = 'MFA prompt on every cloud service for user and admin accounts (attestation).' },
     @{ Id = 'TC5'; Name = 'Check account separation'; Scope = 'Admin actions from the user account must require separate credentials.' }
 )
+
+function Get-CEAIToolCountText {
+    <# '1 AI tool found', '3 AI tools found'. #>
+    param([int]$Count)
+    return "$Count AI tool$(if ($Count -ne 1) { 's' }) found"
+}
 
 function Get-CESummary {
     [CmdletBinding()]
@@ -168,7 +178,7 @@ function Export-CEMarkdown {
     else {
         & $w '## AI on this device'
         & $w ''
-        & $w "**$($ai.agentsFound) AI tool(s) found** - $(if ($ai.contained) { 'contained (none running as administrator, no root distribution)' } else { "$($ai.deviations) deviation(s)" })."
+        & $w "**$(Get-CEAIToolCountText $ai.agentsFound)** - $(if ($ai.contained) { 'contained (none running as administrator, no root distribution)' } else { "$($ai.deviations) deviation(s)" })."
         & $w ''
         foreach ($a in @($ai.agents)) {
             $how = if ($a.elevated -or $a.asSystem) { '**running as administrator**' } elseif ($a.running) { 'running, standard user' } else { 'present' }
@@ -177,6 +187,12 @@ function Export-CEMarkdown {
         foreach ($env in @($ai.environments)) {
             if ($env.type -eq 'wsl') { & $w "- WSL $($env.wslVersion): $($env.name) - $(if ($env.defaultUidRoot) { '**defaults to root**' } else { 'non-root' })" }
             else { & $w "- $($env.type): $($env.name)" }
+        }
+        & $w ''
+        & $w 'Baseline finds AI installed on this device. It can''t see AI used in a browser tab.'
+        if ($ai.agentsFound -gt 0 -and $script:CEAIPaidTierNote) {
+            & $w ''
+            & $w $script:CEAIPaidTierNote
         }
         & $w ''
         & $w '## Frameworks'
@@ -408,7 +424,8 @@ function Export-CEHtml {
     $aiDevCls = if ($aiPosture.contained) { 'ok' } else { 'bad' }
     $aiDevTxt = if ($aiPosture.contained) { 'contained' } else { "$($aiPosture.deviations) deviation(s)" }
     $aiEmpty = if ($aiPosture.agentsFound -eq 0) { "<p class='ref'>No AI tools detected in this session.$(if ($Context.IsSystem) { ' Shadow AI is collected per user; run as the signed-in user for the full picture.' })</p>" } else { '' }
-    $aiHtml = "<h2 id='ai'>AI on this device</h2><div class='aibox'><div class='h'><strong>$($aiPosture.agentsFound) AI tool(s) found</strong><span class='dev0 $aiDevCls'>$aiDevTxt</span></div>$aiEmpty$(if ($agentsLi) { "<ul>$agentsLi</ul>" })$(if ($envLi) { "<div class='ref' style='margin-top:8px'>Where AI runs</div><ul>$envLi</ul>" })$(if ($mcpLi) { "<div class='ref' style='margin-top:8px'>MCP servers</div><ul>$mcpLi</ul>" })</div>"
+    $aiPaidHtml = if ($aiPosture.agentsFound -gt 0 -and $script:CEAIPaidTierNote) { "<p class='ref' style='margin:6px 0 0'>$(& $e $script:CEAIPaidTierNote)</p>" } else { '' }
+    $aiHtml = "<h2 id='ai'>AI on this device</h2><div class='aibox'><div class='h'><strong>$(Get-CEAIToolCountText $aiPosture.agentsFound)</strong><span class='dev0 $aiDevCls'>$aiDevTxt</span></div>$aiEmpty$(if ($agentsLi) { "<ul>$agentsLi</ul>" })$(if ($envLi) { "<div class='ref' style='margin-top:8px'>Where AI runs</div><ul>$envLi</ul>" })$(if ($mcpLi) { "<div class='ref' style='margin-top:8px'>MCP servers</div><ul>$mcpLi</ul>" })<p class='ref' style='margin:10px 0 0'>Baseline finds AI installed on this device. It can't see AI used in a browser tab.</p>$aiPaidHtml</div>"
 
     $applyCmd = & $e ".\app\Apply-CEChangeset.ps1 -Path '$ChangesetPath' -WhatIf"
 

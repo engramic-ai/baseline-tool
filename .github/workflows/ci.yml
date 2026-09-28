@@ -68,7 +68,10 @@ jobs:
       - name: Skip the online Windows Update search (slow on hosted runners)
         shell: powershell
         run: |
-          $dir = Join-Path $env:ProgramData 'EngramicBaseline\config'
+          # Staged in the package's data\config folder, which the install copies into the locked
+          # data folder. A file put in %ProgramData%\EngramicBaseline before the install would be
+          # moved aside with the folder, which the install cannot trust.
+          $dir = Join-Path (Get-Location) 'data\config'
           New-Item -ItemType Directory -Path $dir -Force | Out-Null
           '{ "excludeCheckIds": ["SU-03"] }' | Set-Content (Join-Path $dir 'scheduled-audit.json')
 
@@ -78,7 +81,10 @@ jobs:
 
       - name: Build the Intune package
         shell: powershell
-        run: ./intune/Build-IntunePackage.ps1 -DownloadTool
+        run: |
+          # Build what ships, without the rehearsal's CI-only override.
+          Remove-Item -LiteralPath ./data -Recurse -Force -ErrorAction SilentlyContinue
+          ./intune/Build-IntunePackage.ps1 -DownloadTool
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:

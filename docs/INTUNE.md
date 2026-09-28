@@ -68,7 +68,7 @@ Get-ChildItem -Recurse | Unblock-File        # only if you downloaded a zip
 
 The script rehearses the whole deployment the way Intune does it:
 
-1. **Install:** installs from a 32-bit host, to prove the switch to 64-bit works.
+1. **Install:** installs from a 32-bit host, to prove the switch to 64-bit works, and checks that any config overrides staged in `data\config\` were deployed.
 2. **Detection:** checks the Win32 detection script reports the app as installed.
 3. **Audit:** runs the scheduled audit **as SYSTEM** and waits for `status.json`.
 4. **Discovery:** runs the compliance discovery script as SYSTEM in both the **32-bit and 64-bit** hosts, and checks the output is valid single-line JSON under 1 MB.
@@ -108,7 +108,7 @@ If you'd rather not build it yourself, every release ships these same files: dow
 
 A file with the same name in `%ProgramData%\EngramicBaseline\config\` replaces the packaged one, so a setting can differ from the packaged default without editing it. There are two supported ways to put such a file on devices:
 
-- **Staged in the package (recommended).** Before building, put the `.json` files in a `data\config\` folder at the top of the repository, for example `data\config\cloud-services.json`. `Build-IntunePackage.ps1` packs them, and every install and upgrade copies them into `%ProgramData%\EngramicBaseline\config\` once it has set up the locked data folder, replacing a file of the same name. They reach every device the app is assigned to, whatever order Intune runs things in, and they survive a data folder being moved aside (below). Removing a file from the package does not delete the copy already on devices. `Test-IntuneDeployment.ps1` installs them too.
+- **Staged in the package (recommended).** Before building, put the `.json` files in a `data\config\` folder at the top of the repository, for example `data\config\cloud-services.json`. `Build-IntunePackage.ps1` packs them, and every install and upgrade copies them into `%ProgramData%\EngramicBaseline\config\` once it has set up the locked data folder, replacing a file of the same name. They reach every device the app is assigned to, whatever order Intune runs things in, and they survive a data folder being moved aside (below). Removing a file from the package does not delete the copy already on devices. `Test-IntuneDeployment.ps1` installs them too, and checks they arrived.
 - **Deployed after the app.** To vary a setting from device to device, or to install a pack into `%ProgramData%\EngramicBaseline\packs\`, deploy the files as SYSTEM, and only once the app is installed: as a Win32 app that has Engramic Baseline as a dependency, or as a Remediation that runs on a schedule and puts the files back if they are missing. Do not use a one-off platform script. Intune can run it before the Win32 app during enrolment, and the folder it makes is then moved aside when the app installs, taking the files with it. The SYSTEM audit only uses a file owned by SYSTEM or Administrators; one an administrator copies in by hand on a Windows client is owned by their own account, so make Administrators its owner (`icacls <file> /setowner *S-1-5-32-544`).
 
 The SYSTEM audit ignores (with a warning) any file in the config folder that a standard user owns or can change, or a folder that is a link. The Remediations detection script and the compliance discovery script, running as SYSTEM, likewise ignore a `status.json` that administrators don't own, that anyone else can change, or that carries a deny entry against SYSTEM or Administrators.

@@ -1978,6 +1978,50 @@ Describe 'Intune: status, discovery and compliance rules' {
         $check.Index | Should -BeLessThan $text.IndexOf('Get-Content -LiteralPath $statusPath')
     }
 
+    It 'the deployment rehearsal makes nothing in the data folder before the install, and cleans up without following links' {
+        # It made <data folder>\deployment-test before installing, which on a fresh device made the data
+        # folder unlocked: the install then moved it aside, the SYSTEM helper's folder was gone and every
+        # later step failed. Its clean-up was an elevated Remove-Item -Recurse, which follows junctions on 5.1.
+        $path = Join-Path $script:intune 'Test-IntuneDeployment.ps1'
+        $raw = Get-Content -LiteralPath $path -Raw
+        $installed = $raw.IndexOf("if (`$p.ExitCode -ne 0) { throw 'Install failed; stopping.' }")
+        $installed | Should -BeGreaterThan 0
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$null, [ref]$null)
+        $writers = @('New-Item', 'Set-Content', 'Add-Content', 'Out-File', 'Copy-Item', 'Move-Item', 'Initialize-CEDataFolder')
+        $early = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $writers -contains $n.GetCommandName() }, $true) |
+            Where-Object { $_.Extent.StartOffset -lt $installed -and $_.Extent.Text -match '\$(workDir|dataRoot)\b' } | ForEach-Object { $_.Extent.Text })
+        $early | Should -BeNullOrEmpty -Because 'nothing may make the data folder before the install creates it locked'
+        $raw.IndexOf('$workDir = Initialize-CEDataFolder -Path $workDir') | Should -BeGreaterThan $installed -Because 'its own folder is made after the install, the locked way'
+        $text = $raw -replace '\r\n', "`n"
+        $finally = [regex]::Match($text, '(?ms)^finally \{.*?\n\}').Value
+        $finally | Should -Match 'if \(\$workDirReady\) \{'
+        $finally | Should -Match 'Remove-CEDataTree -Path \$workDir'
+        $text | Should -Not -Match 'Remove-Item[^\n]*\$workDir' -Because 'Remove-Item -Recurse follows junctions on Windows PowerShell 5.1'
+        # A config override staged in the package is checked for after the install: there, unchanged, and
+        # administrator-owned, since the SYSTEM audit ignores a config file SYSTEM or Administrators do not own.
+        $stagedCheck = $raw.IndexOf("Add-Step 'Config overrides staged in the package deployed'")
+        $stagedCheck | Should -BeGreaterThan $installed
+        $check = $raw.Substring($raw.LastIndexOf('$staged = @(', $stagedCheck), $stagedCheck - $raw.LastIndexOf('$staged = @(', $stagedCheck))
+        $check | Should -Match 'Get-FileHash'
+        $check | Should -Match "@\('S-1-5-18', 'S-1-5-32-544'\) -notcontains \(Get-Acl -LiteralPath \`$deployed\)\.GetOwner\(\[Security\.Principal\.SecurityIdentifier\]\)\.Value"
+    }
+
+    It 'CI and its sandbox mirror stage the rehearsal''s config override in the package, never in the data folder before the install' {
+        # A file put in %ProgramData%\EngramicBaseline before the install makes the data folder there, unlocked;
+        # the install moves it aside and the override (here the Windows Update skip) is lost with it.
+        $ci = Get-Content -LiteralPath (Join-Path (Join-Path (Join-Path $script:RepoRoot '.github') 'workflows') 'ci.yml') -Raw
+        $mirror = Get-Content -LiteralPath (Join-Path (Join-Path (Join-Path $script:RepoRoot 'tools') 'sandbox') 'Invoke-SandboxCI.ps1') -Raw
+        foreach ($t in @($ci, $mirror)) {
+            $t | Should -Not -Match "Join-Path \`$env:ProgramData 'EngramicBaseline"
+            $t | Should -Match "Join-Path \(Get-Location\) 'data\\config'"
+            # The package is built without the rehearsal's CI-only override.
+            $t | Should -Match 'Remove-Item -LiteralPath \./data -Recurse -Force -ErrorAction SilentlyContinue\r?\n\s*\./intune/Build-IntunePackage\.ps1 -DownloadTool'
+        }
+        $ci.IndexOf('Remove-Item -LiteralPath ./data') | Should -BeGreaterThan $ci.IndexOf('run: ./intune/Test-IntuneDeployment.ps1') -Because 'only after the rehearsal'
+        $mirror | Should -Match "-Name 'Build the Intune package' -Shell 'powershell\.exe' -Script \`$build"
+        $mirror | Should -Match "/XD \.git output build \.playwright-mcp 'C:\\baseline-tool\\data'" -Because 'the mirror starts from a checkout with no staged overrides, as CI does'
+    }
+
     It 'the install never puts an older version over a newer one: <Installed> installed, package <Package>' -ForEach @(
         @{ Installed = '0.3.3'; Package = '0.3.2'; Newer = $true }
         @{ Installed = '0.3.10'; Package = '0.3.9'; Newer = $true }

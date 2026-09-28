@@ -319,8 +319,9 @@ function Remove-CEDataTree {
     <#
         Deletes a folder and everything in it without ever following a junction or symbolic link: each
         link is removed as a link, each real subfolder is recursed into, each file is deleted. Used for
-        SYSTEM deletes under the data folder (report and log housekeeping). Remove-Item -Recurse is not
-        used because Windows PowerShell 5.1 follows links and would empty what they point at.
+        deletes as SYSTEM or administrator under the data folder (old report folders, and the deployment
+        rehearsal's own folder). Remove-Item -Recurse is not used because Windows PowerShell 5.1 follows
+        links and would empty what they point at.
 
         When elevated, a folder is listed only if it is trusted at that moment (Get-CELockedFolderProblem:
         not a link, admin-owned, no non-administrator write, add, delete, change-permissions or

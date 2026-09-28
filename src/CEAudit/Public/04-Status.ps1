@@ -215,7 +215,8 @@ function Write-CEEventLog {
         by the installer), so SIEM / Log Analytics can pick it up. Severity is
         derived from the controls, not a single verdict:
         1000 = clean (no attention, no auto-fail), 1001 = attention items,
-        1002 = auto-fail controls failing.
+        1002 = auto-fail controls failing. (1003 is a data folder moved aside,
+        written by Initialize-CEDataFolder and the installer.)
     #>
     [CmdletBinding()]
     param([Parameter(Mandatory)]$Status)
@@ -274,42 +275,6 @@ function Write-CEEventLog {
     $lines += "Report: $(Get-CEObjectValue $Status 'reportFolder')"
     $lines += ''
     $lines += ($Status | ConvertTo-Json -Depth 6 -Compress)
-    $message = $lines -join "`r`n"
-    if ($message.Length -gt 31000) { $message = $message.Substring(0, 31000) }
-    # Write via the low-level RegisterEventSource/ReportEvent API. The managed
-    # EventLog.WriteEntry / SourceExists enumerate every event log to find the
-    # source's log and throw when Security/State are inaccessible (hosted CI
-    # runners, restricted images), even to SYSTEM. RegisterEventSource opens the
-    # source directly and never enumerates.
-    $typeMap = @{ Error = [uint16]1; Warning = [uint16]2; Information = [uint16]4 }
-    try {
-        if (-not ('CEAudit.EventReporter' -as [type])) {
-            Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-namespace CEAudit {
-    public static class EventReporter {
-        [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-        static extern IntPtr RegisterEventSource(string server, string source);
-        [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-        static extern bool ReportEvent(IntPtr handle, ushort type, ushort category, uint eventId, IntPtr sid, ushort numStrings, uint dataSize, string[] strings, IntPtr rawData);
-        [DllImport("advapi32.dll", SetLastError = true)]
-        static extern bool DeregisterEventSource(IntPtr handle);
-        public static int Write(string source, ushort type, uint eventId, string message) {
-            IntPtr handle = RegisterEventSource(null, source);
-            if (handle == IntPtr.Zero) { return Marshal.GetLastWin32Error(); }
-            try {
-                bool ok = ReportEvent(handle, type, 0, eventId, IntPtr.Zero, 1, 0, new string[] { message }, IntPtr.Zero);
-                return ok ? 0 : Marshal.GetLastWin32Error();
-            }
-            finally { DeregisterEventSource(handle); }
-        }
-    }
-}
-'@ -ErrorAction Stop
-        }
-        $rc = [CEAudit.EventReporter]::Write($source, $typeMap[$type], [uint32]$id, $message)
-        if ($rc -ne 0) { Write-Warning "Event write failed for source '$source' id $id (Win32 error $rc)" }
-    }
-    catch { Write-Warning "Could not write event: $_" }
+    # Written through RegisterEventSource/ReportEvent (Write-CEEventEntry), never EventLog.WriteEntry.
+    Write-CEEventEntry -Id $id -Type $type -Message ($lines -join "`r`n")
 }

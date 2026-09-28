@@ -14,8 +14,8 @@
       last-error.json     Only if the last run failed
 
     It also writes an Application event log entry (source
-    EngramicBaseline, IDs 1000-1003) when the installer has registered
-    the source.
+    EngramicBaseline, IDs 1000-1002, and 1003 when an untrusted data folder
+    is moved aside) when the installer has registered the source.
 
     If a run fails, status.json is left alone so the audit age keeps growing
     and the device eventually reports as non-compliant for having no recent
@@ -126,11 +126,12 @@ finally {
     # Housekeeping: keep the newest reports and logs. Only when the folders were set up and are trusted
     # - otherwise $reportRoot / $logRoot may be a junction a standard user controls, and following it
     # would delete through it. Delete old report folders with a recursive delete that never follows a
-    # link (Remove-Item -Recurse follows junctions on 5.1); this runs as SYSTEM under the data folder.
+    # link (Remove-Item -Recurse follows junctions on 5.1) and never lists a folder it does not trust;
+    # this runs as SYSTEM under the data folder.
     if ($foldersReady) {
         Get-ChildItem -LiteralPath $reportRoot -Directory -ErrorAction SilentlyContinue |
             Sort-Object Name -Descending | Select-Object -Skip $KeepReports |
-            ForEach-Object { try { Remove-CEDataTree -Path $_.FullName } catch { Write-Warning "Could not remove old report folder $($_.FullName): $_" } }
+            ForEach-Object { try { Remove-CEDataTree -Path $_.FullName | Out-Null } catch { Write-Warning "Could not remove old report folder $($_.FullName): $_" } }
         Get-ChildItem -LiteralPath $logRoot -Filter 'audit-*.log' -File -ErrorAction SilentlyContinue |
             Sort-Object Name -Descending | Select-Object -Skip ($KeepReports * 2) |
             Remove-Item -Force -ErrorAction SilentlyContinue

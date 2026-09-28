@@ -200,19 +200,46 @@ function Get-CELockedFolderProblem {
     return ''
 }
 
-function Move-CEDataItemAside {
+function Get-CEDataAsidePath {
     <#
-        Renames a file or folder out of the data root to a quarantine sibling (<path>.untrusted-<guid>)
-        without opening its contents or following a link, so nothing later reads it. Retries a few
-        times with a short back-off: an old-version audit, an admin with a report open, or any process
-        with a handle in the tree can make the first [IO.Directory]::Move fail with a sharing violation,
-        and Intune would then just report the install failed with no hint why. Returns the new path;
-        throws with a clear reason if every attempt fails.
+        Where an untrusted item at $Path is moved to: always OUT of the data folder, to a sibling of it
+        - <data folder>.untrusted-<id> for the data folder itself, <data folder>.untrusted-<id>-<name>
+        for an item inside it (say ...-reports) - never a name inside the data folder. A moved-aside
+        item is a tree a standard user may control, so it must be outside every tree the tool reads,
+        walks or deletes as SYSTEM; the uninstaller leaves every EngramicBaseline.untrusted-* folder for
+        an administrator. A path outside the data folder (Write-CEStatus -Path elsewhere) goes beside
+        itself. Same volume either way, so the move is a rename. Kept in step with the installer's
+        Get-CEAsidePath.
     #>
     [CmdletBinding()]
     [OutputType([string])]
     param([Parameter(Mandatory)][string]$Path)
-    $aside = '{0}.untrusted-{1}' -f $Path, [guid]::NewGuid().ToString('n')
+    $id = [guid]::NewGuid().ToString('n')
+    $item = $Path.TrimEnd('\', '/')
+    $root = (Get-CEDataRoot).TrimEnd('\', '/')
+    if ($item -eq $root) { return "$root.untrusted-$id" }
+    foreach ($separator in @('\', '/')) {
+        $prefix = $root + $separator
+        if ($item.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+            return "$root.untrusted-$id-" + ($item.Substring($prefix.Length) -replace '[\\/]+', '-')
+        }
+    }
+    return "$item.untrusted-$id"
+}
+
+function Move-CEDataItemAside {
+    <#
+        Renames a file or folder out of the data folder to a quarantine sibling of it
+        (Get-CEDataAsidePath) without opening its contents or following a link, so nothing later reads
+        or walks it. Retries a few times with a short back-off: an old-version audit, an admin with a
+        report open, or any process with a handle in the tree can make the first [IO.Directory]::Move
+        fail with a sharing violation, and Intune would then just report the install failed with no
+        hint why. Returns the new path; throws with a clear reason if every attempt fails.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][string]$Path)
+    $aside = Get-CEDataAsidePath -Path $Path
     $isDir = [bool]([IO.File]::GetAttributes($Path) -band [IO.FileAttributes]::Directory)
     $lastErr = $null
     for ($attempt = 0; $attempt -lt 5; $attempt++) {
@@ -236,12 +263,13 @@ function Initialize-CEDataFolder {
         their data lives in their own profile, so they get a plain folder. An elevated caller on
         Windows gets the folder with its locked, administrator-owned descriptor applied in the one
         call that makes it, then VERIFIES the result and never repairs it: anything already in its
-        place that a standard user made, took over or could write - or a link - is moved aside and the
-        create retried, never written into or taken back in place (its creator may hold a handle that
-        kept add-file or WRITE_DAC access after any later lock). An existing folder that is trusted -
-        admin-owned, not a link, with no non-admin write, delete, DAC or owner right and no deny
-        against a trusted SID - is kept, so status.json and reports survive; a benign read-only ACE an
-        administrator added does not force it aside. Returns the path.
+        place that a standard user made, took over or could write - or a link - is moved aside, out of
+        the data folder (Get-CEDataAsidePath), and the create retried, never written into or taken back
+        in place (its creator may hold a handle that kept add-file or WRITE_DAC access after any later
+        lock). Each move-aside is a warning and an Application event (ID 1003) naming where it went.
+        An existing folder that is trusted - admin-owned, not a link, with no non-admin write, delete,
+        DAC or owner right and no deny against a trusted SID - is kept, so status.json and reports
+        survive; a benign read-only ACE an administrator added does not force it aside. Returns the path.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -256,9 +284,9 @@ function Initialize-CEDataFolder {
             continue
         }
         if (Test-Path -LiteralPath $Path) {
-            if (-not (Get-CELockedFolderProblem -Path $Path)) { return $Path }
-            $aside = Move-CEDataItemAside -Path $Path
-            Write-Warning "Moved an untrusted $Path aside to $aside and will make a fresh, locked one."
+            $problem = Get-CELockedFolderProblem -Path $Path
+            if (-not $problem) { return $Path }
+            Move-CEDataItemAsideWithNotice -Path $Path -Reason $problem
             continue
         }
         $security = New-CELockedDirectorySecurity -UsersRead:$UsersRead
@@ -266,10 +294,25 @@ function Initialize-CEDataFolder {
         else { [void][IO.Directory]::CreateDirectory($Path, $security) }
         # Verify what is now on disk; never repair it. A silent no-op over a pre-existing folder is
         # rejected here (wrong owner, or a non-admin write/DAC/owner right) instead of being re-owned in place.
-        if (-not (Get-CELockedFolderProblem -Path $Path)) { return $Path }
-        if (Test-Path -LiteralPath $Path) { Move-CEDataItemAside -Path $Path | Out-Null }
+        $problem = Get-CELockedFolderProblem -Path $Path
+        if (-not $problem) { return $Path }
+        if (Test-Path -LiteralPath $Path) { Move-CEDataItemAsideWithNotice -Path $Path -Reason $problem }
     }
     throw "Could not create a locked, administrator-owned data folder at $Path."
+}
+
+function Move-CEDataItemAsideWithNotice {
+    <#
+        Moves an untrusted data-folder item aside (Move-CEDataItemAside) and says so where it will be
+        seen: a warning (the scheduled audit writes it into its log) and an Application event, ID 1003,
+        naming the quarantine path, so nothing is lost silently.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Path, [string]$Reason)
+    $aside = Move-CEDataItemAside -Path $Path
+    $notice = "Moved an untrusted $Path aside to $aside ($Reason) and made a fresh, locked one in its place. Nothing in it is used again; check it, then delete it."
+    Write-Warning $notice
+    Write-CEEventEntry -Id 1003 -Type Warning -Message "Engramic Baseline - data folder: $notice"
 }
 
 function Remove-CEDataTree {
@@ -278,25 +321,96 @@ function Remove-CEDataTree {
         link is removed as a link, each real subfolder is recursed into, each file is deleted. Used for
         SYSTEM deletes under the data folder (report and log housekeeping). Remove-Item -Recurse is not
         used because Windows PowerShell 5.1 follows links and would empty what they point at.
+
+        When elevated, a folder is listed only if it is trusted at that moment (Get-CELockedFolderProblem:
+        not a link, admin-owned, no non-administrator write, add, delete, change-permissions or
+        take-ownership right, no deny against administrators), so no non-administrator can swap an
+        entry in it for a junction before it is acted on. A folder that fails is left in place, never
+        listed or walked, with a warning; so is anything named *.untrusted-* (a quarantine is for an
+        administrator to check). A standard user's own delete needs no check: it can only remove what
+        that user could remove anyway. Returns $true when the whole tree was removed.
     #>
     [CmdletBinding()]
+    [OutputType([bool])]
     param([Parameter(Mandatory)][string]$Path)
-    if (-not (Test-Path -LiteralPath $Path)) { return }
-    if (Test-CEReparsePoint -Path $Path) {
-        if ([IO.File]::GetAttributes($Path) -band [IO.FileAttributes]::Directory) { [IO.Directory]::Delete($Path, $false) } else { [IO.File]::Delete($Path) }
-        return
+    $attrs = $null
+    try { $attrs = [IO.File]::GetAttributes($Path) }
+    catch [System.IO.FileNotFoundException], [System.IO.DirectoryNotFoundException] { return $true }
+    if ($attrs -band [IO.FileAttributes]::ReparsePoint) {
+        if ($attrs -band [IO.FileAttributes]::Directory) { [IO.Directory]::Delete($Path, $false) } else { [IO.File]::Delete($Path) }
+        return $true
     }
-    if (-not (Test-Path -LiteralPath $Path -PathType Container)) { [IO.File]::Delete($Path); return }
-    foreach ($child in @([IO.Directory]::GetFileSystemEntries($Path))) {
-        $attrs = $null
-        try { $attrs = [IO.File]::GetAttributes($child) } catch { continue }
-        if ($attrs -band [IO.FileAttributes]::ReparsePoint) {
-            if ($attrs -band [IO.FileAttributes]::Directory) { [IO.Directory]::Delete($child, $false) } else { [IO.File]::Delete($child) }
+    if (-not ($attrs -band [IO.FileAttributes]::Directory)) { [IO.File]::Delete($Path); return $true }
+    if (Test-CEIsAdmin) {
+        $problem = Get-CELockedFolderProblem -Path $Path
+        if ($problem) {
+            Write-Warning "Left $Path in place, unread ($problem): a standard user may control it, so it is not walked as administrator or SYSTEM. Check it, then delete it by hand."
+            return $false
         }
-        elseif ($attrs -band [IO.FileAttributes]::Directory) { Remove-CEDataTree -Path $child }
-        else { [IO.File]::Delete($child) }
     }
-    [IO.Directory]::Delete($Path, $false)
+    $complete = $true
+    foreach ($child in @([IO.Directory]::GetFileSystemEntries($Path))) {
+        if ((Split-Path -Leaf $child) -like '*.untrusted-*') {
+            Write-Warning "Left the quarantine $child in place for an administrator to check and delete."
+            $complete = $false
+            continue
+        }
+        try { if (-not (Remove-CEDataTree -Path $child)) { $complete = $false } }
+        catch {
+            Write-Warning "Could not remove $child ($($_.Exception.Message)); left it in place."
+            $complete = $false
+        }
+    }
+    if ($complete) { [IO.Directory]::Delete($Path, $false) }
+    return $complete
+}
+
+function Write-CEEventEntry {
+    <#
+        Writes one entry to the Application event log under the EngramicBaseline source. Uses the
+        low-level RegisterEventSource / ReportEvent API: the managed EventLog.WriteEntry and
+        SourceExists enumerate every event log to find the source's log and throw when Security/State
+        are inaccessible (hosted CI runners, restricted images), even to SYSTEM. RegisterEventSource
+        opens the source directly and never enumerates. A failure is only a warning.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][uint32]$Id,
+        [ValidateSet('Error', 'Warning', 'Information')][string]$Type = 'Information',
+        [Parameter(Mandatory)][string]$Message
+    )
+    $typeMap = @{ Error = [uint16]1; Warning = [uint16]2; Information = [uint16]4 }
+    if ($Message.Length -gt 31000) { $Message = $Message.Substring(0, 31000) }
+    try {
+        if (-not ('CEAudit.EventReporter' -as [type])) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+namespace CEAudit {
+    public static class EventReporter {
+        [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        static extern IntPtr RegisterEventSource(string server, string source);
+        [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        static extern bool ReportEvent(IntPtr handle, ushort type, ushort category, uint eventId, IntPtr sid, ushort numStrings, uint dataSize, string[] strings, IntPtr rawData);
+        [DllImport("advapi32.dll", SetLastError = true)]
+        static extern bool DeregisterEventSource(IntPtr handle);
+        public static int Write(string source, ushort type, uint eventId, string message) {
+            IntPtr handle = RegisterEventSource(null, source);
+            if (handle == IntPtr.Zero) { return Marshal.GetLastWin32Error(); }
+            try {
+                bool ok = ReportEvent(handle, type, 0, eventId, IntPtr.Zero, 1, 0, new string[] { message }, IntPtr.Zero);
+                return ok ? 0 : Marshal.GetLastWin32Error();
+            }
+            finally { DeregisterEventSource(handle); }
+        }
+    }
+}
+'@ -ErrorAction Stop
+        }
+        $rc = [CEAudit.EventReporter]::Write('EngramicBaseline', $typeMap[$Type], $Id, $Message)
+        if ($rc -ne 0) { Write-Warning "Event write failed for source 'EngramicBaseline' id $Id (Win32 error $rc)" }
+    }
+    catch { Write-Warning "Could not write event: $_" }
 }
 
 function Get-CEUserRegistryRoot {

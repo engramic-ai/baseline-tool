@@ -73,6 +73,9 @@ BeforeAll {
             if ("$Path$LiteralPath" -match '^(HK(LM|CU|CR|U|CC):|Registry::)') { throw 'Tripwire: a test reached New-Item on a registry path without mocking it' }
             Microsoft.PowerShell.Management\New-Item @PesterBoundParameters
         }
+        # No test writes to the real Application event log. A no-op rather than a tripwire: when the suite
+        # runs elevated (CI), Initialize-CEDataFolder may move a test folder aside, which records an event.
+        if (& (Get-Module CEAudit) { [bool](Get-Command Write-CEEventEntry -ErrorAction SilentlyContinue) }) { Mock -ModuleName CEAudit Write-CEEventEntry { } }
     }
     Set-TestTripwires
 
@@ -1266,8 +1269,8 @@ Describe 'Intune: status, discovery and compliance rules' {
         $init | Should -BeLessThan $text.IndexOf('Start-Transcript')
         $init | Should -BeLessThan $firstCopy
         # The root and every kept subfolder are made with New-CELockedDirectory (locked at birth).
-        $text | Should -Match "foreach \(\`$name in @\('logs', 'reports', 'cache', 'packs'\)\) \{ New-CELockedDirectory -Path \(Join-Path \`$dataRoot \`$name\) \}"
-        $text | Should -Match "New-CELockedDirectory -Path \(Join-Path \`$dataRoot 'config'\) -UsersRead"
+        $text | Should -Match "foreach \(\`$name in @\('logs', 'reports', 'cache', 'packs'\)\) \{ New-CELockedDirectory -Path \(Join-Path \`$dataRoot \`$name\) -DataRoot \`$dataRoot "
+        $text | Should -Match "New-CELockedDirectory -Path \(Join-Path \`$dataRoot 'config'\) -DataRoot \`$dataRoot -UsersRead"
         # Locked in the one call that creates it: CreateDirectory with a descriptor on 5.1, FileSystemAclExtensions.Create on 7.
         $text | Should -Match '\[IO\.Directory\]::CreateDirectory\(\$Path, \$security\)'
         $text | Should -Match '\[IO\.FileSystemAclExtensions\]::Create\(\[IO\.DirectoryInfo\]::new\(\$Path\), \$security\)'
@@ -1343,7 +1346,7 @@ Describe 'Intune: status, discovery and compliance rules' {
         $fn.Value | Should -Match 'Start-Sleep' -Because 'with a back-off between tries'
         $fn.Value | Should -Match 'open under the data folder' -Because 'the final error says why'
         # It still moves a folder aside normally, without following a link inside it.
-        . (Get-TestInstallerCode -Path $installer -Name @('Move-CEItemAside'))
+        . (Get-TestInstallerCode -Path $installer -Name @('Get-CEAsidePath', 'Move-CEItemAside'))
         $src = Join-Path $TestDrive 'mv-src'
         $outside = Join-Path $TestDrive 'mv-outside'
         New-Item -ItemType Directory -Force -Path (Join-Path $src 'a'), $outside | Out-Null
@@ -1352,7 +1355,7 @@ Describe 'Intune: status, discovery and compliance rules' {
         $link = Join-Path $src 'to-outside'
         New-Item -ItemType Junction -Path $link -Target $outside | Out-Null
         try {
-            $aside = Move-CEItemAside -Path $src
+            $aside = Move-CEItemAside -Path $src -DataRoot $src
             $aside | Should -Match 'mv-src\.untrusted-'
             Test-Path -LiteralPath $src | Should -BeFalse
             Test-Path -LiteralPath (Join-Path $aside 'a\f.txt') | Should -BeTrue -Because 'the item moved with its contents'
@@ -1371,7 +1374,7 @@ Describe 'Intune: status, discovery and compliance rules' {
         # handle. This shims the elevated-only bits (a non-admin can't make a folder owned by
         # Administrators) but exercises the real move-aside-and-retry loop.
         $installer = Join-Path $script:intune 'Install-CEChecker.ps1'
-        . (Get-TestInstallerCode -Path $installer -Name @('Test-CEReparsePoint', 'Remove-CELink', 'Move-CEItemAside', 'New-CELockedDirectory', 'Get-CERegistryString', 'Initialize-CEDataRoot'))
+        . (Get-TestInstallerCode -Path $installer -Name @('Test-CEReparsePoint', 'Remove-CELink', 'Get-CEAsidePath', 'Move-CEItemAside', 'New-CELockedDirectory', 'Get-CERegistryString', 'Initialize-CEDataRoot'))
         # A birth descriptor without an owner (so the create succeeds unelevated) and a stand-in
         # verifier that treats a folder holding 'planted.txt' as a racer's and anything else as locked.
         function New-CEDataDirectorySecurity { param([switch]$UsersRead) $s = New-Object Security.AccessControl.DirectorySecurity; $s.SetSecurityDescriptorSddlForm('D:(A;OICI;FA;;;WD)'); return $s }
@@ -1411,13 +1414,20 @@ Describe 'Intune: status, discovery and compliance rules' {
             Test-CEReparsePoint -Path $root | Should -BeFalse -Because 'the link was removed and a real folder made'
             Get-Content -LiteralPath (Join-Path $victim 'keep.txt') | Should -Be 'keep'
 
-            # 3) A subfolder that appears (a no-op create over a racer) is moved aside, then a fresh one made.
+            # 3) A subfolder that appears (a no-op create over a racer) is moved aside, then a fresh one
+            # made. The quarantine goes OUT of the data folder, beside it, never to a name inside it: a
+            # user-owned tree left inside would be walked by a later SYSTEM delete of the data folder.
             $sub = Join-Path $root 'packs'
             New-Item -ItemType Directory -Path $sub -Force | Out-Null
             Set-Content -LiteralPath (Join-Path $sub 'planted.txt') -Value 'x'
-            New-CELockedDirectory -Path $sub 3>$null
+            New-CELockedDirectory -Path $sub -DataRoot $root -WarningVariable subNotices 3>$null
             Test-Path -LiteralPath (Join-Path $sub 'planted.txt') | Should -BeFalse -Because 'the racer folder was moved aside, not taken back'
-            @(Get-ChildItem -LiteralPath $root -Directory -Filter 'packs.untrusted-*').Count | Should -Be 1
+            @(Get-ChildItem -LiteralPath $root -Force -Filter '*.untrusted-*').Count | Should -Be 0 -Because 'nothing is quarantined inside the data folder'
+            $subAside = @(Get-ChildItem -LiteralPath $pd -Directory -Filter 'EngramicBaseline.untrusted-*-packs')
+            $subAside.Count | Should -Be 1 -Because 'the quarantine is a sibling of the data folder, named for the folder it held'
+            $subAside[0].Name | Should -Match '^EngramicBaseline\.untrusted-[0-9a-f]{32}-packs$'
+            (Get-Content -LiteralPath (Join-Path $subAside[0].FullName 'planted.txt')) | Should -Be 'x'
+            "$subNotices" | Should -Match ([regex]::Escape($subAside[0].FullName)) -Because 'the warning names where it went, for the log and the event log'
             Should -Invoke Set-Acl -Times 0
         }
         finally {
@@ -1475,7 +1485,7 @@ Describe 'Intune: status, discovery and compliance rules' {
         # subfolder is kept too, so a second install over the first loses nothing and makes no
         # quarantine folder.
         $installer = Join-Path $script:intune 'Install-CEChecker.ps1'
-        . (Get-TestInstallerCode -Path $installer -Name @('Test-CEReparsePoint', 'Remove-CELink', 'Move-CEItemAside', 'New-CELockedDirectory', 'Get-CERegistryString', 'Initialize-CEDataRoot'))
+        . (Get-TestInstallerCode -Path $installer -Name @('Test-CEReparsePoint', 'Remove-CELink', 'Get-CEAsidePath', 'Move-CEItemAside', 'New-CELockedDirectory', 'Get-CERegistryString', 'Initialize-CEDataRoot'))
         function New-CEDataDirectorySecurity { param([switch]$UsersRead) $s = New-Object Security.AccessControl.DirectorySecurity; $s.SetSecurityDescriptorSddlForm('D:(A;OICI;FA;;;WD)'); return $s }
         # Everything the test makes counts as the locked form; the marker is present (a previous install wrote it).
         function Test-CELockedFolder { param([string]$Path, [switch]$UsersRead) if (Test-CEReparsePoint -Path $Path) { return "$Path is a link" } return '' }
@@ -1486,8 +1496,8 @@ Describe 'Intune: status, discovery and compliance rules' {
         New-Item -ItemType Directory -Force -Path $root | Out-Null
         # First install sets the folders up.
         Initialize-CEDataRoot -Path $root -RegPath 'HKLM:\SOFTWARE\EngramicBaseline' 3>$null
-        foreach ($name in @('logs', 'reports', 'cache', 'packs')) { New-CELockedDirectory -Path (Join-Path $root $name) 3>$null }
-        New-CELockedDirectory -Path (Join-Path $root 'config') -UsersRead 3>$null
+        foreach ($name in @('logs', 'reports', 'cache', 'packs')) { New-CELockedDirectory -Path (Join-Path $root $name) -DataRoot $root 3>$null }
+        New-CELockedDirectory -Path (Join-Path $root 'config') -DataRoot $root -UsersRead 3>$null
         # Admin config override, an installed pack and a report land in the sealed folder.
         Set-Content -LiteralPath (Join-Path $root 'config\firmware-catalog.json') -Value '{ "baseUrl": "" }'
         New-Item -ItemType Directory -Force -Path (Join-Path $root 'packs\p') | Out-Null
@@ -1497,13 +1507,70 @@ Describe 'Intune: status, discovery and compliance rules' {
 
         # Second install (upgrade) over the same, sealed root.
         Initialize-CEDataRoot -Path $root -RegPath 'HKLM:\SOFTWARE\EngramicBaseline' 3>$null
-        foreach ($name in @('logs', 'reports', 'cache', 'packs')) { New-CELockedDirectory -Path (Join-Path $root $name) 3>$null }
-        New-CELockedDirectory -Path (Join-Path $root 'config') -UsersRead 3>$null
+        foreach ($name in @('logs', 'reports', 'cache', 'packs')) { New-CELockedDirectory -Path (Join-Path $root $name) -DataRoot $root 3>$null }
+        New-CELockedDirectory -Path (Join-Path $root 'config') -DataRoot $root -UsersRead 3>$null
 
         Get-Content -LiteralPath (Join-Path $root 'config\firmware-catalog.json') | Should -Match 'baseUrl' -Because 'config overrides survive the upgrade'
         Test-Path -LiteralPath (Join-Path $root 'packs\p\pack.json') | Should -BeTrue -Because 'installed packs survive the upgrade'
         Test-Path -LiteralPath (Join-Path $root 'reports\r1\report.html') | Should -BeTrue -Because 'report history survives the upgrade'
         @(Get-ChildItem -LiteralPath $pd -Directory -Filter 'EngramicBaseline.untrusted-*').Count | Should -Be 0 -Because 'a sealed root is kept, not moved aside'
+    }
+
+    It 'Get-CEAsidePath always names a sibling of the data folder, never a path inside it' {
+        # Rule: a moved-aside item may be a tree a standard user controls, so it must leave the data
+        # folder; a quarantine inside it would be walked by a later SYSTEM delete of the data folder.
+        . (Get-TestInstallerCode -Path (Join-Path $script:intune 'Install-CEChecker.ps1') -Name @('Get-CEAsidePath'))
+        $root = 'C:\ProgramData\EngramicBaseline'
+        Get-CEAsidePath -Path $root -DataRoot $root | Should -Match '^C:\\ProgramData\\EngramicBaseline\.untrusted-[0-9a-f]{32}$'
+        Get-CEAsidePath -Path "$root\packs" -DataRoot $root | Should -Match '^C:\\ProgramData\\EngramicBaseline\.untrusted-[0-9a-f]{32}-packs$'
+        Get-CEAsidePath -Path "$root\config\network.json" -DataRoot "$root\" | Should -Match '^C:\\ProgramData\\EngramicBaseline\.untrusted-[0-9a-f]{32}-config-network\.json$'
+        Get-CEAsidePath -Path 'C:\PROGRAMDATA\ENGRAMICBASELINE\Logs' -DataRoot $root | Should -Match '^C:\\ProgramData\\EngramicBaseline\.untrusted-[0-9a-f]{32}-Logs$' -Because 'Windows paths are case-insensitive'
+        { Get-CEAsidePath -Path 'C:\ProgramData\EngramicBaselineX\logs' -DataRoot $root } | Should -Throw '*not in the data folder*' -Because 'a look-alike name is not inside the data folder'
+    }
+
+    It 'the install writes every data-folder notice, naming where anything went, to its log and the Application event log' {
+        # The move-aside warnings were raised before the install log started, and Intune shows none of an
+        # install's console output, so a moved-aside folder (and the config it held) left no record. They
+        # are collected with -WarningVariable, written once logging starts and to the event log (ID 1003).
+        $installer = Join-Path $script:intune 'Install-CEChecker.ps1'
+        $text = (Get-Content -LiteralPath $installer -Raw) -replace '\r\n', "`n"
+        $main = $text.Substring($text.IndexOf("`ntry {"))
+        $transcript = $main.IndexOf('Start-Transcript -LiteralPath $log')
+        $firstNotice = $main.IndexOf('Write-CESetupNotice -Notice $setupNotices')
+        $transcript | Should -BeGreaterThan 0
+        $firstNotice | Should -BeGreaterThan $transcript -Because 'the notices are written once the log has started'
+        $firstNotice | Should -BeLessThan $main.IndexOf('Copy-Item') -Because 'before anything else is done'
+        foreach ($call in @('Initialize-CEDataRoot -Path $dataRoot', 'New-CELockedDirectory -Path (Join-Path $dataRoot $name)', "New-CELockedDirectory -Path (Join-Path `$dataRoot 'config')")) {
+            $line = @($main -split "`n" | Where-Object { $_.Contains($call) })
+            $line.Count | Should -Be 1 -Because $call
+            $line[0] | Should -Match '-WarningVariable \+setupNotices' -Because "$call collects its warnings for the log"
+        }
+        $main.IndexOf('New-Item -Path $sourceKey') | Should -BeLessThan $main.IndexOf('Initialize-CEDataRoot -Path $dataRoot') -Because 'the event source exists before anything can be moved aside'
+        [regex]::Match($text, '(?ms)^catch \{.*?\n\}').Value | Should -Match 'if \(-not \$noticesWritten\) \{ Write-CESetupNotice -Notice \$setupNotices \}' -Because 'a failure before logging starts still records them'
+
+        # What they record: the warning names the quarantine, and Write-CESetupNotice puts it in the log and the event log.
+        . (Get-TestInstallerCode -Path $installer -Name @('Test-CEReparsePoint', 'Remove-CELink', 'Get-CEAsidePath', 'Move-CEItemAside', 'New-CELockedDirectory', 'Initialize-CEDataRoot', 'Write-CEInstallEvent', 'Write-CESetupNotice'))
+        function New-CEDataDirectorySecurity { param([switch]$UsersRead) $s = New-Object Security.AccessControl.DirectorySecurity; $s.SetSecurityDescriptorSddlForm('D:(A;OICI;FA;;;WD)'); return $s }
+        function Test-CELockedFolder { param([string]$Path) if (Test-Path -LiteralPath (Join-Path $Path 'planted.txt')) { return "$Path is owned by S-1-5-21-1-2-3-1001, not SYSTEM or Administrators" } return '' }
+        function Get-CERegistryString { param([string]$Path, [string]$Name) return '' }
+        Mock Write-CEInstallEvent { }
+        $pd = Join-Path $TestDrive 'pd-notice'
+        $root = Join-Path $pd 'EngramicBaseline'
+        New-Item -ItemType Directory -Force -Path (Join-Path $root 'config') | Out-Null
+        Set-Content -LiteralPath (Join-Path $root 'planted.txt') -Value 'racer'
+        $notices = @()
+        Initialize-CEDataRoot -Path $root -RegPath 'unsealed' -WarningVariable +notices -WarningAction SilentlyContinue
+        $aside = @(Get-ChildItem -LiteralPath $pd -Directory -Filter 'EngramicBaseline.untrusted-*')
+        $aside.Count | Should -Be 1
+        $asidePath = $aside[0].FullName
+        "$notices" | Should -Match ([regex]::Escape($asidePath))
+        $log = Join-Path $TestDrive 'install-notice.log'
+        Start-Transcript -LiteralPath $log | Out-Null
+        try { Write-CESetupNotice -Notice $notices }
+        finally { Stop-Transcript | Out-Null }
+        # The console host word-wraps a warning and the transcript records it wrapped, so compare without whitespace.
+        ((Get-Content -LiteralPath $log -Raw) -replace '\s', '') | Should -Match ([regex]::Escape(($asidePath -replace '\s', ''))) -Because 'the install log names the quarantine'
+        Should -Invoke Write-CEInstallEvent -Times 1 -Exactly -ParameterFilter { $Id -eq 1003 -and $Message -like "*$asidePath*" } -Because 'so does the Application event log'
     }
 
     It 'uninstall -RemoveData deletes only a trusted data root and leaves quarantine folders for an admin, walking no user tree' {
@@ -1512,7 +1579,7 @@ Describe 'Intune: status, discovery and compliance rules' {
         # would redirect the delete), so it is left for an administrator; only a trusted, admin-owned
         # data root is deleted, and even then no junction inside it is followed.
         $installer = Join-Path $script:intune 'Uninstall-CEChecker.ps1'
-        . (Get-TestInstallerCode -Path $installer -Name @('Remove-CETreeNoFollow', 'Get-CEFolderTrustProblem', 'Remove-CEDataFolders'))
+        . (Get-TestInstallerCode -Path $installer -Name @('Remove-CETreeNoFollow', 'Get-CEFolderTrustProblem', 'Get-CERegistryString', 'Remove-CEDataFolders'))
         $pd = Join-Path $TestDrive 'pd-uninstall'
         $dataRoot = Join-Path $pd 'EngramicBaseline'
         $outside = Join-Path $TestDrive 'uninstall-outside'
@@ -1526,10 +1593,12 @@ Describe 'Intune: status, discovery and compliance rules' {
         # A junction inside the quarantine folder: it must never be reached, because the folder is not walked.
         $asideLink = Join-Path $aside 'to-outside'
         New-Item -ItemType Junction -Path $asideLink -Target $outside | Out-Null
-        # The data root reads as the locked, admin-owned folder (a non-admin test user cannot really set that).
+        # The install sealed the root, and it reads as the locked, admin-owned folder (a non-admin test
+        # user cannot really set that).
+        Mock Get-CERegistryString { '0.3.2' }
         Mock Get-CEFolderTrustProblem { '' }
         try {
-            Remove-CEDataFolders -DataRoot $dataRoot -ProgramData $pd 3>$null
+            Remove-CEDataFolders -DataRoot $dataRoot -ProgramData $pd -SealRegPath 'sealed' 3>$null 6>$null
             Test-Path -LiteralPath $dataRoot | Should -BeFalse -Because 'a trusted data root is removed'
             Test-Path -LiteralPath $aside | Should -BeTrue -Because 'a quarantine folder is left for an administrator'
             Get-Content -LiteralPath (Join-Path $aside 'planted.txt') | Should -Be 'mine' -Because 'its contents are never touched'
@@ -1539,34 +1608,126 @@ Describe 'Intune: status, discovery and compliance rules' {
         finally { foreach ($j in @($rootLink, $asideLink)) { if ((Test-Path -LiteralPath $j) -and ([IO.File]::GetAttributes($j) -band [IO.FileAttributes]::ReparsePoint)) { [IO.Directory]::Delete($j, $false) } } }
     }
 
+    It 'uninstall -RemoveData checks each folder just before listing it and leaves one a standard user controls unwalked' {
+        # The root was checked, then the whole tree walked, so a subtree a non-administrator controlled
+        # (say, a folder a helpdesk group made after being granted write) could have a junction swapped in
+        # mid-walk and SYSTEM would delete through it. Every folder is now checked immediately before it is
+        # listed, and one that fails is never listed or walked.
+        . (Get-TestInstallerCode -Path (Join-Path $script:intune 'Uninstall-CEChecker.ps1') -Name @('Remove-CETreeNoFollow', 'Get-CEFolderTrustProblem', 'Get-CERegistryString', 'Remove-CEDataFolders'))
+        $pd = Join-Path $TestDrive 'pd-uninstall-walk'
+        $dataRoot = Join-Path $pd 'EngramicBaseline'
+        $userDir = Join-Path $dataRoot 'reports\A'
+        $outside = Join-Path $TestDrive 'uninstall-walk-outside'
+        New-Item -ItemType Directory -Force -Path $userDir, (Join-Path $dataRoot 'logs'), $outside | Out-Null
+        Set-Content -LiteralPath (Join-Path $dataRoot 'logs\audit-1.log') -Value 'log'
+        Set-Content -LiteralPath (Join-Path $dataRoot 'status.json') -Value '{}'
+        Set-Content -LiteralPath (Join-Path $userDir 'zz-sentinel.txt') -Value 'mine'
+        Set-Content -LiteralPath (Join-Path $outside 'zz-sentinel.txt') -Value 'target'
+        # A junction the user made earlier, ready to swap in mid-walk. A is never listed, so it never gets the chance.
+        $userLink = Join-Path $userDir 'to-outside'
+        New-Item -ItemType Junction -Path $userLink -Target $outside | Out-Null
+        Mock Get-CERegistryString { '0.3.2' }
+        Mock Get-CEFolderTrustProblem { if ($Path -eq $userDir) { "$Path is owned by S-1-5-21-1-2-3-1001, not an administrator" } else { '' } }
+        try {
+            Remove-CEDataFolders -DataRoot $dataRoot -ProgramData $pd -SealRegPath 'sealed' -WarningVariable walkNotices 3>$null 6>$null
+            Should -Invoke Get-CEFolderTrustProblem -Times 1 -Exactly -ParameterFilter { $Path -eq $userDir } -Because 'each folder is checked just before it would be listed'
+            Get-Content -LiteralPath (Join-Path $userDir 'zz-sentinel.txt') | Should -Be 'mine' -Because 'a folder that fails the check is never listed or walked'
+            Test-Path -LiteralPath $userLink | Should -BeTrue -Because 'nothing inside it is touched, not even a link'
+            Get-Content -LiteralPath (Join-Path $outside 'zz-sentinel.txt') | Should -Be 'target'
+            Test-Path -LiteralPath (Join-Path $dataRoot 'logs') | Should -BeFalse -Because 'trusted folders are still removed'
+            Test-Path -LiteralPath (Join-Path $dataRoot 'status.json') | Should -BeFalse
+            Test-Path -LiteralPath $dataRoot | Should -BeTrue -Because 'a folder that still holds what was left is not removed'
+            "$walkNotices" | Should -Match ([regex]::Escape($userDir)) -Because 'what was left is reported'
+        }
+        finally { if ((Test-Path -LiteralPath $userLink) -and ([IO.File]::GetAttributes($userLink) -band [IO.FileAttributes]::ReparsePoint)) { [IO.Directory]::Delete($userLink, $false) } }
+    }
+
+    It 'uninstall -RemoveData leaves a quarantine it finds inside the data folder, unwalked' {
+        # Earlier builds of this change quarantined a folder inside the data folder as <name>.untrusted-<id>.
+        # Such a tree may be a standard user's, so, like any quarantine, it is left for an administrator.
+        . (Get-TestInstallerCode -Path (Join-Path $script:intune 'Uninstall-CEChecker.ps1') -Name @('Remove-CETreeNoFollow', 'Get-CEFolderTrustProblem', 'Get-CERegistryString', 'Remove-CEDataFolders'))
+        $pd = Join-Path $TestDrive 'pd-uninstall-nested'
+        $dataRoot = Join-Path $pd 'EngramicBaseline'
+        $nested = Join-Path $dataRoot 'packs.untrusted-0123'
+        New-Item -ItemType Directory -Force -Path (Join-Path $nested 'A'), (Join-Path $dataRoot 'logs') | Out-Null
+        Set-Content -LiteralPath (Join-Path $nested 'A\keep.txt') -Value 'mine'
+        Mock Get-CERegistryString { '0.3.2' }
+        Mock Get-CEFolderTrustProblem { '' }
+        Remove-CEDataFolders -DataRoot $dataRoot -ProgramData $pd -SealRegPath 'sealed' 3>$null 6>$null
+        Get-Content -LiteralPath (Join-Path $nested 'A\keep.txt') | Should -Be 'mine' -Because 'a quarantine is never walked'
+        Should -Invoke Get-CEFolderTrustProblem -Times 0 -ParameterFilter { $Path -like '*.untrusted-*' }
+        Test-Path -LiteralPath (Join-Path $dataRoot 'logs') | Should -BeFalse
+        Test-Path -LiteralPath $dataRoot | Should -BeTrue
+    }
+
+    It 'uninstall -RemoveData does not walk a data root the install did not seal' {
+        # A root without the DataRootSealed marker may be one an older version locked after a standard user
+        # made it, and its creator may still hold a handle that lets them change it, however locked it looks.
+        . (Get-TestInstallerCode -Path (Join-Path $script:intune 'Uninstall-CEChecker.ps1') -Name @('Remove-CETreeNoFollow', 'Get-CEFolderTrustProblem', 'Get-CERegistryString', 'Remove-CEDataFolders'))
+        $pd = Join-Path $TestDrive 'pd-uninstall-unsealed'
+        $dataRoot = Join-Path $pd 'EngramicBaseline'
+        New-Item -ItemType Directory -Force -Path (Join-Path $dataRoot 'reports\r1') | Out-Null
+        Set-Content -LiteralPath (Join-Path $dataRoot 'reports\r1\report.html') -Value '<html/>'
+        Mock Get-CERegistryString { '' }
+        Mock Get-CEFolderTrustProblem { '' }
+        Remove-CEDataFolders -DataRoot $dataRoot -ProgramData $pd -SealRegPath 'unsealed' -WarningVariable unsealedNotices 3>$null 6>$null
+        Test-Path -LiteralPath (Join-Path $dataRoot 'reports\r1\report.html') | Should -BeTrue -Because 'an unsealed root is left for an administrator'
+        Should -Invoke Get-CEFolderTrustProblem -Times 0 -Because 'it is not even read'
+        "$unsealedNotices" | Should -Match 'DataRootSealed'
+    }
+
     It 'uninstall -RemoveData does not delete an untrusted data root as SYSTEM' {
         # An untrusted root left by a failed upgrade, or one a standard user controls, must not be walked.
-        . (Get-TestInstallerCode -Path (Join-Path $script:intune 'Uninstall-CEChecker.ps1') -Name @('Remove-CETreeNoFollow', 'Get-CEFolderTrustProblem', 'Remove-CEDataFolders'))
+        . (Get-TestInstallerCode -Path (Join-Path $script:intune 'Uninstall-CEChecker.ps1') -Name @('Remove-CETreeNoFollow', 'Get-CEFolderTrustProblem', 'Get-CERegistryString', 'Remove-CEDataFolders'))
         $pd = Join-Path $TestDrive 'pd-uninstall2'
         $dataRoot = Join-Path $pd 'EngramicBaseline'
         New-Item -ItemType Directory -Force -Path (Join-Path $dataRoot 'sub') | Out-Null
         Set-Content -LiteralPath (Join-Path $dataRoot 'sub\x.txt') -Value 'x'
+        Mock Get-CERegistryString { '0.3.2' }
         Mock Get-CEFolderTrustProblem { "$Path is owned by S-1-5-21-1-2-3-1001, not an administrator" }
-        Remove-CEDataFolders -DataRoot $dataRoot -ProgramData $pd 3>$null
+        Remove-CEDataFolders -DataRoot $dataRoot -ProgramData $pd -SealRegPath 'sealed' 3>$null
         Test-Path -LiteralPath $dataRoot | Should -BeTrue -Because 'an untrusted root is left for an admin, not deleted as SYSTEM'
         Test-Path -LiteralPath (Join-Path $dataRoot 'sub\x.txt') | Should -BeTrue
     }
 
     It 'uninstall -RemoveData removes a data root that is a link without following it or trust-checking it' {
-        . (Get-TestInstallerCode -Path (Join-Path $script:intune 'Uninstall-CEChecker.ps1') -Name @('Remove-CETreeNoFollow', 'Get-CEFolderTrustProblem', 'Remove-CEDataFolders'))
+        . (Get-TestInstallerCode -Path (Join-Path $script:intune 'Uninstall-CEChecker.ps1') -Name @('Remove-CETreeNoFollow', 'Get-CEFolderTrustProblem', 'Get-CERegistryString', 'Remove-CEDataFolders'))
         $pd = Join-Path $TestDrive 'pd-uninstall3'
         $target = Join-Path $TestDrive 'link-target'
         New-Item -ItemType Directory -Force -Path $pd, $target | Out-Null
         Set-Content -LiteralPath (Join-Path $target 'keep.txt') -Value 'keep'
         $dataRoot = Join-Path $pd 'EngramicBaseline'
         New-Item -ItemType Junction -Path $dataRoot -Target $target | Out-Null
+        Mock Get-CERegistryString { '' }
         Mock Get-CEFolderTrustProblem { throw 'a link is removed as a link, so its ACL is never read' }
         try {
-            Remove-CEDataFolders -DataRoot $dataRoot -ProgramData $pd 3>$null
+            Remove-CEDataFolders -DataRoot $dataRoot -ProgramData $pd -SealRegPath 'unsealed' 3>$null 6>$null
             Test-Path -LiteralPath $dataRoot | Should -BeFalse -Because 'the link is removed'
             Get-Content -LiteralPath (Join-Path $target 'keep.txt') | Should -Be 'keep' -Because 'what the link pointed at is left alone'
         }
         finally { if ((Test-Path -LiteralPath $dataRoot) -and ([IO.File]::GetAttributes($dataRoot) -band [IO.FileAttributes]::ReparsePoint)) { [IO.Directory]::Delete($dataRoot, $false) } }
+    }
+
+    It 'Get-CEFolderTrustProblem in the uninstaller rejects a deny against administrators, as the installer does' {
+        . (Get-TestInstallerCode -Path (Join-Path $script:intune 'Uninstall-CEChecker.ps1') -Name @('Get-CEFolderTrustProblem'))
+        $dir = Join-Path $TestDrive 'uninstall-deny'
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+        $rule = { param([string]$Sid, [Security.AccessControl.FileSystemRights]$R, [string]$T = 'Allow') [pscustomobject]@{ IdentityReference = [Security.Principal.SecurityIdentifier]::new($Sid); FileSystemRights = $R; AccessControlType = [Security.AccessControl.AccessControlType]$T } }
+        $adminOnly = @((& $rule 'S-1-5-18' 'FullControl'), (& $rule 'S-1-5-32-544' 'FullControl'))
+        $newAcl = {
+            param([object[]]$Rules)
+            $o = New-Object psobject
+            $o | Add-Member -MemberType ScriptMethod -Name GetOwner -Value { param($t) [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544') }
+            $o | Add-Member -MemberType NoteProperty -Name TestRules -Value @($Rules)
+            $o | Add-Member -MemberType ScriptMethod -Name GetAccessRules -Value { param($e, $i, $t) $this.TestRules }
+            return $o
+        }
+        Mock Get-Acl { & $newAcl $adminOnly }.GetNewClosure()
+        Get-CEFolderTrustProblem -Path $dir | Should -BeNullOrEmpty
+        Mock Get-Acl { & $newAcl ($adminOnly + @(& $rule 'S-1-5-18' 'Delete' 'Deny')) }.GetNewClosure()
+        Get-CEFolderTrustProblem -Path $dir | Should -Match 'denies S-1-5-18' -Because 'a deny against SYSTEM could stop the delete part-way'
+        Mock Get-Acl { & $newAcl ($adminOnly + @(& $rule 'S-1-5-32-545' 'Write' 'Deny')) }.GetNewClosure()
+        Get-CEFolderTrustProblem -Path $dir | Should -BeNullOrEmpty -Because 'denying a standard user is not a problem'
     }
 
     It 'the sealed-at-birth marker is a separate key the installer writes and uninstall keeps unless -RemoveData' {
@@ -1833,15 +1994,80 @@ Describe 'Headless scheduled audit' {
         $old = 1..16 | ForEach-Object { $d = Join-Path $reports ('PC-2026010{0:00}-000000' -f $_); New-Item -ItemType Directory -Path $d -Force | Out-Null; $d }
         $link = Join-Path $old[0] 'to-outside'
         New-Item -ItemType Junction -Path $link -Target $outside | Out-Null
+        # As a standard user here; the elevated per-folder trust check has its own test below. (Elevated,
+        # as in CI, these test folders inherit the runner account's write access and would be left.)
+        Mock -ModuleName CEAudit Test-CEIsAdmin { $false }
         try {
             Get-ChildItem -LiteralPath $reports -Directory | Sort-Object Name -Descending | Select-Object -Skip 14 |
-                ForEach-Object { Remove-CEDataTree -Path $_.FullName }
+                ForEach-Object { Remove-CEDataTree -Path $_.FullName | Out-Null }
             Test-Path -LiteralPath $old[0] | Should -BeFalse -Because 'the oldest report folder is removed'
             Test-Path -LiteralPath $old[1] | Should -BeFalse
             @(Get-ChildItem -LiteralPath $reports -Directory).Count | Should -Be 14
             Get-Content -LiteralPath (Join-Path $outside 'keep.txt') | Should -Be 'keep' -Because 'the junction inside a deleted folder was not followed'
         }
         finally { if ((Test-Path -LiteralPath $link) -and ((Get-Item -LiteralPath $link -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) { [IO.Directory]::Delete($link, $false) } }
+    }
+
+    It 'report housekeeping as administrator never lists a folder a standard user controls, or a quarantine' {
+        # The recursive delete checked nothing below the folder it was given. As administrator or SYSTEM it
+        # now checks each folder immediately before listing it: one that is a link, not admin-owned, or
+        # changeable by a non-administrator is left in place unread, so no entry in a folder it walks can be
+        # swapped for a junction. A *.untrusted-* quarantine is left for an administrator.
+        $old = Join-Path $TestDrive 'housekeep-trust\reports\PC-20260101-000000'
+        $userDir = Join-Path $old 'A'
+        $quarantine = Join-Path $old 'x.untrusted-0123'
+        $outside = Join-Path $TestDrive 'housekeep-trust-outside'
+        New-Item -ItemType Directory -Force -Path $userDir, (Join-Path $old 'ok'), $quarantine, $outside | Out-Null
+        Set-Content -LiteralPath (Join-Path $old 'ok\report.html') -Value '<html/>'
+        Set-Content -LiteralPath (Join-Path $userDir 'zz-sentinel.txt') -Value 'mine'
+        Set-Content -LiteralPath (Join-Path $quarantine 'q.txt') -Value 'quarantined'
+        Set-Content -LiteralPath (Join-Path $outside 'zz-sentinel.txt') -Value 'target'
+        $userLink = Join-Path $userDir 'to-outside'
+        New-Item -ItemType Junction -Path $userLink -Target $outside | Out-Null
+        try {
+            InModuleScope CEAudit -Parameters @{ Old = $old; UserDir = $userDir } {
+                param($Old, $UserDir)
+                Mock Test-CEIsAdmin { $true }
+                Mock Get-CELockedFolderProblem { if ($Path -eq $UserDir) { "$Path is owned by S-1-5-21-1-2-3-1001" } else { '' } }
+                Remove-CEDataTree -Path $Old -WarningVariable w -WarningAction SilentlyContinue | Should -BeFalse -Because 'something was left in place'
+                Should -Invoke Get-CELockedFolderProblem -Times 1 -Exactly -ParameterFilter { $Path -eq $UserDir } -Because 'each folder is checked just before it would be listed'
+                Should -Invoke Get-CELockedFolderProblem -Times 0 -ParameterFilter { $Path -like '*.untrusted-*' } -Because 'a quarantine is not even read'
+                "$w" | Should -Match ([regex]::Escape($UserDir))
+            }
+            Test-Path -LiteralPath (Join-Path $old 'ok') | Should -BeFalse -Because 'trusted folders are removed'
+            Get-Content -LiteralPath (Join-Path $userDir 'zz-sentinel.txt') | Should -Be 'mine' -Because 'an untrusted folder is never listed or walked'
+            Test-Path -LiteralPath $userLink | Should -BeTrue
+            Get-Content -LiteralPath (Join-Path $quarantine 'q.txt') | Should -Be 'quarantined'
+            Get-Content -LiteralPath (Join-Path $outside 'zz-sentinel.txt') | Should -Be 'target'
+        }
+        finally { if ((Test-Path -LiteralPath $userLink) -and ([IO.File]::GetAttributes($userLink) -band [IO.FileAttributes]::ReparsePoint)) { [IO.Directory]::Delete($userLink, $false) } }
+
+        # A standard user's own housekeeping needs no check: it can only delete what that user could anyway.
+        $mine = Join-Path $TestDrive 'housekeep-user\PC-20260101-000000'
+        New-Item -ItemType Directory -Force -Path (Join-Path $mine 'sub') | Out-Null
+        Set-Content -LiteralPath (Join-Path $mine 'sub\f.txt') -Value 'x'
+        InModuleScope CEAudit -Parameters @{ Mine = $mine } {
+            param($Mine)
+            Mock Test-CEIsAdmin { $false }
+            Mock Get-CELockedFolderProblem { throw 'not checked for a standard user' }
+            Remove-CEDataTree -Path $Mine | Should -BeTrue
+        }
+        Test-Path -LiteralPath $mine | Should -BeFalse
+    }
+
+    It 'writes the audit event through the one ReportEvent writer, with the documented IDs' {
+        # Write-CEEventLog and the data-folder move-aside notice share Write-CEEventEntry (RegisterEventSource
+        # and ReportEvent, never EventLog.WriteEntry): 1000 clean, 1001 attention, 1002 auto-fail, 1003 moved aside.
+        InModuleScope CEAudit {
+            Mock Test-Path { $true }
+            Mock Write-CEEventEntry { }
+            Write-CEEventLog -Status ([pscustomobject]@{ autoFailCount = 2; autoFails = @('SU-03'); checks = [ordered]@{}; frameworks = [ordered]@{}; reportFolder = 'X' })
+            Should -Invoke Write-CEEventEntry -Times 1 -Exactly -ParameterFilter { $Id -eq 1002 -and $Type -eq 'Error' -and $Message -like 'Engramic Baseline device audit*' }
+            Write-CEEventLog -Status ([pscustomobject]@{ autoFailCount = 0; autoFails = @(); checks = [ordered]@{ 'FW-01' = [ordered]@{ status = 'Fail' } }; frameworks = [ordered]@{}; reportFolder = 'X' })
+            Should -Invoke Write-CEEventEntry -Times 1 -Exactly -ParameterFilter { $Id -eq 1001 -and $Type -eq 'Warning' }
+            Write-CEEventLog -Status ([pscustomobject]@{ autoFailCount = 0; autoFails = @(); checks = [ordered]@{ 'FW-01' = [ordered]@{ status = 'Pass' } }; frameworks = [ordered]@{}; reportFolder = 'X' })
+            Should -Invoke Write-CEEventEntry -Times 1 -Exactly -ParameterFilter { $Id -eq 1000 -and $Type -eq 'Information' }
+        }
     }
 
     It 'takes the audit mutex before it sets up the data folder, inside the error handling' {
@@ -1916,6 +2142,46 @@ Describe 'Locked-at-birth data folders (Initialize-CEDataFolder)' {
         $acl.AreAccessRulesProtected | Should -BeTrue
         $trusted = @([Security.Principal.SecurityIdentifier]'S-1-5-18', [Security.Principal.SecurityIdentifier]'S-1-5-32-544')
         @($acl.Access | Where-Object { $_.IdentityReference -notin $trusted }).Count | Should -Be 0
+    }
+
+    It 'moves an untrusted data folder, or a folder in it, aside OUT of the data folder, and records where it went' {
+        # A quarantine inside the data folder (<data>\reports.untrusted-<id>) is a tree a standard user may
+        # control inside a tree SYSTEM later walks and deletes. It goes beside the data folder instead, and
+        # the warning and an Application event (1003) name where, so nothing is lost silently.
+        $pd = Join-Path $TestDrive 'pd-module-aside'
+        $root = Join-Path $pd 'EngramicBaseline'
+        New-Item -ItemType Directory -Force -Path (Join-Path $root 'reports') | Out-Null
+        Set-Content -LiteralPath (Join-Path $root 'reports\planted.txt') -Value 'racer'
+        InModuleScope CEAudit -Parameters @{ Root = $root; Pd = $pd } {
+            param($Root, $Pd)
+            $script:CEDataRootOverride = $Root
+            try {
+                Mock Test-CEIsWindows { $true }
+                Mock Test-CEIsAdmin { $true }
+                # A birth descriptor a standard user can apply (no owner), and a stand-in trust check.
+                Mock New-CELockedDirectorySecurity { $s = New-Object Security.AccessControl.DirectorySecurity; $s.SetSecurityDescriptorSddlForm('D:(A;OICI;FA;;;WD)'); $s }
+                Mock Get-CELockedFolderProblem { if (Test-Path -LiteralPath (Join-Path $Path 'planted.txt')) { "$Path is owned by S-1-5-21-1-2-3-1001" } else { '' } }
+                Mock Write-CEEventEntry { }
+                $reports = Join-Path $Root 'reports'
+                Initialize-CEDataFolder -Path $reports -WarningVariable w -WarningAction SilentlyContinue | Should -Be $reports
+                Test-Path -LiteralPath (Join-Path $reports 'planted.txt') | Should -BeFalse -Because 'a fresh folder took its place'
+                @(Get-ChildItem -LiteralPath $Root -Recurse -Force -Filter '*.untrusted-*').Count | Should -Be 0 -Because 'nothing is quarantined inside the data folder'
+                $aside = @(Get-ChildItem -LiteralPath $Pd -Directory -Filter 'EngramicBaseline.untrusted-*-reports')
+                $aside.Count | Should -Be 1
+                $asidePath = $aside[0].FullName
+                Get-Content -LiteralPath (Join-Path $asidePath 'planted.txt') | Should -Be 'racer'
+                "$w" | Should -Match ([regex]::Escape($asidePath))
+                Should -Invoke Write-CEEventEntry -Times 1 -Exactly -ParameterFilter { $Id -eq 1003 -and $Type -eq 'Warning' -and $Message -like "*$asidePath*" }
+                # The data folder itself goes beside itself.
+                Set-Content -LiteralPath (Join-Path $Root 'planted.txt') -Value 'racer'
+                Initialize-CEDataFolder -Path $Root -WarningAction SilentlyContinue | Out-Null
+                @(Get-ChildItem -LiteralPath $Pd -Directory | Where-Object { $_.Name -match '^EngramicBaseline\.untrusted-[0-9a-f]{32}$' }).Count | Should -Be 1
+                # Named as the installer names them (Get-CEAsidePath); a path outside the data folder goes beside itself.
+                Get-CEDataAsidePath -Path (Join-Path $Root 'packs') | Should -Match ('^' + [regex]::Escape($Root) + '\.untrusted-[0-9a-f]{32}-packs$')
+                Get-CEDataAsidePath -Path 'X:\elsewhere\status-dir' | Should -Match '^X:\\elsewhere\\status-dir\.untrusted-[0-9a-f]{32}$'
+            }
+            finally { $script:CEDataRootOverride = $null }
+        }
     }
 
     It 'the birth descriptor names Administrators as owner, and matches the installer''s copy' {

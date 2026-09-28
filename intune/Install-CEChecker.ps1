@@ -198,18 +198,37 @@ function Remove-CELink {
     if (Test-CEReparsePoint -Path $Path) { throw "Could not remove the link at $Path" }
 }
 
+function Get-CEAsidePath {
+    <#
+        Where an untrusted item at $Path is moved to: always a sibling of the data folder, never a
+        name inside it - %ProgramData%\EngramicBaseline.untrusted-<id> for the data folder itself,
+        and EngramicBaseline.untrusted-<id>-<name> for an item inside it (say ...-packs). A
+        moved-aside item is a tree a standard user may control, so it must be outside every tree the
+        tool keeps, reads or deletes as SYSTEM; the uninstaller leaves every
+        EngramicBaseline.untrusted-* folder for an administrator. Same volume, so the move is a rename.
+    #>
+    param([string]$Path, [string]$DataRoot)
+    $root = $DataRoot.TrimEnd('\')
+    $item = $Path.TrimEnd('\')
+    $id = [guid]::NewGuid().ToString('n')
+    if ($item -eq $root) { return "$root.untrusted-$id" }
+    if (-not $item.StartsWith("$root\", [StringComparison]::OrdinalIgnoreCase)) { throw "$Path is not in the data folder $DataRoot" }
+    return "$root.untrusted-$id-" + ($item.Substring($root.Length + 1) -replace '\\', '-')
+}
+
 function Move-CEItemAside {
     <#
-        Renames a file or folder out of the way to a quarantine sibling (<path>.untrusted-<guid>),
-        so nothing later acts on it. The rename touches only the item itself, never what is inside
-        it, and never follows a link. Nothing ever reads the moved-aside item; it is for an
-        administrator to check by hand and delete. Retries a few times with a short back-off: an
-        old-version audit, or any process with a handle open under the data folder, can make the
-        first rename fail with a sharing violation, and Intune would then just report the install
-        failed with no hint why. Returns the new path; throws with a clear reason on final failure.
+        Renames a file or folder out of the data folder to a quarantine sibling of it
+        (Get-CEAsidePath), so nothing later reads or walks it. The rename touches only the item
+        itself, never what is inside it, and never follows a link. Nothing ever reads the moved-aside
+        item; it is for an administrator to check by hand and delete. Retries a few times with a
+        short back-off: an old-version audit, or any process with a handle open under the data
+        folder, can make the first rename fail with a sharing violation, and Intune would then just
+        report the install failed with no hint why. Returns the new path; throws with a clear reason
+        on final failure.
     #>
-    param([string]$Path)
-    $aside = '{0}.untrusted-{1}' -f $Path, [guid]::NewGuid().ToString('n')
+    param([string]$Path, [string]$DataRoot)
+    $aside = Get-CEAsidePath -Path $Path -DataRoot $DataRoot
     $isDir = [bool]([IO.File]::GetAttributes($Path) -band [IO.FileAttributes]::Directory)
     $lastErr = $null
     for ($attempt = 0; $attempt -lt 5; $attempt++) {
@@ -240,21 +259,24 @@ function New-CELockedDirectory {
         write it or add to it, and the owner is never changed afterwards. Both calls return silently
         if the folder already exists, leaving the existing descriptor untouched, so after creating it
         this VERIFIES the result with Test-CELockedFolder and never repairs it. Anything already there
-        that a user made, took over or could write - or a link - is moved aside and the create retried
-        a bounded number of times, then the install fails. A folder is never taken back in place: its
-        creator may hold a handle opened while they owned it, which keeps add-file or WRITE_DAC access
-        even after takeown and icacls (verified Windows behaviour). An existing folder that is trusted
-        (admin-owned, not a link, no non-admin write/DAC/owner right) is kept, so a re-run preserves
-        reports; a benign read-only ACE an admin added does not force it aside.
+        that a user made, took over or could write - or a link - is moved aside (out of the data
+        folder, Get-CEAsidePath) and the create retried a bounded number of times, then the install
+        fails. A folder is never taken back in place: its creator may hold a handle opened while they
+        owned it, which keeps add-file or WRITE_DAC access even after takeown and icacls (verified
+        Windows behaviour). An existing folder that is trusted (admin-owned, not a link, no non-admin
+        write/DAC/owner right) is kept, so a re-run preserves reports; a benign read-only ACE an admin
+        added does not force it aside. Each move-aside is a warning naming where it went, which the
+        install collects and writes to its log and the Application event log.
     #>
-    param([string]$Path, [switch]$UsersRead)
+    [CmdletBinding()]
+    param([string]$Path, [string]$DataRoot, [switch]$UsersRead)
     for ($attempt = 0; $attempt -lt 5; $attempt++) {
         if (Test-CEReparsePoint -Path $Path) { Remove-CELink -Path $Path }
         if (Test-Path -LiteralPath $Path) {
             $problem = Test-CELockedFolder -Path $Path
             if (-not $problem) { return }
-            Write-Warning "$problem, so a standard user may control it. Moving it aside and creating a fresh, locked folder in its place."
-            Move-CEItemAside -Path $Path | Out-Null
+            $aside = Move-CEItemAside -Path $Path -DataRoot $DataRoot
+            Write-Warning "$problem, so a standard user may control it. It was moved aside to $aside (check it, then delete it) and a fresh, locked folder made in its place."
             continue
         }
         $security = New-CEDataDirectorySecurity -UsersRead:$UsersRead
@@ -264,8 +286,8 @@ function New-CELockedDirectory {
         # silent no-op and this rejects it (wrong owner, or a non-admin write right) rather than re-owning it.
         $problem = Test-CELockedFolder -Path $Path
         if (-not $problem) { return }
-        Write-Warning "The folder at $Path is not the one this install created ($problem); moving it aside and retrying."
-        Move-CEItemAside -Path $Path | Out-Null
+        $aside = Move-CEItemAside -Path $Path -DataRoot $DataRoot
+        Write-Warning "The folder at $Path is not the one this install created ($problem). It was moved aside to $aside (check it, then delete it) and the create retried."
     }
     throw "Could not create a locked, administrator-owned folder at $Path; a standard user may be interfering with the install."
 }
@@ -285,12 +307,14 @@ function Initialize-CEDataRoot {
 
         Anything else - a folder a standard user made or could write, one an older version re-owned in
         place (which left no marker, so its creator may hold a handle), or one whose owner is wrong - is
-        moved aside whole, never taken back in place, and a fresh locked folder made instead. Reports,
-        logs, config overrides and packs in a moved-aside folder are not carried over: a folder that
-        could ever have been user-writable cannot be trusted to keep, because a handle opened with
-        add-file rights still creates children after a later lock (verified Windows behaviour), so the
-        data is rebuilt by the next audit rather than copied out of an untrusted tree.
+        moved aside whole (to a sibling of the data folder, never inside it), never taken back in place,
+        and a fresh locked folder made instead. Reports, logs, config overrides and packs in a
+        moved-aside folder are not carried over: a folder that could ever have been user-writable cannot
+        be trusted to keep, because a handle opened with add-file rights still creates children after a
+        later lock (verified Windows behaviour), so the data is rebuilt by the next audit rather than
+        copied out of an untrusted tree.
     #>
+    [CmdletBinding()]
     param([string]$Path, [string]$RegPath)
     if (Test-CEReparsePoint -Path $Path) { Remove-CELink -Path $Path }
     if (Test-Path -LiteralPath $Path) {
@@ -301,15 +325,76 @@ function Initialize-CEDataRoot {
             return
         }
         $reason = if (-not $sealed) { 'it predates this version''s sealed-at-birth marker' } else { $problem }
-        $aside = Move-CEItemAside -Path $Path
+        $aside = Move-CEItemAside -Path $Path -DataRoot $Path
         Write-Warning "An existing $Path was moved aside to $aside ($reason) and a fresh, locked data folder made. Its reports, logs, config overrides and packs are not carried over - redeploy any config overrides and packs. Check the moved-aside folder, then delete it."
     }
-    New-CELockedDirectory -Path $Path
+    New-CELockedDirectory -Path $Path -DataRoot $Path
+}
+
+function Write-CEInstallEvent {
+    <#
+        Writes a warning to the Application event log under the EngramicBaseline source, with the same
+        RegisterEventSource / ReportEvent calls the audit uses: EventLog.WriteEntry enumerates every
+        log and throws where Security is unreadable. A failure here is only a warning.
+    #>
+    param([string]$Message, [int]$Id = 1003)
+    try {
+        if (-not ('CEInstall.EventWriter' -as [type])) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+namespace CEInstall {
+    public static class EventWriter {
+        [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        static extern IntPtr RegisterEventSource(string server, string source);
+        [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        static extern bool ReportEvent(IntPtr handle, ushort type, ushort category, uint eventId, IntPtr sid, ushort numStrings, uint dataSize, string[] strings, IntPtr rawData);
+        [DllImport("advapi32.dll", SetLastError = true)]
+        static extern bool DeregisterEventSource(IntPtr handle);
+        public static int Write(string source, ushort type, uint eventId, string message) {
+            IntPtr handle = RegisterEventSource(null, source);
+            if (handle == IntPtr.Zero) { return Marshal.GetLastWin32Error(); }
+            try {
+                bool ok = ReportEvent(handle, type, 0, eventId, IntPtr.Zero, 1, 0, new string[] { message }, IntPtr.Zero);
+                return ok ? 0 : Marshal.GetLastWin32Error();
+            }
+            finally { DeregisterEventSource(handle); }
+        }
+    }
+}
+'@ -ErrorAction Stop
+        }
+        # 2 = EVENTLOG_WARNING_TYPE
+        $rc = [CEInstall.EventWriter]::Write('EngramicBaseline', [uint16]2, [uint32]$Id, $Message)
+        if ($rc -ne 0) { Write-Warning "Could not write event $Id to the Application log (Win32 error $rc)" }
+    }
+    catch { Write-Warning "Could not write event $Id to the Application log: $($_.Exception.Message)" }
+}
+
+function Write-CESetupNotice {
+    <#
+        Records each data-folder notice (a link removed, or something moved aside, naming where it
+        went) in the install log and the Application event log (ID 1003), so a move-aside is never
+        silent: Intune shows none of an install's console output, and the notices are raised before
+        the log can start (the log lives in the folder being set up). Call it once logging has started.
+    #>
+    param([object[]]$Notice)
+    foreach ($n in @($Notice)) {
+        $text = "$n"
+        if (-not $text) { continue }
+        Write-Warning "Data folder: $text"
+        Write-CEInstallEvent -Message "Engramic Baseline install - data folder: $text" -Id 1003
+    }
 }
 
 $auditMutex = $null
 $haveMutex = $false
 $disabledAudit = $false
+# Data-folder notices (a link removed, something moved aside) are raised before the install log can
+# start, since the log lives in the folder being set up. They are written to the log and the
+# Application event log as soon as logging starts, or from the catch if it never does.
+$setupNotices = @()
+$noticesWritten = $false
 
 try {
     $manifest = Import-PowerShellDataFile -Path (Join-Path $packageRoot 'src\CEAudit\CEAudit.psd1')
@@ -325,6 +410,24 @@ try {
     if (-not $AllowDowngrade -and (Test-CENewerInstalled -Installed $installedVersion -Package $version)) {
         Write-Warning "Engramic Baseline $installedVersion is installed, which is newer than this package ($version), so it is left as it is. Run with -AllowDowngrade to install $version over it."
         exit 0
+    }
+
+    # --- Event log source, before the data folder ----------------------------
+    # Registered first so that anything the data-folder set-up moves aside can be recorded in the
+    # Application event log. Register the source by writing its registry key directly. The managed
+    # [Diagnostics.EventLog]::CreateEventSource calls SourceExists, which
+    # enumerates every event log and throws when Security/State are inaccessible
+    # (hosted CI runners, restricted images) - so the source was never created
+    # and the audit's event was silently dropped. Creating the key is all that
+    # RegisterEventSource (used by the audit) needs; the full message text still
+    # shows in Event Viewer as the event's insertion string.
+    $sourceKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Application\EngramicBaseline'
+    $registeredSource = $false
+    if (-not (Test-Path -LiteralPath $sourceKey)) {
+        New-Item -Path $sourceKey -Force | Out-Null
+        New-ItemProperty -Path $sourceKey -Name 'EventMessageFile' -PropertyType ExpandString -Value '%SystemRoot%\System32\EventCreate.exe' -Force | Out-Null
+        New-ItemProperty -Path $sourceKey -Name 'TypesSupported' -PropertyType DWord -Value 7 -Force | Out-Null
+        $registeredSource = $true
     }
 
     # --- Don't set up the data folder underneath a running audit -------------
@@ -351,11 +454,13 @@ try {
     # subfolder the tool keeps with their locked, administrator-owned descriptor applied in the one
     # call that creates them, so there is never a moment when a standard user can write them or add
     # to them. An existing root this version sealed is kept (config, packs and reports preserved);
-    # anything else is moved aside, never taken back in place (Initialize-CEDataRoot says why).
-    Initialize-CEDataRoot -Path $dataRoot -RegPath $sealRegPath
+    # anything else is moved aside out of the data folder, never taken back in place
+    # (Initialize-CEDataRoot says why). Their warnings, which name where anything went, are collected
+    # for the log and the event log.
+    Initialize-CEDataRoot -Path $dataRoot -RegPath $sealRegPath -WarningVariable +setupNotices -WarningAction SilentlyContinue
     # Users may read config overrides (the desktop app uses them); status, reports and the rest stay admin-only.
-    foreach ($name in @('logs', 'reports', 'cache', 'packs')) { New-CELockedDirectory -Path (Join-Path $dataRoot $name) }
-    New-CELockedDirectory -Path (Join-Path $dataRoot 'config') -UsersRead
+    foreach ($name in @('logs', 'reports', 'cache', 'packs')) { New-CELockedDirectory -Path (Join-Path $dataRoot $name) -DataRoot $dataRoot -WarningVariable +setupNotices -WarningAction SilentlyContinue }
+    New-CELockedDirectory -Path (Join-Path $dataRoot 'config') -DataRoot $dataRoot -UsersRead -WarningVariable +setupNotices -WarningAction SilentlyContinue
     # Record that a locked root was sealed at birth, so a later install keeps it in place instead of
     # moving it aside. Only administrators can write here, so a standard user cannot forge it; it is a
     # key separate from $regPath so uninstall can leave it unless -RemoveData is given.
@@ -365,6 +470,10 @@ try {
     Start-Transcript -LiteralPath $log | Out-Null
     $transcribing = $true
     Write-Host "Installing Engramic Baseline $version to $InstallPath"
+    if ($registeredSource) { Write-Host 'Registered event log source EngramicBaseline' }
+    # Every link removed and everything moved aside above goes in this log and the Application event log.
+    $noticesWritten = $true
+    Write-CESetupNotice -Notice $setupNotices
 
     # --- Copy payload into a staging folder, then swap -----------------------
     $payload = @('src', 'config', 'intune', 'docs', 'app', 'README.md')
@@ -393,22 +502,6 @@ try {
     }
     if (-not $swapped) { Move-Item -LiteralPath $staging -Destination $InstallPath }
     Set-CELockedAcl -Path $InstallPath -UsersRead
-
-    # --- Event log source ----------------------------------------------------
-    # Register the source by writing its registry key directly. The managed
-    # [Diagnostics.EventLog]::CreateEventSource calls SourceExists, which
-    # enumerates every event log and throws when Security/State are inaccessible
-    # (hosted CI runners, restricted images) - so the source was never created
-    # and the audit's event was silently dropped. Creating the key is all that
-    # RegisterEventSource (used by the audit) needs; the full message text still
-    # shows in Event Viewer as the event's insertion string.
-    $sourceKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Application\EngramicBaseline'
-    if (-not (Test-Path -LiteralPath $sourceKey)) {
-        New-Item -Path $sourceKey -Force | Out-Null
-        New-ItemProperty -Path $sourceKey -Name 'EventMessageFile' -PropertyType ExpandString -Value '%SystemRoot%\System32\EventCreate.exe' -Force | Out-Null
-        New-ItemProperty -Path $sourceKey -Name 'TypesSupported' -PropertyType DWord -Value 7 -Force | Out-Null
-        Write-Host 'Registered event log source EngramicBaseline'
-    }
 
     # --- Scheduled task ------------------------------------------------------
     if (-not $NoScheduledTask) {
@@ -488,6 +581,8 @@ try {
 }
 catch {
     Write-Error "Install failed: $($_.Exception.Message)" -ErrorAction Continue
+    # A failure before logging started must not lose a move-aside: record it in the event log.
+    if (-not $noticesWritten) { Write-CESetupNotice -Notice $setupNotices }
     $exit = 1
 }
 finally {

@@ -96,9 +96,17 @@ try {
     Remove-Item -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Application\EngramicBaseline' -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -Path $regPath -Recurse -Force -ErrorAction SilentlyContinue
 
-    if ($RemoveData -and (Test-Path -LiteralPath $dataRoot)) {
-        Remove-CETreeNoFollow -Path $dataRoot
-        Write-Host "Removed $dataRoot"
+    if ($RemoveData) {
+        if (Test-Path -LiteralPath $dataRoot) {
+            Remove-CETreeNoFollow -Path $dataRoot
+            Write-Host "Removed $dataRoot"
+        }
+        # Also remove the quarantine folders an install set aside (EngramicBaseline.untrusted-<guid>),
+        # so they don't accumulate one per upgrade. Never follows a link inside them.
+        foreach ($aside in @(Get-ChildItem -LiteralPath $env:ProgramData -Directory -Filter 'EngramicBaseline.untrusted-*' -ErrorAction SilentlyContinue)) {
+            Remove-CETreeNoFollow -Path $aside.FullName
+            Write-Host "Removed $($aside.FullName)"
+        }
     }
     Write-Host 'Uninstalled.'
 }

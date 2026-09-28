@@ -43,22 +43,34 @@ $DataRoot = Get-CEDataRoot
 
 $reportRoot = Join-Path $DataRoot 'reports'
 $logRoot = Join-Path $DataRoot 'logs'
-# Create the data root and its folders the locked way the installer does, so a root this audit makes
-# before the installer runs (an elevated first run) is never briefly writable by a standard user.
-foreach ($d in @($DataRoot, $reportRoot, $logRoot)) { Initialize-CEDataFolder -Path $d | Out-Null }
 
-# Only one audit at a time (scheduled task, Intune remediation and a manual run can overlap).
+# Only one audit at a time, and take the mutex before touching the data folder. The installer takes
+# the same mutex before it sets the folders up, so an upgrade never runs underneath this audit and
+# this audit never creates the root while the installer is moving it aside.
 $mutex = New-Object System.Threading.Mutex($false, 'Global\EngramicBaselineAudit')
-if (-not $mutex.WaitOne([TimeSpan]::FromMinutes(30))) {
+$haveMutex = $false
+try { $haveMutex = $mutex.WaitOne([TimeSpan]::FromMinutes(30)) }
+catch [System.Threading.AbandonedMutexException] { $haveMutex = $true }
+if (-not $haveMutex) {
     Write-Warning 'Another audit is still running; giving up.'
+    $mutex.Dispose()
     exit 2
 }
 
-$stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-$transcript = Join-Path $logRoot "audit-$stamp.log"
-Start-Transcript -LiteralPath $transcript | Out-Null
 $exitCode = 0
+$transcribing = $false
 try {
+    # Create the data root and its folders the locked way the installer does, INSIDE the error
+    # handling: a root this audit makes before the installer runs (an elevated first run) is never
+    # briefly writable by a standard user, and a failure here (e.g. a tampered root that has to be
+    # moved aside) is recorded in last-error.json instead of crashing the task silently.
+    foreach ($d in @($DataRoot, $reportRoot, $logRoot)) { Initialize-CEDataFolder -Path $d | Out-Null }
+
+    $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+    $transcript = Join-Path $logRoot "audit-$stamp.log"
+    Start-Transcript -LiteralPath $transcript | Out-Null
+    $transcribing = $true
+
     $ctx = Get-CEDeviceContext
     Write-Host "Audit started on $($ctx.ComputerName) as $($ctx.RunningAs) (tool $(Get-CEToolVersion))"
     $exclude = @()
@@ -84,14 +96,21 @@ try {
 catch {
     $exitCode = 1
     Write-Warning "Audit failed: $($_.Exception.Message)"
-    [pscustomobject]@{
-        Time    = (Get-Date).ToUniversalTime().ToString('o')
-        Message = $_.Exception.Message
-        Where   = [string]$_.InvocationInfo.PositionMessage
-    } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $DataRoot 'last-error.json') -Encoding UTF8
+    # Record the failure, but only into a data root that was set up: if Initialize-CEDataFolder itself
+    # failed (a tampered root), don't create last-error.json in a folder we don't trust.
+    try {
+        if (Test-Path -LiteralPath $DataRoot -PathType Container) {
+            [pscustomobject]@{
+                Time    = (Get-Date).ToUniversalTime().ToString('o')
+                Message = $_.Exception.Message
+                Where   = [string]$_.InvocationInfo.PositionMessage
+            } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $DataRoot 'last-error.json') -Encoding UTF8
+        }
+    }
+    catch { Write-Warning "Could not record the failure: $($_.Exception.Message)" }
 }
 finally {
-    Stop-Transcript | Out-Null
+    if ($transcribing) { Stop-Transcript | Out-Null }
     # Housekeeping: keep the newest reports and logs. Delete old report folders with a recursive
     # delete that never follows a link (Remove-Item -Recurse follows junctions on 5.1); this runs as
     # SYSTEM under the data folder.
@@ -101,7 +120,7 @@ finally {
     Get-ChildItem -LiteralPath $logRoot -Filter 'audit-*.log' -File -ErrorAction SilentlyContinue |
         Sort-Object Name -Descending | Select-Object -Skip ($KeepReports * 2) |
         Remove-Item -Force -ErrorAction SilentlyContinue
-    $mutex.ReleaseMutex()
+    if ($haveMutex) { try { $mutex.ReleaseMutex() } catch { $null = $_ } }
     $mutex.Dispose()
 }
 exit $exitCode

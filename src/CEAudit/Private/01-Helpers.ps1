@@ -161,34 +161,44 @@ function Get-CEDataRoot {
 
 function New-CELockedDirectorySecurity {
     <#
-        The locked security descriptor a machine data folder is born with: a protected DACL (no
-        inheritance from %ProgramData%) granting only SYSTEM and Administrators full control, inherited
-        by the folder's children. -UsersRead also grants Users read and execute. SIDs keep it locale
-        independent. Owner is set separately, because applying an owner needs a privilege the
-        descriptor alone can't guarantee. Kept identical to the installer's New-CEDataDirectorySecurity.
+        The locked security descriptor a machine data folder is born with: owner Administrators, and a
+        protected DACL (no inheritance from %ProgramData%) granting only SYSTEM and Administrators full
+        control, inherited by the folder's children. -UsersRead also grants Users read and execute.
+        SIDs keep it locale independent. The owner is in the descriptor so it is applied in the one
+        call that creates the folder, never afterwards: an elevated or SYSTEM token may name
+        BUILTIN\Administrators as owner (that group carries SE_GROUP_OWNER). Kept identical to the
+        installer's New-CEDataDirectorySecurity.
     #>
     param([switch]$UsersRead)
-    $sddl = 'D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)'
+    $sddl = 'O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)'
     if ($UsersRead) { $sddl += '(A;OICI;0x1200A9;;;BU)' }
     $sec = New-Object Security.AccessControl.DirectorySecurity
     $sec.SetSecurityDescriptorSddlForm($sddl)
     return $sec
 }
 
-function Set-CEDirectoryOwnerAdministrators {
+function Get-CELockedFolderProblem {
     <#
-        Forces the owner of a folder this tool just created to the Administrators group, since the
-        "default owner for objects created by administrators" policy can otherwise make the owner the
-        specific administrator, which the data-path trust checks would reject. Only ever called on a
-        folder the tool created, never on one a standard user owns.
+        '' when the folder at $Path is one the tool could itself have sealed at birth, or the reason
+        it is not. Read only: never changes owner or permissions. Accepted only when it is not a link,
+        is owned by SYSTEM or Administrators (a standard user can set neither as owner), and its DACL
+        is exactly the locked, protected form (New-CELockedDirectorySecurity) - no inheritance, no
+        extra allow entries, no deny entries. Comparing the whole DACL catches a folder that already
+        existed when CreateDirectory ran (a silent no-op) whose creator may still hold a handle.
     #>
-    param([string]$Path)
-    $admins = New-Object Security.Principal.SecurityIdentifier('S-1-5-32-544')
-    $acl = Get-Acl -LiteralPath $Path
-    if ("$($acl.GetOwner([Security.Principal.SecurityIdentifier]))" -ne $admins.Value) {
-        $acl.SetOwner($admins)
-        Set-Acl -LiteralPath $Path -AclObject $acl
-    }
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][string]$Path, [switch]$UsersRead)
+    if (Test-CEReparsePoint -Path $Path) { return "$Path is a link (junction or symbolic link)" }
+    $acl = $null
+    try { $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop } catch { return "the permissions of $Path could not be read" }
+    $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+    if (@('S-1-5-18', 'S-1-5-32-544') -notcontains $owner) { return "$Path is owned by $owner, not SYSTEM or Administrators" }
+    if (-not $acl.AreAccessRulesProtected) { return "$Path inherits permissions instead of a locked, protected DACL" }
+    $want = (New-CELockedDirectorySecurity -UsersRead:$UsersRead).GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::Access)
+    $got = $acl.GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::Access)
+    if ($got -ne $want) { return "$Path does not have the locked permissions" }
+    return ''
 }
 
 function Initialize-CEDataFolder {
@@ -197,11 +207,12 @@ function Initialize-CEDataFolder {
         user-writable even when an elevated audit (the GUI, Invoke-CEAudit or the scheduled audit)
         runs before the installer. Non-elevated or non-Windows callers only affect their own user and
         their data lives in their own profile, so they get a plain folder. An elevated caller on
-        Windows gets the folder with its locked descriptor applied in the one call that makes it, then
-        verifies the owner and permissions; anything untrusted already in its place (a folder or file
-        a standard user made, or a link) is moved aside and the create retried, never written into or
-        taken back in place (its creator may hold a handle that kept the right to re-permission it).
-        Returns the path.
+        Windows gets the folder with its locked, administrator-owned descriptor applied in the one
+        call that makes it, then VERIFIES the result and never repairs it: anything already in its
+        place that is not the locked form (a folder or file a standard user made or took over, or a
+        link) is moved aside and the create retried, never written into or taken back in place (its
+        creator may hold a handle that kept the right to re-permission it). An existing folder that is
+        already the locked form is kept, so status.json and reports survive. Returns the path.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -211,8 +222,12 @@ function Initialize-CEDataFolder {
         return $Path
     }
     for ($attempt = 0; $attempt -lt 5; $attempt++) {
+        if (Test-CEReparsePoint -Path $Path) {
+            if ([IO.File]::GetAttributes($Path) -band [IO.FileAttributes]::Directory) { [IO.Directory]::Delete($Path, $false) } else { [IO.File]::Delete($Path) }
+            continue
+        }
         if (Test-Path -LiteralPath $Path) {
-            if (-not (Test-CEReparsePoint -Path $Path) -and @(Get-CEDataPathProblem -Path $Path).Count -eq 0) { return $Path }
+            if (-not (Get-CELockedFolderProblem -Path $Path -UsersRead:$UsersRead)) { return $Path }
             $aside = '{0}.untrusted-{1}' -f $Path, [guid]::NewGuid().ToString('n')
             if ([IO.File]::GetAttributes($Path) -band [IO.FileAttributes]::Directory) { [IO.Directory]::Move($Path, $aside) } else { [IO.File]::Move($Path, $aside) }
             Write-Warning "Moved an untrusted $Path aside to $aside and will make a fresh, locked one."
@@ -221,8 +236,13 @@ function Initialize-CEDataFolder {
         $security = New-CELockedDirectorySecurity -UsersRead:$UsersRead
         if ($PSVersionTable.PSVersion.Major -ge 6) { [void][IO.FileSystemAclExtensions]::Create([IO.DirectoryInfo]::new($Path), $security) }
         else { [void][IO.Directory]::CreateDirectory($Path, $security) }
-        Set-CEDirectoryOwnerAdministrators -Path $Path
-        if (-not (Test-CEReparsePoint -Path $Path) -and @(Get-CEDataPathProblem -Path $Path).Count -eq 0) { return $Path }
+        # Verify what is now on disk; never repair it. A silent no-op over a pre-existing folder is
+        # rejected here (wrong owner or DACL) instead of being re-owned in place.
+        if (-not (Get-CELockedFolderProblem -Path $Path -UsersRead:$UsersRead)) { return $Path }
+        $aside = '{0}.untrusted-{1}' -f $Path, [guid]::NewGuid().ToString('n')
+        if (Test-Path -LiteralPath $Path) {
+            if ([IO.File]::GetAttributes($Path) -band [IO.FileAttributes]::Directory) { [IO.Directory]::Move($Path, $aside) } else { [IO.File]::Move($Path, $aside) }
+        }
     }
     throw "Could not create a locked, administrator-owned data folder at $Path."
 }

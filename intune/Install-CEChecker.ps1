@@ -87,10 +87,6 @@ $log = Join-Path $dataRoot ("logs\install-{0}.log" -f (Get-Date -Format 'yyyyMMd
 # Native tools by full path, never through PATH.
 $system32 = [Environment]::GetFolderPath('System')
 $icacls = Join-Path $system32 'icacls.exe'
-# SYSTEM, Administrators, TrustedInstaller.
-$trustedOwners = @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
-# Rights that let someone change, delete or re-permission a file or folder, including GENERIC_WRITE and GENERIC_ALL.
-$writeRights = 2 -bor 4 -bor 16 -bor 64 -bor 256 -bor 65536 -bor 262144 -bor 524288 -bor 0x40000000 -bor 0x10000000
 
 $transcribing = $false
 
@@ -116,34 +112,45 @@ function Test-CENewerInstalled {
 
 function New-CEDataDirectorySecurity {
     <#
-        The locked security descriptor a data folder is born with: a protected DACL (no inheritance
-        from %ProgramData%) granting only SYSTEM and Administrators full control, inherited by the
-        folder's children. -UsersRead also grants Users read and execute (the config folder, which
-        the desktop app reads). SIDs keep this locale independent. Owner is set separately, because
-        applying an owner needs a privilege the descriptor alone can't guarantee.
+        The locked security descriptor a data folder is born with: owner Administrators, and a
+        protected DACL (no inheritance from %ProgramData%) granting only SYSTEM and Administrators
+        full control, inherited by the folder's children. -UsersRead also grants Users read and
+        execute (the config folder, which the desktop app reads). SIDs keep this locale independent.
+        The owner is in the descriptor so it is set in the one call that creates the folder, never
+        afterwards: an elevated or SYSTEM token may name BUILTIN\Administrators as owner (that group
+        carries SE_GROUP_OWNER), so no separate ownership step - which could land on a folder a
+        standard user made in a race - is needed.
     #>
     param([switch]$UsersRead)
-    $sddl = 'D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)'
+    $sddl = 'O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)'
     if ($UsersRead) { $sddl += '(A;OICI;0x1200A9;;;BU)' }
     $sec = New-Object Security.AccessControl.DirectorySecurity
     $sec.SetSecurityDescriptorSddlForm($sddl)
     return $sec
 }
 
-function Set-CEOwnerAdministrators {
+function Test-CELockedFolder {
     <#
-        Forces the owner of a folder this install just created to the Administrators group. The
-        "default owner for objects created by administrators" policy can otherwise make the owner
-        the specific administrator who ran the install, which the trust checks would then reject.
-        Only ever called on a folder the install created, never on one a standard user owns.
+        '' when the folder at $Path is one this install could itself have sealed at birth, or the
+        reason it is not. Read only: it never changes owner or permissions. A folder is accepted only
+        when it is not a link, is owned by SYSTEM or Administrators (a standard user cannot set either
+        as the owner, so a folder they made or took over is rejected here), and its DACL is exactly
+        the locked, protected form (New-CEDataDirectorySecurity): no inheritance, no extra allow
+        entries, no deny entries. Comparing the whole DACL, not just the absence of non-admin allow
+        entries, catches a folder that already existed when CreateDirectory ran (which returns
+        silently and leaves the existing descriptor untouched) whose creator may still hold a handle.
     #>
-    param([string]$Path)
-    $admins = New-Object Security.Principal.SecurityIdentifier('S-1-5-32-544')
-    $acl = Get-Acl -LiteralPath $Path
-    if ("$($acl.GetOwner([Security.Principal.SecurityIdentifier]))" -ne $admins.Value) {
-        $acl.SetOwner($admins)
-        Set-Acl -LiteralPath $Path -AclObject $acl
-    }
+    param([string]$Path, [switch]$UsersRead)
+    if (Test-CEReparsePoint -Path $Path) { return "$Path is a link (junction or symbolic link)" }
+    $acl = $null
+    try { $acl = Get-Acl -LiteralPath $Path } catch { return "the permissions of $Path could not be read" }
+    $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+    if (@('S-1-5-18', 'S-1-5-32-544') -notcontains $owner) { return "$Path is owned by $owner, not SYSTEM or Administrators" }
+    if (-not $acl.AreAccessRulesProtected) { return "$Path inherits permissions instead of a locked, protected DACL" }
+    $want = (New-CEDataDirectorySecurity -UsersRead:$UsersRead).GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::Access)
+    $got = $acl.GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::Access)
+    if ($got -ne $want) { return "$Path does not have the locked permissions (expected $want, found $got)" }
+    return ''
 }
 
 function Test-CEReparsePoint {
@@ -167,31 +174,6 @@ function Remove-CELink {
     if (Test-CEReparsePoint -Path $Path) { throw "Could not remove the link at $Path" }
 }
 
-function Get-CEItemTrustProblem {
-    <#
-        Why a file or folder in the data folder might be under a standard user's control, or '' when
-        it isn't: it is owned by someone other than SYSTEM, Administrators or TrustedInstaller, or its
-        permissions let anyone else change, delete or re-permission it. The owner alone is not enough:
-        a hard link, or a file a user moved in, keeps an administrator owner while the user can still
-        write to it (every profile has such files, such as ntuser.ini).
-    #>
-    param([string]$Path)
-    $acl = $null
-    try { $acl = Get-Acl -LiteralPath $Path } catch { return "the permissions of $Path could not be read" }
-    $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
-    if ($trustedOwners -notcontains $owner) { return "$Path is owned by $owner, not an administrator" }
-    foreach ($rule in @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))) {
-        if ("$($rule.AccessControlType)" -ne 'Allow') { continue }
-        $sid = "$($rule.IdentityReference)"
-        # CREATOR OWNER only applies to new items, which only administrators can create in a locked folder.
-        if ($trustedOwners -contains $sid -or $sid -eq 'S-1-3-0') { continue }
-        $rights = [long]0
-        try { $rights = [long]$rule.FileSystemRights } catch { $rights = [long]::MaxValue }
-        if ($rights -band $writeRights) { return "$Path can be changed by $sid, not only administrators" }
-    }
-    return ''
-}
-
 function Move-CEItemAside {
     <#
         Renames a file or folder out of the way to a quarantine sibling (<path>.untrusted-<guid>),
@@ -206,23 +188,32 @@ function Move-CEItemAside {
     return $aside
 }
 
+function Get-CERegistryString {
+    <# A registry string value under $Path, or '' when the key or value is missing or unreadable. #>
+    param([string]$Path, [string]$Name)
+    try { return [string](Get-ItemProperty -LiteralPath $Path -Name $Name -ErrorAction Stop).$Name }
+    catch { return '' }
+}
+
 function New-CELockedDirectory {
     <#
-        Creates a data folder with its locked descriptor already applied, in the one call that makes
-        it (CreateDirectory with a DirectorySecurity on 5.1, FileSystemAclExtensions.Create on
-        pwsh 7), so there is never a moment when a standard user can write it or add to it. Both
-        return silently if the folder already exists, so after creating it this checks the owner is
-        the Administrators group and the permissions are the locked ones; if something is already
-        there that isn't (a folder or file a user made, or a link), it is moved aside and the create
-        retried a bounded number of times, then the install fails. A folder is never taken back in
-        place: its creator may hold a handle opened while they owned it, which keeps the right to
-        change the permissions even after takeown and icacls (verified Windows behaviour).
+        Creates a data folder with its locked, administrator-owned descriptor already applied, in the
+        one call that makes it (CreateDirectory with a DirectorySecurity on 5.1,
+        FileSystemAclExtensions.Create on pwsh 7), so there is never a moment when a standard user can
+        write it or add to it, and the owner is never changed afterwards. Both calls return silently
+        if the folder already exists, leaving the existing descriptor untouched, so after creating it
+        this VERIFIES the result with Test-CELockedFolder and never repairs it. Anything already there
+        that isn't the locked form - a folder or file a user made, one taken over, or a link - is moved
+        aside and the create retried a bounded number of times, then the install fails. A folder is
+        never taken back in place: its creator may hold a handle opened while they owned it, which
+        keeps the right to re-permission it even after takeown and icacls (verified Windows behaviour).
+        An existing folder that is already the locked form is kept, so a re-run preserves reports.
     #>
     param([string]$Path, [switch]$UsersRead)
     for ($attempt = 0; $attempt -lt 5; $attempt++) {
         if (Test-CEReparsePoint -Path $Path) { Remove-CELink -Path $Path }
         if (Test-Path -LiteralPath $Path) {
-            $problem = if (Test-Path -LiteralPath $Path -PathType Container) { Get-CEItemTrustProblem -Path $Path } else { "$Path is a file, not the data folder" }
+            $problem = Test-CELockedFolder -Path $Path -UsersRead:$UsersRead
             if (-not $problem) { return }
             Write-Warning "$problem, so a standard user may control it. Moving it aside and creating a fresh, locked folder in its place."
             Move-CEItemAside -Path $Path | Out-Null
@@ -231,9 +222,11 @@ function New-CELockedDirectory {
         $security = New-CEDataDirectorySecurity -UsersRead:$UsersRead
         if ($PSVersionTable.PSVersion.Major -ge 6) { [void][IO.FileSystemAclExtensions]::Create([IO.DirectoryInfo]::new($Path), $security) }
         else { [void][IO.Directory]::CreateDirectory($Path, $security) }
-        Set-CEOwnerAdministrators -Path $Path
-        if (Test-CEReparsePoint -Path $Path) { Remove-CELink -Path $Path; continue }
-        if (-not (Get-CEItemTrustProblem -Path $Path)) { return }
+        # Verify what is now on disk; never repair it. If the folder pre-existed, the create was a
+        # silent no-op and this rejects it (wrong owner or DACL) rather than re-owning a user's folder.
+        $problem = Test-CELockedFolder -Path $Path -UsersRead:$UsersRead
+        if (-not $problem) { return }
+        Write-Warning "The folder at $Path is not the one this install created ($problem); moving it aside and retrying."
         Move-CEItemAside -Path $Path | Out-Null
     }
     throw "Could not create a locked, administrator-owned folder at $Path; a standard user may be interfering with the install."
@@ -241,46 +234,48 @@ function New-CELockedDirectory {
 
 function Initialize-CEDataRoot {
     <#
-        Establishes the data folder as a fresh, locked, administrator-owned folder. A link found in
-        its place is removed as a link. Any real folder or file already there is moved aside whole,
-        never taken back in place and never kept: an elevated process cannot tell a folder this tool
-        sealed at birth from one that was ever writable by a standard user, and the latter's creator
-        may hold a handle that kept the right to re-permission it (verified). So a fresh one is always
-        made with New-CELockedDirectory. Reports and logs in the moved-aside folder are not carried
-        over; -RunNow and the next scheduled audit write status.json again within minutes.
+        Establishes the data folder as a locked, administrator-owned folder.
+
+        A link found in its place is removed as a link. An existing real folder is KEPT in place only
+        when this version sealed it at birth: HKLM\SOFTWARE\EngramicBaseline\DataRootSealed (which
+        only administrators can write) records that a locked root was created, and Test-CELockedFolder
+        confirms it is still the locked form owned by SYSTEM or Administrators. Such a root was never
+        writable by a standard user, so no one holds a handle to it, and keeping it preserves the
+        admin's config overrides, installed packs and report history across upgrades.
+
+        Anything else - a folder a standard user made, one an older version re-owned in place (which
+        left no marker, so its creator may hold a handle), or one with the wrong permissions - is
+        moved aside whole, never taken back in place, and a fresh locked folder made instead. That
+        one-time move happens only when upgrading from a version that predates the marker. Reports,
+        logs, config overrides and packs in a moved-aside folder are not carried over.
     #>
-    param([string]$Path)
+    param([string]$Path, [string]$RegPath)
     if (Test-CEReparsePoint -Path $Path) { Remove-CELink -Path $Path }
     if (Test-Path -LiteralPath $Path) {
+        $sealed = Get-CERegistryString -Path $RegPath -Name 'DataRootSealed'
+        $problem = Test-CELockedFolder -Path $Path
+        if ($sealed -and -not $problem) {
+            Write-Host "Keeping the existing locked data folder at $Path (config overrides, packs and reports are preserved)."
+            return
+        }
+        $reason = if (-not $sealed) { 'it predates this version''s sealed-at-birth marker' } else { $problem }
         $aside = Move-CEItemAside -Path $Path
-        Write-Warning "An existing $Path was moved aside to $aside and a fresh, locked data folder made. Check what is in the moved-aside folder, then delete it; its reports and logs are not carried over."
+        Write-Warning "An existing $Path was moved aside to $aside ($reason) and a fresh, locked data folder made. Its reports, logs, config overrides and packs are not carried over - redeploy any config overrides and packs. Check the moved-aside folder, then delete it."
     }
     New-CELockedDirectory -Path $Path
 }
 
-try {
-    # --- Data folder: born locked, before anything is written there --------
-    # %ProgramData% lets standard users create files and folders, and the data
-    # folder holds config overrides and a status.json that the SYSTEM audit and
-    # Intune trust. Make the folder and every subfolder the tool keeps with their
-    # locked descriptor already applied, so there is never a moment when a standard
-    # user can write them or add to them. Anything already in the data folder's
-    # place (a link, or a folder or file a user made) is moved aside, never taken
-    # back in place (Initialize-CEDataRoot and New-CELockedDirectory say why).
-    Initialize-CEDataRoot -Path $dataRoot
-    # Users may read config overrides (the desktop app uses them); status, reports and the rest stay admin-only.
-    foreach ($name in @('logs', 'reports', 'cache', 'packs')) { New-CELockedDirectory -Path (Join-Path $dataRoot $name) }
-    New-CELockedDirectory -Path (Join-Path $dataRoot 'config') -UsersRead
-    # Log only once the data folder is locked, so no one else can read or plant the log.
-    Start-Transcript -LiteralPath $log | Out-Null
-    $transcribing = $true
+$auditMutex = $null
+$haveMutex = $false
 
+try {
     $manifest = Import-PowerShellDataFile -Path (Join-Path $packageRoot 'src\CEAudit\CEAudit.psd1')
     $version = [string]$manifest.ModuleVersion
 
-    # --- Never downgrade -----------------------------------------------------
+    # --- Never downgrade, before touching the data folder --------------------
     # An older package still assigned (say, to All Devices while a newer one goes to a pilot
-    # group) must not put its version back over a newer install.
+    # group) must not put its version back over a newer install. Check this FIRST, so an older
+    # package that "changes nothing and exits 0" never moves the data folder aside.
     $installedVersion = ''
     $installedItem = Get-ItemProperty -LiteralPath $regPath -ErrorAction SilentlyContinue
     if ($installedItem -and $installedItem.PSObject.Properties['Version']) { $installedVersion = [string]$installedItem.Version }
@@ -288,6 +283,38 @@ try {
         Write-Warning "Engramic Baseline $installedVersion is installed, which is newer than this package ($version), so it is left as it is. Run with -AllowDowngrade to install $version over it."
         exit 0
     }
+
+    # --- Don't set up the data folder underneath a running audit -------------
+    # The scheduled task ran the audit with the data folder as more than a name (its working
+    # directory, an open transcript), so renaming the root would fail with a sharing violation
+    # and the install would report as failed. Stop the task, then take the audit mutex - which
+    # also blocks a manual run or the Remediations audit - and hold it until the folders are
+    # locked. The audit takes the same mutex before it writes anything under the data folder.
+    $running = Get-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction SilentlyContinue
+    if ($running -and $running.State -eq 'Running') { $running | Stop-ScheduledTask -ErrorAction SilentlyContinue }
+    $auditMutex = New-Object System.Threading.Mutex($false, 'Global\EngramicBaselineAudit')
+    try { $haveMutex = $auditMutex.WaitOne([TimeSpan]::FromMinutes(5)) }
+    catch [System.Threading.AbandonedMutexException] { $haveMutex = $true }
+    if (-not $haveMutex) { throw 'An Engramic Baseline audit is still running (could not take the Global\EngramicBaselineAudit mutex within 5 minutes). Try the install again once it has finished.' }
+
+    # --- Data folder: born locked, before anything is written there ----------
+    # %ProgramData% lets standard users create files and folders, and the data folder holds config
+    # overrides and a status.json that the SYSTEM audit and Intune trust. Make the folder and every
+    # subfolder the tool keeps with their locked, administrator-owned descriptor applied in the one
+    # call that creates them, so there is never a moment when a standard user can write them or add
+    # to them. An existing root this version sealed is kept (config, packs and reports preserved);
+    # anything else is moved aside, never taken back in place (Initialize-CEDataRoot says why).
+    Initialize-CEDataRoot -Path $dataRoot -RegPath $regPath
+    # Users may read config overrides (the desktop app uses them); status, reports and the rest stay admin-only.
+    foreach ($name in @('logs', 'reports', 'cache', 'packs')) { New-CELockedDirectory -Path (Join-Path $dataRoot $name) }
+    New-CELockedDirectory -Path (Join-Path $dataRoot 'config') -UsersRead
+    # Record that this version sealed the root at birth, so a later install keeps it in place instead
+    # of moving it aside (only administrators can write here, so a standard user cannot forge it).
+    if (-not (Test-Path -LiteralPath $regPath)) { New-Item -Path $regPath -Force | Out-Null }
+    New-ItemProperty -Path $regPath -Name 'DataRootSealed' -Value $version -PropertyType String -Force | Out-Null
+    # Log only once the data folder is locked, so no one else can read or plant the log.
+    Start-Transcript -LiteralPath $log | Out-Null
+    $transcribing = $true
     Write-Host "Installing Engramic Baseline $version to $InstallPath"
 
     # --- Copy payload into a staging folder, then swap -----------------------
@@ -301,10 +328,6 @@ try {
         elseif ($item -ne 'docs') { throw "Package is missing $item" }
     }
     Get-ChildItem -LiteralPath $staging -Recurse -File | Unblock-File -ErrorAction SilentlyContinue
-
-    # Don't upgrade underneath a running audit.
-    $running = Get-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction SilentlyContinue
-    if ($running -and $running.State -eq 'Running') { $running | Stop-ScheduledTask -ErrorAction SilentlyContinue }
 
     $swapped = $false
     if (Test-Path -LiteralPath $InstallPath) {
@@ -342,7 +365,9 @@ try {
     if (-not $NoScheduledTask) {
         $ps = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
         $script = Join-Path $InstallPath 'app\Invoke-CEScheduledAudit.ps1'
-        $action = New-ScheduledTaskAction -Execute $ps -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$script`"" -WorkingDirectory $dataRoot
+        # Working directory is the install folder, not the data folder: an audit's open working
+        # directory would otherwise block an upgrade from renaming the data root.
+        $action = New-ScheduledTaskAction -Execute $ps -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$script`"" -WorkingDirectory $InstallPath
         $daily = New-ScheduledTaskTrigger -Daily -At $DailyAt
         if ($RandomDelayMinutes -gt 0) { $daily.RandomDelay = "PT$($RandomDelayMinutes)M" }
         $startup = New-ScheduledTaskTrigger -AtStartup
@@ -418,5 +443,7 @@ catch {
 }
 finally {
     if ($transcribing) { Stop-Transcript | Out-Null }
+    if ($haveMutex) { try { $auditMutex.ReleaseMutex() } catch { $null = $_ } }
+    if ($auditMutex) { $auditMutex.Dispose() }
 }
 exit $exit

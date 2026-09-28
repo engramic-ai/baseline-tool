@@ -40,8 +40,13 @@ function Get-CEStatusTrustProblem {
         $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
         if ($trusted -notcontains $owner) { return "$path is owned by $owner, not an administrator" }
         foreach ($rule in @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))) {
-            if ("$($rule.AccessControlType)" -ne 'Allow') { continue }
             $sid = "$($rule.IdentityReference)"
+            if ("$($rule.AccessControlType)" -ne 'Allow') {
+                # A deny entry against SYSTEM, Administrators or TrustedInstaller could stop the audit
+                # replacing status.json, freezing a forged one in place, so treat it as tampering.
+                if ($trusted -contains $sid) { return "$path denies $sid, so the audit may be unable to replace it" }
+                continue
+            }
             # CREATOR OWNER only applies to new items, which only administrators can create in a locked folder.
             if ($trusted -contains $sid -or $sid -eq 'S-1-3-0') { continue }
             $rights = [long]0

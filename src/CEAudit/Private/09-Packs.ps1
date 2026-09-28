@@ -28,8 +28,13 @@ function Test-CEAdminOnlyAcl {
     $problems = @()
     if ($script:CETrustedSids -notcontains $Owner) { $problems += "$Path is owned by $Owner" }
     foreach ($r in @($Rules)) {
-        if ("$($r.AccessControlType)" -ne 'Allow') { continue }
         $sid = "$($r.IdentityReference)"
+        if ("$($r.AccessControlType)" -ne 'Allow') {
+            # A deny entry against SYSTEM, Administrators or TrustedInstaller could stop the tool from
+            # replacing the file (e.g. freezing a forged status.json in place), so treat it as tampering.
+            if ($script:CETrustedSids -contains $sid) { $problems += "$Path denies $sid" }
+            continue
+        }
         # CREATOR OWNER only applies to new items, which need create rights checked here anyway.
         if ($script:CETrustedSids -contains $sid -or $sid -eq 'S-1-3-0') { continue }
         $rights = [long]0

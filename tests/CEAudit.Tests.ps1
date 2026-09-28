@@ -1976,6 +1976,11 @@ Describe 'Intune: status, discovery and compliance rules' {
         $check = [regex]::Match($text, '(?m)^if \(\$elevated\) \{\n    \$problem = Get-CEStatusTrustProblem -DataRoot \$dataRoot\n    if \(\$problem\) \{\n        Write-Output "UNTRUSTED: [^\n]*\n        exit 1\n    \}\n\}')
         $check.Success | Should -BeTrue
         $check.Index | Should -BeLessThan $text.IndexOf('Get-Content -LiteralPath $statusPath')
+        # Nothing takes a folder back any more, and nothing needs reinstalling: exit 1 runs the remediation
+        # script, whose SYSTEM audit moves an untrusted data folder aside and writes a fresh status.json.
+        $check.Value | Should -Not -Match 'Reinstall|take the folder back'
+        $check.Value | Should -Match 'next SYSTEM audit'
+        $check.Value | Should -Match 'EngramicBaseline\.untrusted-'
     }
 
     It 'the deployment rehearsal makes nothing in the data folder before the install, and cleans up without following links' {

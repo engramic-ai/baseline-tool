@@ -55,12 +55,14 @@ $maxAgeHours = 72
 $dataRoot = Join-Path $env:ProgramData 'EngramicBaseline'
 $statusPath = Join-Path $dataRoot 'status.json'
 
-# Intune runs this as SYSTEM. A standard user running it can only mislead themselves.
+# Intune runs this as SYSTEM. A standard user running it can only mislead themselves. Exit 1 on an
+# untrusted status.json runs the remediation script, whose SYSTEM audit moves an untrusted data folder
+# aside and makes a fresh, locked one (or replaces an untrusted status.json); nothing needs reinstalling.
 $elevated = (New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if ($elevated) {
     $problem = Get-CEStatusTrustProblem -DataRoot $dataRoot
     if ($problem) {
-        Write-Output "UNTRUSTED: $problem, so status.json may be forged. Reinstall the Win32 app to take the folder back."
+        Write-Output "UNTRUSTED: $problem, so status.json may be forged. The next SYSTEM audit (the remediation script runs one) moves an untrusted data folder aside to %ProgramData%\EngramicBaseline.untrusted-<id> and writes a fresh status.json; check that folder, then delete it."
         exit 1
     }
 }

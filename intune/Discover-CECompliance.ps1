@@ -20,20 +20,34 @@
 function Get-CEStatusTrustProblem {
     <#
         Why status.json can't be trusted, or '' when it can: the data folder or the file is a link
-        (junction or symbolic link), or is owned by someone other than SYSTEM, Administrators or
-        TrustedInstaller. Only the SYSTEM audit should write it, and a standard user who owned
-        either could make the device look compliant. The same function is in
+        (junction or symbolic link), is owned by someone other than SYSTEM, Administrators or
+        TrustedInstaller, or has permissions that let anyone else change it. Only the SYSTEM audit
+        should write it, and a standard user who could change either could make the device look
+        compliant. The owner alone is not enough: a hard link to a file the user can write, such as
+        their ntuser.ini, keeps that file's administrator owner. The same function is in
         Detect-CECompliance.ps1 and Discover-CECompliance.ps1 (each is uploaded on its own).
     #>
     param([string]$DataRoot)
     $trusted = @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
+    # Rights that let someone change, delete or re-permission it, including GENERIC_WRITE and GENERIC_ALL.
+    $writeRights = 2 -bor 4 -bor 16 -bor 64 -bor 256 -bor 65536 -bor 262144 -bor 524288 -bor 0x40000000 -bor 0x10000000
     foreach ($path in @($DataRoot, (Join-Path $DataRoot 'status.json'))) {
         $attributes = $null
         try { $attributes = [IO.File]::GetAttributes($path) } catch { continue }
         if ($attributes -band [IO.FileAttributes]::ReparsePoint) { return "$path is a link (junction or symbolic link)" }
-        $owner = ''
-        try { $owner = (Get-Acl -LiteralPath $path).GetOwner([Security.Principal.SecurityIdentifier]).Value } catch { return "the owner of $path could not be read" }
+        $acl = $null
+        try { $acl = Get-Acl -LiteralPath $path } catch { return "the permissions of $path could not be read" }
+        $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
         if ($trusted -notcontains $owner) { return "$path is owned by $owner, not an administrator" }
+        foreach ($rule in @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))) {
+            if ("$($rule.AccessControlType)" -ne 'Allow') { continue }
+            $sid = "$($rule.IdentityReference)"
+            # CREATOR OWNER only applies to new items, which only administrators can create in a locked folder.
+            if ($trusted -contains $sid -or $sid -eq 'S-1-3-0') { continue }
+            $rights = [long]0
+            try { $rights = [long]$rule.FileSystemRights } catch { $rights = [long]::MaxValue }
+            if ($rights -band $writeRights) { return "$path can be changed by $sid, not only administrators" }
+        }
     }
     return ''
 }

@@ -192,9 +192,17 @@ function Write-CEStatus {
     $dir = Split-Path -Parent $Path
     if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
     if ($PSCmdlet.ShouldProcess($Path, 'Write compliance status')) {
-        $tmp = "$Path.tmp"
-        $Status | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $tmp -Encoding UTF8
-        Move-Item -LiteralPath $tmp -Destination $Path -Force
+        # A name of its own each time: anything already at a fixed name (a folder a user made
+        # before the install locked the data folder, say) would make every write fail.
+        $tmp = '{0}.{1}.tmp' -f $Path, [guid]::NewGuid().ToString('n')
+        try {
+            $Status | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $tmp -Encoding UTF8
+            Move-Item -LiteralPath $tmp -Destination $Path -Force
+        }
+        catch {
+            Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+            throw
+        }
     }
     return $Path
 }

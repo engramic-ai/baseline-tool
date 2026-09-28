@@ -104,7 +104,7 @@ If you'd rather not build it yourself, every release ships these same files: dow
 - `config/auto-remediation.json`: fixes the Remediations script may apply automatically (off by default).
 - `config/scheduled-audit.json`: checks to skip in the unattended audit.
 
-You can also change settings on individual devices without rebuilding. A file with the same name in `%ProgramData%\EngramicBaseline\config\` replaces the packaged one. The install makes Administrators the owner of that folder and of `%ProgramData%\EngramicBaseline`, and locks both, before it creates anything there. If a standard user made either first, the install takes it back: it removes a junction or symbolic link found in its place (never what it points at) and deletes files the user left in the data folder, such as a `status.json`. The SYSTEM audit ignores (with a warning) any file in the folder that a standard user owns or can change, or a folder that is a link, so deploy these files from an Intune script or as administrator. The Remediations detection script and the compliance discovery script, running as SYSTEM, likewise ignore a `status.json` that administrators don't own.
+You can also change settings on individual devices without rebuilding. A file with the same name in `%ProgramData%\EngramicBaseline\config\` replaces the packaged one. The install makes Administrators the owner of that folder and of `%ProgramData%\EngramicBaseline`, and locks both, before it creates anything there. If a standard user made the data folder first, the install moves it aside (to `%ProgramData%\EngramicBaseline.untrusted-<id>`, for you to check and delete) and makes a new one, since the user could swap a folder they own for a link while it was being taken back. It removes a junction or symbolic link found in place of either folder or in the data folder (never what it points at), takes back the config folder if a user made it, and deletes other files and folders a standard user owns or can change in the data folder, such as a `status.json` or a hard link to a file of theirs. The SYSTEM audit ignores (with a warning) any file in the config folder that a standard user owns or can change, or a folder that is a link, so deploy these files from an Intune script or as administrator. The Remediations detection script and the compliance discovery script, running as SYSTEM, likewise ignore a `status.json` that administrators don't own or that anyone else can change.
 
 ## 3. Create the Win32 app
 
@@ -197,6 +197,8 @@ The **Pre-remediation detection output** column then gives you one line per devi
 ```
 FAIL | autofail=2 fail=7 review=4 | age=5h | TC2=Likely fail TC3=Likely pass TC4=Check TC5=Likely fail | v0.3.2 | SU-03:Overdue,SU-05:7zip-7zip,UA-01
 ```
+
+A device also counts as not ready, with `LAST_RUN_ERROR` at the start of its line, when an audit failed after the last `status.json` was written, so the remediation script runs a fresh audit.
 
 Out of the box, the remediation script only runs a fresh audit. To have it fix things automatically, set `"enabled": true` in `config/auto-remediation.json` and copy the fixes you want from `suggested` into `remediationIds`. High-risk fixes are always skipped. Every change is written to an undo log in the device's report folder, and `Restore-CEChangeset.ps1` can roll it back.
 

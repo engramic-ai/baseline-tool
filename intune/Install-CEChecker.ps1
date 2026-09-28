@@ -90,6 +90,10 @@ $icacls = Join-Path $system32 'icacls.exe'
 $takeown = Join-Path $system32 'takeown.exe'
 # SYSTEM, Administrators, TrustedInstaller.
 $trustedOwners = @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
+# Rights that let someone change, delete or re-permission a file or folder, including GENERIC_WRITE and GENERIC_ALL.
+$writeRights = 2 -bor 4 -bor 16 -bor 64 -bor 256 -bor 65536 -bor 262144 -bor 524288 -bor 0x40000000 -bor 0x10000000
+# The folders the tool keeps in the data folder; the install deletes any other folder a user made there.
+$dataFolders = @('logs', 'reports', 'config', 'cache', 'packs')
 
 $transcribing = $false
 
@@ -148,59 +152,163 @@ function Remove-CELink {
     if (Test-CEReparsePoint -Path $Path) { throw "Could not remove the link at $Path" }
 }
 
-function Get-CEItemOwner {
+function Get-CEItemTrustProblem {
+    <#
+        Why a file or folder in the data folder might be under a standard user's control, or '' when
+        it isn't: it is owned by someone other than SYSTEM, Administrators or TrustedInstaller, or its
+        permissions let anyone else change, delete or re-permission it. The owner alone is not enough:
+        a hard link, or a file a user moved in, keeps an administrator owner while the user can still
+        write to it (every profile has such files, such as ntuser.ini).
+    #>
     param([string]$Path)
-    return (Get-Acl -LiteralPath $Path).GetOwner([Security.Principal.SecurityIdentifier]).Value
+    $acl = $null
+    try { $acl = Get-Acl -LiteralPath $Path } catch { return "the permissions of $Path could not be read" }
+    $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+    if ($trustedOwners -notcontains $owner) { return "$Path is owned by $owner, not an administrator" }
+    foreach ($rule in @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))) {
+        if ("$($rule.AccessControlType)" -ne 'Allow') { continue }
+        $sid = "$($rule.IdentityReference)"
+        # CREATOR OWNER only applies to new items, which only administrators can create in a locked folder.
+        if ($trustedOwners -contains $sid -or $sid -eq 'S-1-3-0') { continue }
+        $rights = [long]0
+        try { $rights = [long]$rule.FileSystemRights } catch { $rights = [long]::MaxValue }
+        if ($rights -band $writeRights) { return "$Path can be changed by $sid, not only administrators" }
+    }
+    return ''
+}
+
+function Assert-CEInDataRoot {
+    <#
+        Throws unless a path is the data folder or inside it, and neither it nor any folder between
+        it and the data folder is a link. A link anywhere on the way would make every step after it
+        act on the folder it points at: Test-CEReparsePoint only reads the last part of a path.
+    #>
+    param([string]$Path, [string]$Root)
+    $rootFull = [IO.Path]::GetFullPath($Root).TrimEnd('\')
+    $current = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+    if (-not ($current -eq $rootFull -or $current.StartsWith("$rootFull\", [StringComparison]::OrdinalIgnoreCase))) {
+        throw "$Path is not in the data folder $Root"
+    }
+    while ($true) {
+        if (Test-CEReparsePoint -Path $current) { throw "$current is a link (junction or symbolic link); a standard user may be interfering with the install." }
+        if ($current.Length -le $rootFull.Length) { break }
+        $current = Split-Path -Parent $current
+    }
+}
+
+function Remove-CEPlantedFile {
+    <# Deletes a file a user left in the data folder. Deleting a hard link removes only that name. #>
+    param([string]$Path)
+    try { Remove-Item -LiteralPath $Path -Force }
+    catch {
+        # The owner may have denied administrators access: take it back, then delete it.
+        & $takeown /F $Path /A | Out-Null
+        & $icacls $Path /reset /Q | Out-Null
+        Remove-Item -LiteralPath $Path -Force
+    }
+}
+
+function Remove-CEFolderTree {
+    <#
+        Deletes a folder a standard user made, and everything in it, without following links. Each
+        link is removed as a link, and each folder is taken back before it is listed, so the user can
+        no longer add to it, or put a link in place of anything in it, while it is emptied. Remove-Item
+        -Recurse is not used: Windows PowerShell 5.1 follows links and would empty what they point at.
+    #>
+    param([string]$Path)
+    if (Test-CEReparsePoint -Path $Path) { Remove-CELink -Path $Path; return }
+    Reset-CEFolderOwner -Path $Path
+    if (Test-CEReparsePoint -Path $Path) { throw "$Path became a link while it was being taken back; a standard user may be interfering with the install." }
+    foreach ($child in @([IO.Directory]::GetFileSystemEntries($Path))) {
+        $attributes = $null
+        # Gone already: the user moved it out, which they can still do but can't undo.
+        try { $attributes = [IO.File]::GetAttributes($child) } catch { continue }
+        if ($attributes -band [IO.FileAttributes]::ReparsePoint) { Remove-CELink -Path $child }
+        elseif ($attributes -band [IO.FileAttributes]::Directory) { Remove-CEFolderTree -Path $child }
+        else { Remove-CEPlantedFile -Path $child }
+    }
+    [IO.Directory]::Delete($Path, $false)
 }
 
 function Repair-CEDataFolder {
     <#
         Takes back what a standard user left in a data folder before the install locked it: removes
-        links, takes back folders (not their contents) and deletes files, which the audit writes again.
-        An item keeps the owner who created it even in a locked folder, and an owner can always change
-        its permissions, so a user-owned status.json would stay forgeable until the first audit.
-        -WarnOnly (config overrides and packs) removes links and only warns about user-owned items:
-        audits running as administrator or SYSTEM already ignore those.
+        links and deletes files and folders that anyone but administrators owns or can change (the
+        audit writes them again). The folders named in -KeepFolders are taken back instead, and are
+        repaired on their own. An item keeps the owner who created it even in a locked folder, and an
+        owner can always change its permissions, so a user-owned status.json would stay forgeable.
+        -WarnOnly (config overrides and packs) removes links and only warns about the rest: audits
+        running as administrator or SYSTEM already ignore those.
+        Refuses to run through a link, and on anything outside -Root, the data folder.
     #>
-    param([string]$Path, [switch]$WarnOnly)
+    param([string]$Path, [string]$Root, [switch]$WarnOnly, [string[]]$KeepFolders = @())
+    Assert-CEInDataRoot -Path $Path -Root $Root
     if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return }
+    $prefix = [IO.Path]::GetFullPath($Path).TrimEnd('\') + '\'
     foreach ($item in @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction SilentlyContinue)) {
         $full = $item.FullName
+        if (-not $full.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { throw "$full is not in $Path" }
         if (Test-CEReparsePoint -Path $full) { Remove-CELink -Path $full; continue }
-        $owner = Get-CEItemOwner -Path $full
-        if ($trustedOwners -contains $owner) { continue }
+        $problem = Get-CEItemTrustProblem -Path $full
+        if (-not $problem) { continue }
         if ($WarnOnly) {
-            Write-Warning "$full is owned by $owner, not an administrator, so audits running as administrator or SYSTEM ignore it. Check it, then save it again as administrator or delete it."
+            Write-Warning "$problem, so audits running as administrator or SYSTEM ignore it. Check it, then save it again as administrator or delete it."
         }
-        elseif ($item.PSIsContainer) {
-            Write-Warning "$full was made by $owner, not an administrator. Taking the folder back; audits running as administrator or SYSTEM ignore anything that user left in it."
+        elseif ($item.PSIsContainer -and $KeepFolders -contains $item.Name) {
+            Write-Warning "$problem. Taking the folder back; what a user left in it is dealt with next."
             Reset-CEFolderOwner -Path $full
         }
+        elseif ($item.PSIsContainer) {
+            Write-Warning "Deleting the folder $full, which a standard user may have left in the data folder ($problem)."
+            Remove-CEFolderTree -Path $full
+        }
         else {
-            Write-Warning "Deleting $full, which $owner, not an administrator, left in the data folder."
-            try { Remove-Item -LiteralPath $full -Force }
-            catch {
-                # The owner may have denied administrators access: take it back, then delete it.
-                & $takeown /F $full /A | Out-Null
-                & $icacls $full /reset /Q | Out-Null
-                Remove-Item -LiteralPath $full -Force
-            }
+            Write-Warning "Deleting $full, which a standard user may have left in the data folder ($problem)."
+            Remove-CEPlantedFile -Path $full
         }
     }
+}
+
+function Initialize-CEDataRoot {
+    <#
+        Makes the data folder and locks it. A folder that anyone but administrators owns or can change
+        is moved aside, never taken back in place: its owner could swap it for a junction while it was
+        being locked, and every step after that would act on wherever the junction led. A folder this
+        install makes can't be renamed or deleted by standard users. Checks again once it is locked,
+        after which only administrators can rename or replace it.
+    #>
+    param([string]$Path)
+    if (Test-CEReparsePoint -Path $Path) { Remove-CELink -Path $Path }
+    if (Test-Path -LiteralPath $Path) {
+        $problem = if (Test-Path -LiteralPath $Path -PathType Container) { Get-CEItemTrustProblem -Path $Path } else { "$Path is a file" }
+        if ($problem) {
+            $aside = '{0}.untrusted-{1}' -f $Path, [guid]::NewGuid().ToString('n')
+            Write-Warning "$problem, so a standard user may have made it. Moving it to $aside and making a new data folder; check what is in it, then delete it."
+            # Renames the item itself (a link too), and never opens what is inside.
+            if ([IO.File]::GetAttributes($Path) -band [IO.FileAttributes]::Directory) { [IO.Directory]::Move($Path, $aside) }
+            else { [IO.File]::Move($Path, $aside) }
+        }
+    }
+    # No -Force: if a user made the folder again since, this fails rather than use theirs.
+    if (-not (Test-Path -LiteralPath $Path)) { New-Item -ItemType Directory -Path $Path | Out-Null }
+    Reset-CEFolderOwner -Path $Path
+    Set-CELockedAcl -Path $Path
+    if (Test-CEReparsePoint -Path $Path) {
+        Remove-CELink -Path $Path
+        throw "$Path became a link while it was being locked; a standard user may be interfering with the install."
+    }
+    $problem = Get-CEItemTrustProblem -Path $Path
+    if ($problem) { throw "$problem after it was locked; a standard user may be interfering with the install." }
 }
 
 try {
     # --- Data folder: lock it before anything is written there -------------
     # %ProgramData% lets standard users create files and folders, and the data
-    # folder holds config overrides that the SYSTEM audit trusts. Lock it, and
-    # take back any folder a user created first, before creating anything inside.
-    # takeown and icacls change a link itself, not its target, so a link a user planted
-    # (a junction needs no special right) is removed rather than taken back.
-    if (Test-CEReparsePoint -Path $dataRoot) { Remove-CELink -Path $dataRoot }
-    if (-not (Test-Path -LiteralPath $dataRoot)) { New-Item -ItemType Directory -Path $dataRoot -Force | Out-Null }
-    if (Test-CEReparsePoint -Path $dataRoot) { throw "$dataRoot is a link again; a standard user may be interfering with the install." }
-    Reset-CEFolderOwner -Path $dataRoot
-    Set-CELockedAcl -Path $dataRoot
+    # folder holds config overrides that the SYSTEM audit trusts. Lock it before
+    # creating anything inside. A link a user planted there (a junction needs no
+    # special right) is removed, and a folder a user made is moved aside rather than
+    # taken back (Initialize-CEDataRoot says why).
+    Initialize-CEDataRoot -Path $dataRoot
     # Only administrators can add to the data folder from here on.
     foreach ($name in @('logs', 'reports', 'config')) {
         $d = Join-Path $dataRoot $name
@@ -215,9 +323,9 @@ try {
     Start-Transcript -LiteralPath $log | Out-Null
     $transcribing = $true
     # Then take back what a user left there: status.json (which Intune reads), cache, packs and the rest.
-    Repair-CEDataFolder -Path $dataRoot
-    foreach ($name in @('logs', 'reports', 'cache')) { Repair-CEDataFolder -Path (Join-Path $dataRoot $name) }
-    foreach ($name in @('config', 'packs')) { Repair-CEDataFolder -Path (Join-Path $dataRoot $name) -WarnOnly }
+    Repair-CEDataFolder -Path $dataRoot -Root $dataRoot -KeepFolders $dataFolders
+    foreach ($name in @('logs', 'reports', 'cache')) { Repair-CEDataFolder -Path (Join-Path $dataRoot $name) -Root $dataRoot }
+    foreach ($name in @('config', 'packs')) { Repair-CEDataFolder -Path (Join-Path $dataRoot $name) -Root $dataRoot -WarnOnly }
 
     $manifest = Import-PowerShellDataFile -Path (Join-Path $packageRoot 'src\CEAudit\CEAudit.psd1')
     $version = [string]$manifest.ModuleVersion

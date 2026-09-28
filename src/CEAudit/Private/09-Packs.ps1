@@ -56,6 +56,30 @@ function Get-CEPathAclProblem {
     }
 }
 
+function Test-CEReparsePoint {
+    <#
+        Whether a path is a link: a junction or a symbolic link. Reads the link itself, never what
+        it points at. A standard user can create a junction without any special right.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param([Parameter(Mandatory)][string]$Path)
+    try { return [bool]([IO.File]::GetAttributes($Path) -band [IO.FileAttributes]::ReparsePoint) }
+    catch { return $false }
+}
+
+function Get-CEDataPathProblem {
+    <#
+        Problems with a data-folder path an elevated audit reads (Windows only). A link counts as
+        one: its own permissions say nothing about where it leads, so a user can plant a junction,
+        let the install lock it, and still control what is behind it. Plain list: wrap the call in @().
+    #>
+    param([Parameter(Mandatory)][string]$Path)
+    if (-not (Test-CEIsWindows)) { return }
+    if (Test-CEReparsePoint -Path $Path) { return "$Path is a link (junction or symbolic link)" }
+    return (Get-CEPathAclProblem -Path $Path)
+}
+
 function Test-CEDataPathTrusted {
     <#
         Whether an elevated audit may read from a data-root path. The risk is the
@@ -68,7 +92,7 @@ function Test-CEDataPathTrusted {
     #>
     param([Parameter(Mandatory)][string]$Path)
     if (-not (Test-CEIsAdmin)) { return $true }
-    return (@(Get-CEPathAclProblem -Path $Path).Count -eq 0)
+    return (@(Get-CEDataPathProblem -Path $Path).Count -eq 0)
 }
 
 function Get-CEPackSearchPath {
@@ -135,9 +159,9 @@ function Get-CEPackCandidate {
                 # Also check the parent (%ProgramData%\EngramicBaseline): if a user could write
                 # there, they could replace the packs folder itself, so its own ACL isn't enough.
                 $parent = Split-Path -Parent $root.Path
-                $problems = @(Get-CEPathAclProblem -Path $parent) + @(Get-CEPathAclProblem -Path $root.Path)
+                $problems = @(Get-CEDataPathProblem -Path $parent) + @(Get-CEDataPathProblem -Path $root.Path)
                 foreach ($item in @(@(Get-Item -LiteralPath $dir.FullName) + @(Get-ChildItem -LiteralPath $dir.FullName -Recurse -Force -ErrorAction SilentlyContinue))) {
-                    $problems += @(Get-CEPathAclProblem -Path $item.FullName)
+                    $problems += @(Get-CEDataPathProblem -Path $item.FullName)
                 }
                 if ($problems.Count) { $pack.Reason = "Not loaded because non-administrators could change it: $(@($problems | Select-Object -First 3) -join '; ')"; continue }
             }

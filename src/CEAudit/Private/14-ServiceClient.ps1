@@ -93,22 +93,25 @@ function ConvertFrom-CEWinHttpProxyBlob {
 }
 
 function Select-CEWinHttpProxy {
-    <# The proxy address to use for a request from a WinHTTP proxy string, as an absolute URI, or $null. #>
+    <#
+        The proxy address for a request to a Scheme (http or https) from a WinHTTP proxy string, as
+        an absolute http URI, or $null for none. As in WinHTTP, per-scheme entries
+        ('http=a:80;https=b:443') apply only to their own scheme, so a scheme with no entry goes direct.
+    #>
     [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$Proxy)
+    param([Parameter(Mandatory)][string]$Proxy, [Parameter(Mandatory)][ValidateSet('http', 'https')][string]$Scheme)
     $entries = @($Proxy -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
     $chosen = $null
     if (@($entries | Where-Object { $_ -match '=' }).Count) {
-        foreach ($scheme in @('https', 'http')) {
-            $hit = @($entries | Where-Object { $_ -match "^$scheme=" } | Select-Object -First 1)
-            if ($hit.Count) { $chosen = $hit[0].Substring($scheme.Length + 1); break }
-        }
+        $hit = @($entries | Where-Object { $_ -match "^$Scheme=" } | Select-Object -First 1)
+        if ($hit.Count) { $chosen = $hit[0].Substring($Scheme.Length + 1) }
     }
     elseif ($entries.Count) { $chosen = $entries[0] }
     if (-not $chosen) { return $null }
-    if ($chosen -notmatch '^[a-z]+://') { $chosen = "http://$chosen" }
+    if ($chosen -notmatch '^[a-z0-9+.-]+://') { $chosen = "http://$chosen" }
     $uri = $null
-    if ([Uri]::TryCreate($chosen, [UriKind]::Absolute, [ref]$uri) -and @('http', 'https') -contains $uri.Scheme) { return $uri }
+    # Only http proxies: .NET Framework (Windows PowerShell 5.1) can't use a proxy at an https address.
+    if ([Uri]::TryCreate($chosen, [UriKind]::Absolute, [ref]$uri) -and $uri.Scheme -eq 'http') { return $uri }
     return $null
 }
 
@@ -146,17 +149,23 @@ function Get-CEProxySetting {
     $proxyUrl = "$(Get-CEObjectValue $cfg 'proxyUrl' '')".Trim()
     if ($proxyUrl) {
         $p = $null
-        if ([Uri]::TryCreate($proxyUrl, [UriKind]::Absolute, [ref]$p) -and @('http', 'https') -contains $p.Scheme) {
+        # http only: the proxy address, not the requests, which still use https through it (CONNECT).
+        # .NET Framework, which Windows PowerShell 5.1 and so the scheduled audit use, can't use an https proxy.
+        if ([Uri]::TryCreate($proxyUrl, [UriKind]::Absolute, [ref]$p) -and $p.Scheme -eq 'http') {
             return @{ Mode = 'Proxy'; Address = $p; Source = 'network.json'; UseDefaultCredentials = ((Get-CEObjectValue $cfg 'proxyUseDefaultCredentials' $false) -eq $true) }
         }
-        Write-Warning 'Ignoring proxyUrl in network.json: it must be an http or https URL.'
+        if ($p -and $p.Scheme -eq 'https') { Write-Warning "Ignoring proxyUrl in network.json: use the proxy's http:// address. Requests to https sites still go through it encrypted, and Windows PowerShell can't use an https:// proxy address." }
+        else { Write-Warning 'Ignoring proxyUrl in network.json: it must be an http:// URL.' }
     }
     if ([bool](Get-CEObjectValue $cfg 'useWinHttpProxyWhenSystem' $true) -and (Test-CEIsSystem)) {
         $parsed = ConvertFrom-CEWinHttpProxyBlob -Blob (Get-CEWinHttpProxyBlob)
         if ($parsed) {
             if (Test-CEProxyBypass -HostName $Uri.Host -Bypass $parsed.Bypass) { return @{ Mode = 'Direct'; Address = $null; Source = 'WinHTTP'; UseDefaultCredentials = $false } }
-            $address = Select-CEWinHttpProxy -Proxy $parsed.Proxy
+            $scheme = if ($Uri.Scheme -eq 'http') { 'http' } else { 'https' }
+            $address = Select-CEWinHttpProxy -Proxy $parsed.Proxy -Scheme $scheme
             if ($address) { return @{ Mode = 'Proxy'; Address = $address; Source = 'WinHTTP'; UseDefaultCredentials = $true } }
+            # A WinHTTP proxy set only for other schemes: WinHTTP itself would connect directly.
+            return @{ Mode = 'Direct'; Address = $null; Source = 'WinHTTP'; UseDefaultCredentials = $false }
         }
     }
     return @{ Mode = 'System'; Address = $null; Source = ''; UseDefaultCredentials = $false }
@@ -173,6 +182,27 @@ function Get-CEHttpErrorText {
     if (-not $message) { $message = 'The request failed' }
     if ($message -notmatch '[.!?]$') { $message += '.' }
     return "$message $script:CEProxyHint"
+}
+
+function New-CEHttpHandler {
+    <#
+        The HttpClientHandler for a proxy setting from Get-CEProxySetting. The Windows sign-in goes
+        only to a proxy whose setting allows it (UseDefaultCredentials), never to the site itself.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][hashtable]$Proxy)
+    Add-Type -AssemblyName System.Net.Http -ErrorAction SilentlyContinue
+    $handler = [System.Net.Http.HttpClientHandler]::new()
+    $handler.UseDefaultCredentials = $false
+    if ($Proxy['Mode'] -eq 'Proxy') {
+        $webProxy = [System.Net.WebProxy]::new([Uri]$Proxy['Address'])
+        $webProxy.UseDefaultCredentials = ($Proxy['UseDefaultCredentials'] -eq $true)
+        $webProxy.BypassProxyOnLocal = $true
+        $handler.Proxy = $webProxy
+        $handler.UseProxy = $true
+    }
+    elseif ($Proxy['Mode'] -eq 'Direct') { $handler.UseProxy = $false }
+    return $handler
 }
 
 function Invoke-CEHttpRequest {
@@ -192,21 +222,11 @@ function Invoke-CEHttpRequest {
     $request = $null
     $response = $null
     try {
-        Add-Type -AssemblyName System.Net.Http -ErrorAction SilentlyContinue
         if ($PSVersionTable.PSVersion.Major -lt 6) {
             [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
         }
         $target = [Uri]$Uri
-        $handler = [System.Net.Http.HttpClientHandler]::new()
-        $proxy = Get-CEProxySetting -Uri $target
-        if ($proxy.Mode -eq 'Proxy') {
-            $webProxy = [System.Net.WebProxy]::new($proxy.Address)
-            $webProxy.UseDefaultCredentials = ($proxy['UseDefaultCredentials'] -eq $true)
-            $webProxy.BypassProxyOnLocal = $true
-            $handler.Proxy = $webProxy
-            $handler.UseProxy = $true
-        }
-        elseif ($proxy.Mode -eq 'Direct') { $handler.UseProxy = $false }
+        $handler = New-CEHttpHandler -Proxy (Get-CEProxySetting -Uri $target)
 
         $client = [System.Net.Http.HttpClient]::new($handler)
         $client.Timeout = [TimeSpan]::FromSeconds($TimeoutSeconds)

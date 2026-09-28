@@ -11,9 +11,40 @@
 # Cyber Essentials state and which checks are failing.
 # Exit 0 = ready (no remediation). Exit 1 = not ready or no recent audit.
 
+function Get-CEStatusTrustProblem {
+    <#
+        Why status.json can't be trusted, or '' when it can: the data folder or the file is a link
+        (junction or symbolic link), or is owned by someone other than SYSTEM, Administrators or
+        TrustedInstaller. Only the SYSTEM audit should write it, and a standard user who owned
+        either could make the device look compliant. The same function is in
+        Detect-CECompliance.ps1 and Discover-CECompliance.ps1 (each is uploaded on its own).
+    #>
+    param([string]$DataRoot)
+    $trusted = @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
+    foreach ($path in @($DataRoot, (Join-Path $DataRoot 'status.json'))) {
+        $attributes = $null
+        try { $attributes = [IO.File]::GetAttributes($path) } catch { continue }
+        if ($attributes -band [IO.FileAttributes]::ReparsePoint) { return "$path is a link (junction or symbolic link)" }
+        $owner = ''
+        try { $owner = (Get-Acl -LiteralPath $path).GetOwner([Security.Principal.SecurityIdentifier]).Value } catch { return "the owner of $path could not be read" }
+        if ($trusted -notcontains $owner) { return "$path is owned by $owner, not an administrator" }
+    }
+    return ''
+}
+
 $maxAgeHours = 72
 $dataRoot = Join-Path $env:ProgramData 'EngramicBaseline'
 $statusPath = Join-Path $dataRoot 'status.json'
+
+# Intune runs this as SYSTEM. A standard user running it can only mislead themselves.
+$elevated = (New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if ($elevated) {
+    $problem = Get-CEStatusTrustProblem -DataRoot $dataRoot
+    if ($problem) {
+        Write-Output "UNTRUSTED: $problem, so status.json may be forged. Reinstall the Win32 app to take the folder back."
+        exit 1
+    }
+}
 
 if (-not (Test-Path -LiteralPath $statusPath)) {
     Write-Output 'NO_DATA: no audit has completed on this device yet (is the Win32 app installed?)'

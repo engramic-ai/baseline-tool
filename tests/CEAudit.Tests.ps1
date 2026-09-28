@@ -1138,7 +1138,7 @@ Describe 'Intune: status, discovery and compliance rules' {
     It 'discovery output is one line of JSON with every rule setting and the right types' {
         $root = Join-Path $TestDrive 'insecure2'
         New-TestStatus -Kind Insecure -DataRoot $root | Out-Null
-        $json = Get-CEComplianceData -DataRoot $root -Installed $true -NoKick | ConvertTo-Json -Compress
+        $json = Get-CEComplianceData -DataRoot $root -Installed $true -Elevated $false -NoKick | ConvertTo-Json -Compress
         $json | Should -Not -Match "`n"
         foreach ($rules in @($script:strictRules, $script:softRules, $script:fwRules)) {
             $eval = Test-CEComplianceRules -DiscoveryOutput $json -RulesPath $rules
@@ -1150,7 +1150,7 @@ Describe 'Intune: status, discovery and compliance rules' {
     It 'framework rules gate on coverage: an insecure device is non-compliant, naming CEv33MetPct' {
         $root = Join-Path $TestDrive 'fw-insecure'
         New-TestStatus -Kind Insecure -DataRoot $root | Out-Null
-        $data = Get-CEComplianceData -DataRoot $root -Installed $true -NoKick
+        $data = Get-CEComplianceData -DataRoot $root -Installed $true -Elevated $false -NoKick
         $data.CEv33MetPct | Should -BeGreaterOrEqual 0
         $eval = Test-CEComplianceRules -DiscoveryOutput ($data | ConvertTo-Json -Compress) -RulesPath $script:fwRules
         $eval.Compliant | Should -BeFalse
@@ -1160,7 +1160,7 @@ Describe 'Intune: status, discovery and compliance rules' {
     It 'reports an insecure device as non-compliant, naming the failing rules' {
         $root = Join-Path $TestDrive 'insecure3'
         New-TestStatus -Kind Insecure -DataRoot $root | Out-Null
-        $data = Get-CEComplianceData -DataRoot $root -Installed $true -NoKick
+        $data = Get-CEComplianceData -DataRoot $root -Installed $true -Elevated $false -NoKick
         $data.CEAutoFailCount | Should -BeGreaterThan 0
         $data.CEPatchingOK | Should -BeFalse
         $data.CEFailing | Should -Match 'SU-03'
@@ -1176,7 +1176,7 @@ Describe 'Intune: status, discovery and compliance rules' {
         $root = Join-Path $TestDrive 'secure'
         $st = New-TestStatus -Kind Secure -DataRoot $root -AttestMfa
         $st.autoFailCount | Should -Be 0
-        $data = Get-CEComplianceData -DataRoot $root -Installed $true -NoKick
+        $data = Get-CEComplianceData -DataRoot $root -Installed $true -Elevated $false -NoKick
         $eval = Test-CEComplianceRules -DiscoveryOutput ($data | ConvertTo-Json -Compress) -RulesPath $script:strictRules
         ($eval.Rules | Where-Object State -ne 'Compliant' | ForEach-Object { "$($_.SettingName)=$($_.Actual)" }) -join ', ' | Should -BeNullOrEmpty
         $eval.Compliant | Should -BeTrue
@@ -1185,14 +1185,14 @@ Describe 'Intune: status, discovery and compliance rules' {
     It 'is non-compliant when the audit is stale' {
         $root = Join-Path $TestDrive 'stale'
         New-TestStatus -Kind Secure -DataRoot $root -AttestMfa | Out-Null
-        $data = Get-CEComplianceData -DataRoot $root -Installed $true -NoKick -Now ([datetime]::UtcNow.AddHours(100))
+        $data = Get-CEComplianceData -DataRoot $root -Installed $true -Elevated $false -NoKick -Now ([datetime]::UtcNow.AddHours(100))
         $data.CEAuditAgeHours | Should -BeGreaterOrEqual 100
         $eval = Test-CEComplianceRules -DiscoveryOutput ($data | ConvertTo-Json -Compress) -RulesPath $script:softRules
         @($eval.Rules | Where-Object State -eq 'NonCompliant').SettingName | Should -Be @('CEAuditAgeHours')
     }
 
     It 'never reports compliant when nothing is installed or no audit has run' {
-        $data = Get-CEComplianceData -DataRoot (Join-Path $TestDrive 'empty') -Installed $false -NoKick
+        $data = Get-CEComplianceData -DataRoot (Join-Path $TestDrive 'empty') -Installed $false -Elevated $false -NoKick
         $data.CEAutoFailCount | Should -Be -1
         foreach ($rules in @($script:strictRules, $script:softRules)) {
             (Test-CEComplianceRules -DiscoveryOutput ($data | ConvertTo-Json -Compress) -RulesPath $rules).Compliant | Should -BeFalse
@@ -1239,6 +1239,117 @@ Describe 'Intune: status, discovery and compliance rules' {
         $text | Should -Match "(?m)^\`$icacls = Join-Path \`$system32 'icacls\.exe'$"
         $text | Should -Not -Match '&\s*(icacls|takeown)(\.exe)?\b' -Because 'native tools run by full path, not through PATH'
         $text | Should -Match 'if \(\$transcribing\) \{ Stop-Transcript' -Because 'a failure before logging starts must not hide the real error'
+        # takeown and icacls change a junction itself, not its target, so a planted link is removed first.
+        $unlink = $text.IndexOf('if (Test-CEReparsePoint -Path $dataRoot) { Remove-CELink -Path $dataRoot }')
+        $unlink | Should -BeIn (1..$text.IndexOf('Reset-CEFolderOwner -Path $dataRoot'))
+        $text | Should -Match '(?m)^\s+if \(Test-CEReparsePoint -Path \$d\) \{ Remove-CELink -Path \$d \}\n\s+if \(-not \(Test-Path -LiteralPath \$d\)\).*\n\s+Reset-CEFolderOwner -Path \$d$'
+        $repair = $text.IndexOf('Repair-CEDataFolder -Path $dataRoot')
+        $repair | Should -BeGreaterThan $lock
+        $repair | Should -BeLessThan $firstCopy
+        $text | Should -Match "foreach \(\`$name in @\('config', 'packs'\)\) \{ Repair-CEDataFolder -Path \(Join-Path \`$dataRoot \`$name\) -WarnOnly \}"
+    }
+
+    It 'the install removes links a user planted in the data folder and takes back what they left there' {
+        $installer = Join-Path $script:intune 'Install-CEChecker.ps1'
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile($installer, [ref]$null, [ref]$null)
+        foreach ($name in @('Test-CEReparsePoint', 'Remove-CELink', 'Repair-CEDataFolder')) {
+            $fn = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name }, $true)
+            $fn | Should -Not -BeNullOrEmpty
+            . ([scriptblock]::Create($fn.Extent.Text))
+        }
+        # Stand-ins: owners by name (admin-* is an administrator's), and no takeown as a standard user.
+        Set-Variable -Name trustedOwners -Value @('S-1-5-18', 'S-1-5-32-544')
+        function Get-CEItemOwner { param([string]$Path) if ((Split-Path -Leaf $Path) -like 'admin-*') { 'S-1-5-32-544' } else { 'S-1-5-21-1-2-3-1001' } }
+        $global:TestTakenBack = New-Object System.Collections.ArrayList
+        function Reset-CEFolderOwner { param([string]$Path) [void]$global:TestTakenBack.Add($Path) }
+
+        $root = Join-Path $TestDrive 'planted-data'
+        $bob = Join-Path $TestDrive 'bob-folder'
+        New-Item -ItemType Directory -Force -Path $root, $bob, (Join-Path $root 'packs'), (Join-Path $root 'config'), (Join-Path $root 'admin-reports') | Out-Null
+        Set-Content -LiteralPath (Join-Path $bob 'keep.txt') -Value 'bob'
+        Set-Content -LiteralPath (Join-Path $root 'status.json') -Value '{ "autoFailCount": 0 }'
+        Set-Content -LiteralPath (Join-Path $root 'admin-note.txt') -Value 'x'
+        Set-Content -LiteralPath (Join-Path (Join-Path $root 'config') 'thresholds.json') -Value '{}'
+        $cacheLink = Join-Path $root 'cache'
+        $rootLink = Join-Path $TestDrive 'root-link'
+        New-Item -ItemType Junction -Path $cacheLink -Target $bob | Out-Null
+        New-Item -ItemType Junction -Path $rootLink -Target $bob | Out-Null
+        try {
+            Test-CEReparsePoint -Path $cacheLink | Should -BeTrue
+            Test-CEReparsePoint -Path $bob | Should -BeFalse
+            Test-CEReparsePoint -Path (Join-Path $TestDrive 'missing') | Should -BeFalse
+
+            $warned = @(Repair-CEDataFolder -Path $root 3>&1) -join "`n"
+            Test-Path -LiteralPath $cacheLink | Should -BeFalse -Because 'the planted junction is removed'
+            Test-Path -LiteralPath (Join-Path $bob 'keep.txt') | Should -BeTrue -Because 'what the link pointed at is left alone'
+            Test-Path -LiteralPath (Join-Path $root 'status.json') | Should -BeFalse -Because 'a user-owned status.json could be forged until the first audit'
+            Test-Path -LiteralPath (Join-Path $root 'admin-note.txt') | Should -BeTrue
+            @($global:TestTakenBack) | Should -Contain (Join-Path $root 'packs')
+            @($global:TestTakenBack) | Should -Not -Contain (Join-Path $root 'admin-reports')
+            $warned | Should -Match 'is a link'
+            $warned | Should -Match 'status\.json'
+
+            $warned = @(Repair-CEDataFolder -Path (Join-Path $root 'config') -WarnOnly 3>&1) -join "`n"
+            Test-Path -LiteralPath (Join-Path (Join-Path $root 'config') 'thresholds.json') | Should -BeTrue -Because 'config overrides are only warned about; audits ignore them'
+            $warned | Should -Match 'thresholds\.json is owned by S-1-5-21-1-2-3-1001'
+
+            Remove-CELink -Path $rootLink 3>$null
+            Test-Path -LiteralPath $rootLink | Should -BeFalse
+            Test-Path -LiteralPath (Join-Path $bob 'keep.txt') | Should -BeTrue
+        }
+        finally {
+            foreach ($j in @($cacheLink, $rootLink)) { if (Test-CEReparsePoint -Path $j) { [IO.Directory]::Delete($j, $false) } }
+        }
+    }
+
+    It 'compliance scripts ignore a status.json a standard user could have written when run as SYSTEM' {
+        # Each script is uploaded on its own, so both carry the same check.
+        $copies = foreach ($file in @('Detect-CECompliance.ps1', 'Discover-CECompliance.ps1')) {
+            $ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $script:intune $file), [ref]$null, [ref]$null)
+            $ast.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-CEStatusTrustProblem' }, $true).Extent.Text
+        }
+        @($copies).Count | Should -Be 2
+        $copies[0] | Should -BeExactly $copies[1]
+
+        $root = Join-Path $TestDrive 'trust-status'
+        New-TestStatus -Kind Insecure -DataRoot $root | Out-Null
+        $link = Join-Path $TestDrive 'trust-link'
+        New-Item -ItemType Junction -Path $link -Target $root | Out-Null
+        function global:New-TestOwnerAcl {
+            param([string]$Sid)
+            $acl = New-Object psobject
+            $acl | Add-Member -MemberType ScriptMethod -Name GetOwner -Value ([scriptblock]::Create("param(`$type) [Security.Principal.SecurityIdentifier]::new('$Sid')"))
+            return $acl
+        }
+        $global:TestRootOwner = 'S-1-5-18'
+        $global:TestStatusOwner = 'S-1-5-18'
+        Mock Get-Acl { if ($LiteralPath -like '*status.json') { New-TestOwnerAcl -Sid $global:TestStatusOwner } else { New-TestOwnerAcl -Sid $global:TestRootOwner } }
+        try {
+            Get-CEStatusTrustProblem -DataRoot $root | Should -BeNullOrEmpty
+            (Get-CEComplianceData -DataRoot $root -Installed $true -Elevated $true -NoKick).CEAutoFailCount | Should -BeGreaterThan 0
+
+            $global:TestStatusOwner = 'S-1-5-21-1-2-3-1001'
+            Get-CEStatusTrustProblem -DataRoot $root | Should -Match 'status\.json is owned by S-1-5-21-1-2-3-1001'
+            $data = Get-CEComplianceData -DataRoot $root -Installed $true -Elevated $true -NoKick
+            $data.CEAutoFailCount | Should -Be -1 -Because 'an untrusted status counts as no data'
+            $data.CEToolVersion | Should -Be '0.0.0'
+            (Get-CEComplianceData -DataRoot $root -Installed $true -Elevated $false -NoKick).CEAutoFailCount | Should -BeGreaterThan 0 -Because 'a standard user can only mislead themselves'
+
+            $global:TestStatusOwner = 'S-1-5-18'
+            $global:TestRootOwner = 'S-1-5-21-1-2-3-1001'
+            Get-CEStatusTrustProblem -DataRoot $root | Should -Match 'owned by S-1-5-21-1-2-3-1001'
+
+            $global:TestRootOwner = 'S-1-5-18'
+            Get-CEStatusTrustProblem -DataRoot $link | Should -Match 'is a link' -Because 'a locked junction still leads to a folder the user owns'
+            (Get-CEComplianceData -DataRoot $link -Installed $true -Elevated $true -NoKick).CEAutoFailCount | Should -Be -1
+        }
+        finally { [IO.Directory]::Delete($link, $false) }
+
+        # The detection script checks before reading status.json, and says why it fails.
+        $text = (Get-Content -LiteralPath (Join-Path $script:intune 'Detect-CECompliance.ps1') -Raw) -replace '\r\n', "`n"
+        $check = [regex]::Match($text, '(?m)^if \(\$elevated\) \{\n    \$problem = Get-CEStatusTrustProblem -DataRoot \$dataRoot\n    if \(\$problem\) \{\n        Write-Output "UNTRUSTED: [^\n]*\n        exit 1\n    \}\n\}')
+        $check.Success | Should -BeTrue
+        $check.Index | Should -BeLessThan $text.IndexOf('Get-Content -LiteralPath $statusPath')
     }
 
     It 'the install never puts an older version over a newer one: <Installed> installed, package <Package>' -ForEach @(
@@ -1300,6 +1411,16 @@ Describe 'Intune: status, discovery and compliance rules' {
         New-TestStatus -Kind Insecure -DataRoot (Join-Path $bad 'EngramicBaseline') | Out-Null
         $good = Join-Path $TestDrive 'pd-good'
         New-TestStatus -Kind Secure -DataRoot (Join-Path $good 'EngramicBaseline') -AttestMfa | Out-Null
+        if (([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+            # Elevated (as in CI), the script only reads a status.json administrators own, as the SYSTEM audit's is.
+            foreach ($dir in @((Join-Path $bad 'EngramicBaseline'), (Join-Path $good 'EngramicBaseline'))) {
+                foreach ($p in @($dir, (Join-Path $dir 'status.json'))) {
+                    $acl = Get-Acl -LiteralPath $p
+                    $acl.SetOwner([Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))
+                    Set-Acl -LiteralPath $p -AclObject $acl
+                }
+            }
+        }
 
         $saved = $env:ProgramData
         try {
@@ -1977,6 +2098,24 @@ Describe 'Firmware catalog (SU-08 with the catalog service)' {
             }
         }
 
+        It 'does not read a cached record that standard users could change, even in a trusted cache folder' {
+            # A file keeps the owner who created it, even in a folder the install locked later.
+            InModuleScope CEAudit -Parameters @{ Hw = $script:hw } {
+                param($Hw)
+                $body = New-TestCatalogRecord -Vendor 'dell' -Id '0CF1' -Releases @(New-TestRelease '1.17.0' 30) | ConvertTo-Json -Depth 5
+                Mock Invoke-CEHttpGet { [pscustomobject]@{ StatusCode = 200; Body = $body; ETag = '"abc"' } }
+                Get-CEFirmwareCatalogRecord -Hardware $Hw | Out-Null
+                Mock Test-CEIsAdmin { $true }
+                Mock Get-CEPathAclProblem { if ($Path -like '*.json') { "$Path is owned by S-1-5-21-1-2-3-1001" } }
+                Mock Invoke-CEHttpGet { throw 'No connection could be made' }
+                $r = Get-CEFirmwareCatalogRecord -Hardware $Hw
+                $r.FromCache | Should -BeFalse
+                $r.Status | Should -Be 'Error'
+                Mock Get-CEPathAclProblem { }
+                (Get-CEFirmwareCatalogRecord -Hardware $Hw).FromCache | Should -BeTrue -Because 'an admin-only cache file is still used'
+            }
+        }
+
         It 'reports unknown models, bad records and failures without a cache' {
             InModuleScope CEAudit -Parameters @{ Hw = $script:hw } {
                 param($Hw)
@@ -2084,10 +2223,13 @@ Describe 'Firmware catalog (SU-08 with the catalog service)' {
                 $one = ConvertFrom-CEWinHttpProxyBlob -Blob (New-TestWinHttpBlob -Flags 3 -Proxy 'proxy.contoso.com:8080')
                 $one.Proxy | Should -Be 'proxy.contoso.com:8080'
                 @($one.Bypass).Count | Should -Be 0
-                (Select-CEWinHttpProxy -Proxy $one.Proxy).AbsoluteUri | Should -Be 'http://proxy.contoso.com:8080/'
+                (Select-CEWinHttpProxy -Proxy $one.Proxy -Scheme https).AbsoluteUri | Should -Be 'http://proxy.contoso.com:8080/'
+                (Select-CEWinHttpProxy -Proxy $one.Proxy -Scheme http).AbsoluteUri | Should -Be 'http://proxy.contoso.com:8080/' -Because 'one proxy for every scheme'
                 $schemes = ConvertFrom-CEWinHttpProxyBlob -Blob (New-TestWinHttpBlob -Flags 3 -Proxy 'http=web.contoso.com:80;https=secure.contoso.com:8443' -Bypass '<local>;*.contoso.com')
-                (Select-CEWinHttpProxy -Proxy $schemes.Proxy).Authority | Should -Be 'secure.contoso.com:8443'
-                (Select-CEWinHttpProxy -Proxy 'http=web.contoso.com:80').Authority | Should -Be 'web.contoso.com'
+                (Select-CEWinHttpProxy -Proxy $schemes.Proxy -Scheme https).Authority | Should -Be 'secure.contoso.com:8443'
+                (Select-CEWinHttpProxy -Proxy $schemes.Proxy -Scheme http).Authority | Should -Be 'web.contoso.com'
+                Select-CEWinHttpProxy -Proxy 'http=web.contoso.com:80' -Scheme https | Should -BeNullOrEmpty -Because 'WinHTTP sends https direct when only http has a proxy'
+                Select-CEWinHttpProxy -Proxy 'https=https://secure.contoso.com:8443' -Scheme https | Should -BeNullOrEmpty -Because 'Windows PowerShell 5.1 cannot use an https proxy address'
                 @($schemes.Bypass) | Should -Be @('<local>', '*.contoso.com')
                 Test-CEProxyBypass -HostName 'intranet' -Bypass $schemes.Bypass | Should -BeTrue
                 Test-CEProxyBypass -HostName 'files.contoso.com' -Bypass $schemes.Bypass | Should -BeTrue
@@ -2125,6 +2267,83 @@ Describe 'Firmware catalog (SU-08 with the catalog service)' {
                 }
                 finally { (Get-CEConfig).network = $saved }
             }
+        }
+
+        It 'goes direct as SYSTEM when the WinHTTP proxy is set only for another scheme' {
+            InModuleScope CEAudit {
+                $saved = (Get-CEConfig).network
+                try {
+                    (Get-CEConfig).network = [pscustomobject]@{ proxyUrl = ''; useWinHttpProxyWhenSystem = $true }
+                    Mock Test-CEIsSystem { $true }
+                    Mock Get-CEWinHttpProxyBlob { New-TestWinHttpBlob -Flags 3 -Proxy 'http=web.contoso.com:80' }
+                    $p = Get-CEProxySetting -Uri ([Uri]'https://baseline.engramic.ai/v1/firmware/dell/0CF1')
+                    $p.Mode | Should -Be 'Direct' -Because 'as in WinHTTP, the http= entry does not apply to https'
+                    $p.UseDefaultCredentials | Should -BeFalse
+                    $p = Get-CEProxySetting -Uri ([Uri]'http://intranet.contoso.com/x')
+                    $p.Mode | Should -Be 'Proxy'
+                    $p.Address.Authority | Should -Be 'web.contoso.com'
+                }
+                finally { (Get-CEConfig).network = $saved }
+            }
+        }
+
+        It 'refuses an https proxyUrl with a warning that says to use the http address' {
+            # .NET Framework (Windows PowerShell 5.1, which runs the scheduled audit) throws for a
+            # proxy at an https address, so every request would fail.
+            InModuleScope CEAudit {
+                $saved = (Get-CEConfig).network
+                try {
+                    Mock Test-CEIsSystem { $false }
+                    (Get-CEConfig).network = [pscustomobject]@{ proxyUrl = 'https://proxy.contoso.com:8443'; useWinHttpProxyWhenSystem = $true }
+                    $p = Get-CEProxySetting -Uri ([Uri]'https://baseline.engramic.ai/x') -WarningVariable warned -WarningAction SilentlyContinue
+                    $p.Mode | Should -Be 'System'
+                    "$warned" | Should -Match 'http://'
+                    "$warned" | Should -Match 'Windows PowerShell'
+                }
+                finally { (Get-CEConfig).network = $saved }
+            }
+        }
+
+        It 'builds the HTTP handler from the proxy setting and sends Windows sign-in only to a proxy allowed it: <Name>' -ForEach @(
+            @{ Name = 'network.json proxy'; Setting = @{ Mode = 'Proxy'; Address = [Uri]'http://configured.contoso.com:3128'; Source = 'network.json'; UseDefaultCredentials = $false }; UseProxy = $true; SignInToProxy = $false }
+            @{ Name = 'network.json proxy with proxyUseDefaultCredentials'; Setting = @{ Mode = 'Proxy'; Address = [Uri]'http://configured.contoso.com:3128'; Source = 'network.json'; UseDefaultCredentials = $true }; UseProxy = $true; SignInToProxy = $true }
+            @{ Name = 'WinHTTP proxy'; Setting = @{ Mode = 'Proxy'; Address = [Uri]'http://proxy.contoso.com:8080'; Source = 'WinHTTP'; UseDefaultCredentials = $true }; UseProxy = $true; SignInToProxy = $true }
+            @{ Name = 'direct'; Setting = @{ Mode = 'Direct'; Address = $null; Source = 'WinHTTP'; UseDefaultCredentials = $false }; UseProxy = $false; SignInToProxy = $null }
+            @{ Name = 'system default'; Setting = @{ Mode = 'System'; Address = $null; Source = ''; UseDefaultCredentials = $false }; UseProxy = $true; SignInToProxy = $null }
+        ) {
+            InModuleScope CEAudit -Parameters @{ Setting = $Setting; UseProxy = $UseProxy; SignInToProxy = $SignInToProxy } {
+                param($Setting, $UseProxy, $SignInToProxy)
+                $handler = New-CEHttpHandler -Proxy $Setting
+                try {
+                    $handler.UseDefaultCredentials | Should -BeFalse -Because 'the site itself never gets the Windows sign-in'
+                    $handler.UseProxy | Should -Be $UseProxy
+                    if ($Setting.Mode -eq 'Proxy') {
+                        $handler.Proxy | Should -BeOfType ([System.Net.WebProxy])
+                        $handler.Proxy.Address.Authority | Should -Be $Setting.Address.Authority
+                        $handler.Proxy.UseDefaultCredentials | Should -Be $SignInToProxy
+                        $handler.Proxy.BypassProxyOnLocal | Should -BeTrue
+                    }
+                    else {
+                        $handler.Proxy | Should -Not -BeOfType ([System.Net.WebProxy]) -Because 'no proxy of our own is set'
+                    }
+                }
+                finally { $handler.Dispose() }
+            }
+        }
+
+        It 'sends each request through a handler built from the proxy setting for its address' {
+            InModuleScope CEAudit {
+                $real = ${function:Invoke-CEHttpRequest}
+                Mock Get-CEProxySetting { @{ Mode = 'Direct'; Address = $null; Source = 'WinHTTP'; UseDefaultCredentials = $false } }
+                Mock New-CEHttpHandler { Add-Type -AssemblyName System.Net.Http; [System.Net.Http.HttpClientHandler]::new() }
+                $r = & $real -Uri 'http://localhost:1/v1/firmware/dell/0CF1' -TimeoutSeconds 5
+                $r.StatusCode | Should -Be 0
+                Should -Invoke Get-CEProxySetting -Times 1 -Exactly -ParameterFilter { $Uri.AbsoluteUri -eq 'http://localhost:1/v1/firmware/dell/0CF1' }
+                Should -Invoke New-CEHttpHandler -Times 1 -Exactly -ParameterFilter { $Proxy.Mode -eq 'Direct' }
+            }
+            # No other code builds a handler, so the checks above cover every request.
+            $text = Get-Content -LiteralPath (Join-Path (Join-Path (Join-Path (Join-Path $script:RepoRoot 'src') 'CEAudit') 'Private') '14-ServiceClient.ps1') -Raw
+            ([regex]::Matches($text, 'HttpClientHandler\]::new')).Count | Should -Be 1
         }
 
         It 'ships network.json with no proxy and the WinHTTP fallback on' {
@@ -3117,6 +3336,73 @@ Describe 'Security review fixes' {
                 }
                 finally { $script:CEDataRootOverride = $null; Get-CEConfig -Force -WarningAction SilentlyContinue | Out-Null }
             }
+        }
+
+        It 'refuses config overrides when elevated if the data folder or the config folder is a link' {
+            # A standard user can plant a junction at %ProgramData%\EngramicBaseline. Its own permissions
+            # can be locked while the folder it leads to stays theirs, so a link is refused whatever its ACL.
+            $target = Join-Path $TestDrive 'bob-data'
+            New-Item -ItemType Directory -Force -Path (Join-Path $target 'config') | Out-Null
+            Set-Content -LiteralPath (Join-Path (Join-Path $target 'config') 'network.json') -Value '{ "proxyUrl": "http://planted.contoso.com:3128" }'
+            $link = Join-Path $TestDrive 'linked-data'
+            New-Item -ItemType Junction -Path $link -Target $target | Out-Null
+            $real = Join-Path $TestDrive 'real-data'
+            New-Item -ItemType Directory -Force -Path $real | Out-Null
+            $configLink = Join-Path $real 'config'
+            New-Item -ItemType Junction -Path $configLink -Target (Join-Path $target 'config') | Out-Null
+            try {
+                InModuleScope CEAudit -Parameters @{ Target = $target; Link = $link; Real = $real } {
+                    param($Target, $Link, $Real)
+                    try {
+                        Mock Test-CEIsAdmin { $true }
+                        # Every ACL looks locked, as after an install locks a junction.
+                        Mock Get-CEPathAclProblem { }
+                        @(Get-CEDataPathProblem -Path $Link) -join ' ' | Should -Match 'is a link'
+                        @(Get-CEDataPathProblem -Path $Target).Count | Should -Be 0
+
+                        $script:CEDataRootOverride = $Link
+                        Get-CEConfig -Force -WarningVariable warned -WarningAction SilentlyContinue | Out-Null
+                        (Get-CEConfig).network.proxyUrl | Should -Be '' -Because 'the data folder is a link'
+                        "$warned" | Should -Match 'Ignoring config overrides'
+
+                        $script:CEDataRootOverride = $Real
+                        Get-CEConfig -Force -WarningAction SilentlyContinue | Out-Null
+                        (Get-CEConfig).network.proxyUrl | Should -Be '' -Because 'the config folder is a link'
+
+                        $script:CEDataRootOverride = $Target
+                        Get-CEConfig -Force | Out-Null
+                        (Get-CEConfig).network.proxyUrl | Should -Be 'http://planted.contoso.com:3128' -Because 'the same file loads from a real folder'
+                    }
+                    finally { $script:CEDataRootOverride = $null; Get-CEConfig -Force -WarningAction SilentlyContinue | Out-Null }
+                }
+            }
+            finally {
+                foreach ($j in @($link, $configLink)) { if (Test-Path -LiteralPath $j) { [IO.Directory]::Delete($j, $false) } }
+            }
+        }
+
+        It 'refuses a pack under the data folder that is reached through a link' {
+            $data = Join-Path $TestDrive ([guid]::NewGuid().ToString('n'))
+            $elsewhere = Join-Path $TestDrive 'bob-packs'
+            New-Item -ItemType Directory -Force -Path $data, (Join-Path $elsewhere 'mypack') | Out-Null
+            Set-Content -LiteralPath (Join-Path (Join-Path $elsewhere 'mypack') 'pack.json') -Value '{ "id": "mypack", "name": "My pack", "version": "1.0.0" }'
+            $packsLink = Join-Path $data 'packs'
+            New-Item -ItemType Junction -Path $packsLink -Target $elsewhere | Out-Null
+            try {
+                InModuleScope CEAudit -Parameters @{ Data = $data } {
+                    param($Data)
+                    try {
+                        $script:CEDataRootOverride = $Data
+                        Mock Get-CEPathAclProblem { }
+                        $pack = @(Get-CEPackCandidate | Where-Object { $_.Id -eq 'mypack' })
+                        $pack.Count | Should -Be 1
+                        $pack[0].Status | Should -Be 'Skipped'
+                        $pack[0].Reason | Should -Match 'is a link'
+                    }
+                    finally { $script:CEDataRootOverride = $null }
+                }
+            }
+            finally { [IO.Directory]::Delete($packsLink, $false) }
         }
     }
 }

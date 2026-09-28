@@ -17,10 +17,32 @@
 # values are reported as failing values so a broken install is never
 # reported as compliant.
 
+function Get-CEStatusTrustProblem {
+    <#
+        Why status.json can't be trusted, or '' when it can: the data folder or the file is a link
+        (junction or symbolic link), or is owned by someone other than SYSTEM, Administrators or
+        TrustedInstaller. Only the SYSTEM audit should write it, and a standard user who owned
+        either could make the device look compliant. The same function is in
+        Detect-CECompliance.ps1 and Discover-CECompliance.ps1 (each is uploaded on its own).
+    #>
+    param([string]$DataRoot)
+    $trusted = @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
+    foreach ($path in @($DataRoot, (Join-Path $DataRoot 'status.json'))) {
+        $attributes = $null
+        try { $attributes = [IO.File]::GetAttributes($path) } catch { continue }
+        if ($attributes -band [IO.FileAttributes]::ReparsePoint) { return "$path is a link (junction or symbolic link)" }
+        $owner = ''
+        try { $owner = (Get-Acl -LiteralPath $path).GetOwner([Security.Principal.SecurityIdentifier]).Value } catch { return "the owner of $path could not be read" }
+        if ($trusted -notcontains $owner) { return "$path is owned by $owner, not an administrator" }
+    }
+    return ''
+}
+
 function Get-CEComplianceData {
     param(
         [string]$DataRoot = (Join-Path $env:ProgramData 'EngramicBaseline'),
         [Nullable[bool]]$Installed = $null,
+        [Nullable[bool]]$Elevated = $null,
         [datetime]$Now = [datetime]::UtcNow,
         [switch]$NoKick
     )
@@ -60,7 +82,13 @@ function Get-CEComplianceData {
 
     $statusPath = Join-Path $DataRoot 'status.json'
     $status = $null
-    if (Test-Path -LiteralPath $statusPath) {
+    # Intune runs this as SYSTEM. A status.json a standard user could have written counts as no
+    # data, so every setting reports a failing value.
+    if ($null -eq $Elevated) {
+        $Elevated = (New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    }
+    $trusted = -not ($Elevated -and (Get-CEStatusTrustProblem -DataRoot $DataRoot))
+    if ($trusted -and (Test-Path -LiteralPath $statusPath)) {
         try { $status = Get-Content -LiteralPath $statusPath -Raw | ConvertFrom-Json } catch { $status = $null }
     }
 

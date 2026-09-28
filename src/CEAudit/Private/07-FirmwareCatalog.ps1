@@ -165,8 +165,9 @@ function Get-CEFirmwareCatalogRecord {
     $cacheAgeHours = [double]::MaxValue
     # Don't trust a cached record an elevated audit could have had planted (a forged
     # "up to date" record would suppress SU-08). Skip reading; a fresh fetch still runs.
+    # The file is checked too: it keeps the owner who created it, even in a folder locked later.
     $cacheTrusted = (-not (Test-Path -LiteralPath $cacheDir)) -or (Test-CEDataPathTrusted -Path $cacheDir)
-    if ($cacheTrusted -and (Test-Path -LiteralPath $cacheFile)) {
+    if ($cacheTrusted -and (Test-Path -LiteralPath $cacheFile) -and (Test-CEDataPathTrusted -Path $cacheFile)) {
         try {
             $wrapper = Get-Content -LiteralPath $cacheFile -Raw | ConvertFrom-Json
             if (Test-CEFirmwareCatalogRecord $wrapper.record $key.Vendor $key.Id) {

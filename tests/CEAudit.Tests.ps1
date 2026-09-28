@@ -2614,8 +2614,10 @@ Describe 'Locked-at-birth data folders (Initialize-CEDataFolder)' {
         $acl = Get-Acl -LiteralPath $p
         "$($acl.GetOwner([Security.Principal.SecurityIdentifier]))" | Should -Be 'S-1-5-32-544'
         $acl.AreAccessRulesProtected | Should -BeTrue
-        $trusted = @([Security.Principal.SecurityIdentifier]'S-1-5-18', [Security.Principal.SecurityIdentifier]'S-1-5-32-544')
-        @($acl.Access | Where-Object { $_.IdentityReference -notin $trusted }).Count | Should -Be 0
+        # Compared as SIDs: $acl.Access names accounts (NTAccount), which never equal a SecurityIdentifier.
+        $sids = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | ForEach-Object { $_.IdentityReference.Value })
+        @($sids | Where-Object { @('S-1-5-18', 'S-1-5-32-544') -notcontains $_ }).Count | Should -Be 0 -Because "only SYSTEM and Administrators are granted anything (granted: $($sids -join ', '))"
+        @($sids | Sort-Object -Unique) | Should -Be @('S-1-5-18', 'S-1-5-32-544')
     }
 
     It 'when elevated, locks or moves aside only the data folder and folders in it, and leaves any other folder as it is' {

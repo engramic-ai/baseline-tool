@@ -1316,6 +1316,18 @@ Describe 'Intune: status, discovery and compliance rules' {
         $withRead = (New-CEDataDirectorySecurity -UsersRead).GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::Access)
         $withRead | Should -Match '(?i)\(A;OICI;0x1200a9;;;BU\)' -Because 'the config folder lets Users read, never write'
         $withRead | Should -Not -Match '\(A;OICI;FA;;;BU\)'
+        # A config file the install deploys is born administrator-owned too: otherwise it takes its creator's
+        # default owner, which in an administrator's elevated session on a Windows client is their account,
+        # and the SYSTEM audit ignores a config file SYSTEM or Administrators do not own.
+        . (Get-TestInstallerCode -Path (Join-Path $script:intune 'Install-CEChecker.ps1') -Name @('New-CEDataFileSecurity'))
+        (New-CEDataFileSecurity).GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::Owner) | Should -Be 'O:BA'
+        $fileDacl = (New-CEDataFileSecurity).GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::Access)
+        $fileDacl | Should -Match '(?i)^D:P\(A;;FA;;;SY\)\(A;;FA;;;BA\)\(A;;0x1200a9;;;BU\)$'
+        $copy = [regex]::Match(((Get-Content -LiteralPath (Join-Path $script:intune 'Install-CEChecker.ps1') -Raw) -replace '\r\n', "`n"), '(?ms)^function Copy-CEStagedConfig \{.*?\n\}').Value
+        $copy | Should -Match '\[IO\.File\]::Create\(\$tmp, 4096, \[IO\.FileOptions\]::None, \$security\)'
+        $copy | Should -Match '\[IO\.FileSystemAclExtensions\]::Create\(\[IO\.FileInfo\]::new\(\$tmp\)'
+        $copy | Should -Match '\$security = New-CEDataFileSecurity'
+        $copy | Should -Not -Match '\[IO\.File\]::Copy|Copy-Item' -Because 'a copy takes its creator''s owner and the source''s attributes'
     }
 
     It 'the install disables the audit task before stopping it, and re-enables it afterwards' {
@@ -1571,6 +1583,130 @@ Describe 'Intune: status, discovery and compliance rules' {
         # The console host word-wraps a warning and the transcript records it wrapped, so compare without whitespace.
         ((Get-Content -LiteralPath $log -Raw) -replace '\s', '') | Should -Match ([regex]::Escape(($asidePath -replace '\s', ''))) -Because 'the install log names the quarantine'
         Should -Invoke Write-CEInstallEvent -Times 1 -Exactly -ParameterFilter { $Id -eq 1003 -and $Message -like "*$asidePath*" } -Because 'so does the Application event log'
+    }
+
+    It 'the install carries nothing over from a folder it moves aside, and deploys the config overrides staged in the package' {
+        # A config override put down before the app installed (a platform script that ran first) is in a
+        # folder the install cannot trust, even where the file looks admin-owned and locked: while a
+        # standard user controlled the folder, they could have made the file theirs to change, changed it
+        # and locked it again. So nothing is copied out of it. Config staged in the package's data\config
+        # folder, the supported path, reaches the fresh folder instead.
+        $installer = Join-Path $script:intune 'Install-CEChecker.ps1'
+        . (Get-TestInstallerCode -Path $installer -Name @('Test-CEReparsePoint', 'Remove-CELink', 'Get-CEAsidePath', 'Move-CEItemAside', 'New-CELockedDirectory', 'Initialize-CEDataRoot', 'Copy-CEStagedConfig'))
+        function New-CEDataDirectorySecurity { param([switch]$UsersRead) $s = New-Object Security.AccessControl.DirectorySecurity; $s.SetSecurityDescriptorSddlForm('D:(A;OICI;FA;;;WD)'); return $s }
+        # Owner-less descriptors a standard user can apply (the real ones name Administrators as owner).
+        function New-CEDataFileSecurity { $s = New-Object Security.AccessControl.FileSecurity; $s.SetSecurityDescriptorSddlForm('D:P(A;;FA;;;WD)'); return $s }
+        # Every folder and file reads as admin-owned and locked, as a script run as SYSTEM leaves them.
+        function Test-CELockedFolder { param([string]$Path) if (Test-CEReparsePoint -Path $Path) { return "$Path is a link" } return '' }
+        function Get-CERegistryString { param([string]$Path, [string]$Name) return '' }
+        $pd = Join-Path $TestDrive 'pd-staged'
+        $root = Join-Path $pd 'EngramicBaseline'
+        $pkg = Join-Path $TestDrive 'pkg-staged'
+        New-Item -ItemType Directory -Force -Path (Join-Path $root 'config'), (Join-Path $pkg 'data\config') | Out-Null
+        Set-Content -LiteralPath (Join-Path $root 'config\cloud-services.json') -Value '{ "from": "before the app" }'
+        Set-Content -LiteralPath (Join-Path $root 'config\network.json') -Value '{ "proxyUrl": "http://planted.example:3128" }'
+        Set-Content -LiteralPath (Join-Path $pkg 'data\config\cloud-services.json') -Value '{ "from": "the package" }'
+        # No sealed marker: a folder this version's install did not create.
+        Initialize-CEDataRoot -Path $root -RegPath 'unsealed' 3>$null 6>$null
+        foreach ($name in @('logs', 'reports', 'cache', 'packs')) { New-CELockedDirectory -Path (Join-Path $root $name) -DataRoot $root 3>$null }
+        New-CELockedDirectory -Path (Join-Path $root 'config') -DataRoot $root -UsersRead 3>$null
+        Copy-CEStagedConfig -Source (Join-Path $pkg 'data\config') -ConfigDir (Join-Path $root 'config') -DataRoot $root 3>$null 6>$null
+        Test-Path -LiteralPath (Join-Path $root 'config\network.json') | Should -BeFalse -Because 'nothing is carried over from a folder the install cannot trust'
+        Get-Content -LiteralPath (Join-Path $root 'config\cloud-services.json') | Should -Be '{ "from": "the package" }' -Because 'the override staged in the package is deployed'
+        $aside = @(Get-ChildItem -LiteralPath $pd -Directory -Filter 'EngramicBaseline.untrusted-*')
+        $aside.Count | Should -Be 1
+        Get-Content -LiteralPath (Join-Path $aside[0].FullName 'config\network.json') | Should -Match 'planted' -Because 'the old folder is kept whole for an administrator'
+    }
+
+    It 'Copy-CEStagedConfig replaces a trusted file, moves anything else aside, removes a link as a link, and copies only .json files' {
+        $installer = Join-Path $script:intune 'Install-CEChecker.ps1'
+        . (Get-TestInstallerCode -Path $installer -Name @('Test-CEReparsePoint', 'Remove-CELink', 'Get-CEAsidePath', 'Move-CEItemAside', 'Copy-CEStagedConfig'))
+        # An owner-less descriptor a standard user can apply (the real one names Administrators as owner).
+        function New-CEDataFileSecurity { $s = New-Object Security.AccessControl.FileSecurity; $s.SetSecurityDescriptorSddlForm('D:P(A;;FA;;;WD)'); return $s }
+        # A stand-in trust check: a file holding 'user-owned' is one a standard user owns.
+        function Test-CELockedFolder { param([string]$Path) if ((Test-Path -LiteralPath $Path -PathType Leaf) -and ((Get-Content -LiteralPath $Path -Raw) -match 'user-owned')) { return "$Path is owned by S-1-5-21-1-2-3-1001, not SYSTEM or Administrators" } return '' }
+        $pd = Join-Path $TestDrive 'pd-copy'
+        $root = Join-Path $pd 'EngramicBaseline'
+        $cfg = Join-Path $root 'config'
+        $src = Join-Path $TestDrive 'pkg-copy\data\config'
+        $outside = Join-Path $TestDrive 'copy-outside'
+        New-Item -ItemType Directory -Force -Path $src, $outside, (Join-Path $cfg 'odd.json') | Out-Null
+        foreach ($n in @('network', 'firmware-catalog', 'odd', 'linked')) { Set-Content -LiteralPath (Join-Path $src "$n.json") -Value "{ `"staged`": `"$n`" }" }
+        Set-Content -LiteralPath (Join-Path $src 'notes.txt') -Value 'not config'
+        Set-Content -LiteralPath (Join-Path $cfg 'network.json') -Value '{ "old": "admin" }'
+        # An override an administrator left read-only is still replaced, not a failed install.
+        [IO.File]::SetAttributes((Join-Path $cfg 'network.json'), [IO.FileAttributes]::ReadOnly)
+        Set-Content -LiteralPath (Join-Path $cfg 'firmware-catalog.json') -Value '{ "old": "user-owned" }'
+        Set-Content -LiteralPath (Join-Path $cfg 'thresholds.json') -Value '{ "untouched": true }'
+        Set-Content -LiteralPath (Join-Path $outside 'keep.json') -Value 'keep'
+        # A file symbolic link needs a privilege; a junction with a file's name stands in for a planted link.
+        $link = Join-Path $cfg 'linked.json'
+        New-Item -ItemType Junction -Path $link -Target $outside | Out-Null
+        try {
+            Copy-CEStagedConfig -Source $src -ConfigDir $cfg -DataRoot $root -WarningVariable copyNotices -WarningAction SilentlyContinue 6>$null
+            Get-Content -LiteralPath (Join-Path $cfg 'network.json') | Should -Be '{ "staged": "network" }' -Because 'a trusted file is replaced'
+            Get-Content -LiteralPath (Join-Path $cfg 'firmware-catalog.json') | Should -Be '{ "staged": "firmware-catalog" }'
+            Get-Content -LiteralPath (Join-Path $cfg 'odd.json') | Should -Be '{ "staged": "odd" }' -Because 'a folder in the way is moved aside, never written into'
+            Get-Content -LiteralPath (Join-Path $cfg 'linked.json') | Should -Be '{ "staged": "linked" }'
+            Test-CEReparsePoint -Path (Join-Path $cfg 'linked.json') | Should -BeFalse -Because 'the link was removed as a link and a real file put in its place'
+            Get-Content -LiteralPath (Join-Path $outside 'keep.json') | Should -Be 'keep' -Because 'nothing a link pointed at is touched'
+            Get-Content -LiteralPath (Join-Path $cfg 'thresholds.json') | Should -Match 'untouched' -Because 'a file the package does not carry is left alone'
+            Test-Path -LiteralPath (Join-Path $cfg 'notes.txt') | Should -BeFalse -Because 'only .json files are config'
+            @(Get-ChildItem -LiteralPath $cfg -Filter '*.tmp' -Force).Count | Should -Be 0
+            # The user-owned file and the folder went beside the data folder, never inside it, and the warnings say where.
+            @(Get-ChildItem -LiteralPath $root -Recurse -Force -Filter '*.untrusted-*').Count | Should -Be 0
+            $fwAside = @(Get-ChildItem -LiteralPath $pd -File -Filter 'EngramicBaseline.untrusted-*-config-firmware-catalog.json')
+            $fwAside.Count | Should -Be 1
+            Get-Content -LiteralPath $fwAside[0].FullName | Should -Match 'user-owned'
+            @(Get-ChildItem -LiteralPath $pd -Directory -Filter 'EngramicBaseline.untrusted-*-config-odd.json').Count | Should -Be 1
+            "$copyNotices" | Should -Match ([regex]::Escape($fwAside[0].FullName))
+            # A read-only file in the package (say, from a read-only share) must not make the next upgrade fail.
+            [IO.File]::SetAttributes((Join-Path $src 'network.json'), [IO.FileAttributes]::ReadOnly)
+            Copy-CEStagedConfig -Source $src -ConfigDir $cfg -DataRoot $root 3>$null 6>$null
+            { Copy-CEStagedConfig -Source $src -ConfigDir $cfg -DataRoot $root 3>$null 6>$null } | Should -Not -Throw -Because 'the upgrade replaces the copy it made last time'
+            ([IO.File]::GetAttributes((Join-Path $cfg 'network.json')) -band [IO.FileAttributes]::ReadOnly) | Should -Be 0
+        }
+        finally {
+            if ((Test-Path -LiteralPath $link) -and (Test-CEReparsePoint -Path $link)) { [IO.Directory]::Delete($link, $false) }
+            if (Test-Path -LiteralPath (Join-Path $src 'network.json')) { [IO.File]::SetAttributes((Join-Path $src 'network.json'), [IO.FileAttributes]::Normal) }
+        }
+    }
+
+    It 'when elevated, a config file the install deploys is born administrator-owned and locked' {
+        # Runs only where the suite runs elevated (CI). A standard user cannot name Administrators as owner.
+        if (-not (([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))) {
+            Set-ItResult -Skipped -Because 'needs an elevated session'
+            return
+        }
+        . (Get-TestInstallerCode -Path (Join-Path $script:intune 'Install-CEChecker.ps1') -Name @('Test-CEReparsePoint', 'Remove-CELink', 'Get-CEAsidePath', 'Move-CEItemAside', 'Test-CELockedFolder', 'New-CEDataFileSecurity', 'Copy-CEStagedConfig'))
+        $root = Join-Path $TestDrive 'pd-elevated-copy\EngramicBaseline'
+        $src = Join-Path $TestDrive 'pkg-elevated-copy\data\config'
+        New-Item -ItemType Directory -Force -Path (Join-Path $root 'config'), $src | Out-Null
+        Set-Content -LiteralPath (Join-Path $src 'network.json') -Value '{ "proxyUrl": "" }'
+        Copy-CEStagedConfig -Source $src -ConfigDir (Join-Path $root 'config') -DataRoot $root 3>$null 6>$null
+        $acl = Get-Acl -LiteralPath (Join-Path $root 'config\network.json')
+        "$($acl.GetOwner([Security.Principal.SecurityIdentifier]))" | Should -Be 'S-1-5-32-544'
+        $acl.AreAccessRulesProtected | Should -BeTrue
+        $writers = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | Where-Object { @('S-1-5-18', 'S-1-5-32-544') -notcontains "$($_.IdentityReference)" -and ([long]$_.FileSystemRights -band 0x000D0156) })
+        $writers.Count | Should -Be 0 -Because 'only SYSTEM and Administrators can change it'
+    }
+
+    It 'the install deploys config staged in the package once logging has started, and the build and release handle data\config' {
+        $text = (Get-Content -LiteralPath (Join-Path $script:intune 'Install-CEChecker.ps1') -Raw) -replace '\r\n', "`n"
+        $main = $text.Substring($text.IndexOf("`ntry {"))
+        $copy = $main.IndexOf("Copy-CEStagedConfig -Source (Join-Path `$packageRoot 'data\config') -ConfigDir (Join-Path `$dataRoot 'config') -DataRoot `$dataRoot")
+        $copy | Should -BeGreaterThan $main.IndexOf('Start-Transcript -LiteralPath $log') -Because 'the copy is logged'
+        $copy | Should -BeLessThan $main.IndexOf('Register-ScheduledTask') -Because 'the first audit sees the overrides'
+        $copy | Should -BeLessThan $main.IndexOf('Start-ScheduledTask')
+        $main | Should -Match 'Write-CESetupNotice -Notice \$stagedNotices' -Because 'anything it moves aside is logged and recorded as an event'
+        # The build packs the .json files in data\config; a release refuses to ship any.
+        $build = Get-Content -LiteralPath (Join-Path $script:intune 'Build-IntunePackage.ps1') -Raw
+        $build | Should -Match "Get-ChildItem -LiteralPath \(Join-Path \`$repo 'data\\config'\) -Filter '\*\.json' -File"
+        $build | Should -Match "Join-Path \`$payload 'data\\config'"
+        $release = Get-Content -LiteralPath (Join-Path (Join-Path $script:RepoRoot 'tools') 'New-SignedRelease.ps1') -Raw
+        $guard = $release.IndexOf("Get-ChildItem -LiteralPath (Join-Path `$repo 'data') -Recurse -File")
+        $guard | Should -BeGreaterThan 0
+        $guard | Should -BeLessThan $release.IndexOf('Build-IntunePackage.ps1') -Because 'checked before anything is built'
     }
 
     It 'uninstall -RemoveData deletes only a trusted data root and leaves quarantine folders for an admin, walking no user tree' {

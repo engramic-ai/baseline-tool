@@ -60,6 +60,15 @@ New-Item -ItemType Directory -Path $payload, $upload -Force | Out-Null
 
 $items = @('src', 'config', 'intune', 'docs', 'app', 'README.md')
 foreach ($i in $items) { Copy-Item -LiteralPath (Join-Path $repo $i) -Destination $payload -Recurse -Force }
+# Config overrides staged in data\config: the install copies them into the device's locked data
+# folder (docs/INTUNE.md). Only the .json files directly in it, which is all the install reads.
+$stagedConfig = @(Get-ChildItem -LiteralPath (Join-Path $repo 'data\config') -Filter '*.json' -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension -eq '.json' })
+if ($stagedConfig.Count) {
+    $stagedDest = Join-Path $payload 'data\config'
+    New-Item -ItemType Directory -Path $stagedDest -Force | Out-Null
+    foreach ($f in $stagedConfig) { Copy-Item -LiteralPath $f.FullName -Destination $stagedDest }
+    Write-Host "Config overrides staged in the package: $(@($stagedConfig | ForEach-Object { $_.Name }) -join ', ')"
+}
 
 foreach ($f in @('Discover-CECompliance.ps1', 'compliance-rules.json', 'compliance-rules-autofail-only.json',
         'Detect-CECompliance.ps1', 'Remediate-CECompliance.ps1', 'Detect-CEChecker.ps1')) {

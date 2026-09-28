@@ -225,7 +225,7 @@ Installed apps such as OneDrive, Dropbox, Slack and Xero are detected and listed
 | `config/scheduled-audit.json` | Checks to skip in the unattended (scheduled / Intune) audit |
 | `config/auto-remediation.json` | Fixes the Intune Remediations script may apply automatically (off by default) |
 
-On managed devices, a file with the same name in `%ProgramData%\EngramicBaseline\config\` replaces the packaged one, so you can change settings on individual devices without rebuilding. Audits running as administrator or SYSTEM only use such a file if administrators own it, the folder and `%ProgramData%\EngramicBaseline`, standard users can't change any of them, and neither folder is a junction or symbolic link (the Intune install sets the folders up this way); otherwise they ignore it with a warning.
+On managed devices, a file with the same name in `%ProgramData%\EngramicBaseline\config\` replaces the packaged one, so you can change settings on individual devices without rebuilding. Audits running as administrator or SYSTEM only use such a file if administrators own it, the folder and `%ProgramData%\EngramicBaseline`, standard users can't change any of them, and neither folder is a junction or symbolic link (the Intune install sets the folders up this way); otherwise they ignore it with a warning. To ship overrides with the Intune app, put them in `data\config\` before building and the install copies them in; see [Config overrides and packs](docs/INTUNE.md#config-overrides-and-packs) for this and for deploying them after the app.
 
 ---
 

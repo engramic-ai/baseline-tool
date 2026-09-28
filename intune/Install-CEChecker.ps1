@@ -8,6 +8,8 @@
     - Copies the tool to Program Files, locked down so only administrators and
       SYSTEM can change it (the scheduled task runs these scripts as SYSTEM)
     - Creates %ProgramData%\EngramicBaseline for status, reports and logs
+    - Copies any config overrides staged in the package's data\config folder
+      into %ProgramData%\EngramicBaseline\config
     - Registers the Application event log source EngramicBaseline
     - Registers the scheduled task \EngramicBaseline\Audit (SYSTEM,
       daily with a random delay, plus shortly after start-up)
@@ -135,9 +137,23 @@ function New-CEDataDirectorySecurity {
     return $sec
 }
 
+function New-CEDataFileSecurity {
+    <#
+        The security descriptor a config file this install deploys is born with: owner Administrators
+        and a protected DACL granting SYSTEM and Administrators full control and Users read (the desktop
+        app reads config), as the locked config folder would. The owner is set in the call that creates
+        the file: a file otherwise takes its creator's default owner, which for an administrator's
+        elevated session on a Windows client is their own account, and the SYSTEM audit ignores a
+        config file that is not owned by SYSTEM or Administrators.
+    #>
+    $sec = New-Object Security.AccessControl.FileSecurity
+    $sec.SetSecurityDescriptorSddlForm('O:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;0x1200A9;;;BU)')
+    return $sec
+}
+
 function Test-CELockedFolder {
     <#
-        '' when the folder at $Path is one this install may keep in place, or the reason it is not.
+        '' when the folder (or file) at $Path is one this install may keep in place, or the reason it is not.
         Read only: it never changes owner or permissions. Judged by trust, not by SDDL equality
         (design rule 1): a folder is accepted only when it is not a link, is owned by SYSTEM,
         Administrators or TrustedInstaller (a standard user can set none of these, so a folder they
@@ -306,13 +322,16 @@ function Initialize-CEDataRoot {
         overrides, installed packs and report history across upgrades.
 
         Anything else - a folder a standard user made or could write, one an older version re-owned in
-        place (which left no marker, so its creator may hold a handle), or one whose owner is wrong - is
-        moved aside whole (to a sibling of the data folder, never inside it), never taken back in place,
-        and a fresh locked folder made instead. Reports, logs, config overrides and packs in a
-        moved-aside folder are not carried over: a folder that could ever have been user-writable cannot
-        be trusted to keep, because a handle opened with add-file rights still creates children after a
-        later lock (verified Windows behaviour), so the data is rebuilt by the next audit rather than
-        copied out of an untrusted tree.
+        place (which left no marker, so its creator may hold a handle), one a script made before this
+        install ran, or one whose owner is wrong - is moved aside whole (to a sibling of the data
+        folder, never inside it), never taken back in place, and a fresh locked folder made instead.
+        Nothing in a moved-aside folder is carried over, not even a file that now looks admin-owned
+        and locked: while a standard user controlled the folder, they could give themselves write and
+        change-permissions rights on a file an administrator then put there, change it, and lock it
+        again, and a handle they opened keeps working after any later lock (verified Windows
+        behaviour). Nothing about a file's current state shows that never happened. The next audit
+        rebuilds status and reports; config overrides staged in the package are copied in by this
+        install (Copy-CEStagedConfig), and anything else is redeployed after it.
     #>
     [CmdletBinding()]
     param([string]$Path, [string]$RegPath)
@@ -324,11 +343,63 @@ function Initialize-CEDataRoot {
             Write-Host "Keeping the existing locked data folder at $Path (config overrides, packs and reports are preserved)."
             return
         }
-        $reason = if (-not $sealed) { 'it predates this version''s sealed-at-birth marker' } else { $problem }
+        $reason = if (-not $sealed) { 'this version''s install did not create it locked, so it may have been writable by a standard user' } else { $problem }
         $aside = Move-CEItemAside -Path $Path -DataRoot $Path
-        Write-Warning "An existing $Path was moved aside to $aside ($reason) and a fresh, locked data folder made. Its reports, logs, config overrides and packs are not carried over - redeploy any config overrides and packs. Check the moved-aside folder, then delete it."
+        Write-Warning "An existing $Path was moved aside to $aside ($reason) and a fresh, locked data folder made. Its reports, logs, config overrides and packs are not carried over: stage config overrides in the package's data\config folder, or redeploy them and any packs after this install. Check the moved-aside folder, then delete it."
     }
     New-CELockedDirectory -Path $Path -DataRoot $Path
+}
+
+function Copy-CEStagedConfig {
+    <#
+        Copies the config overrides staged in the package ($Source, the package's data\config folder)
+        into the data folder's locked config folder, replacing a file of the same name. This is the
+        supported way to deploy config overrides with the app: the package is as trusted as the code
+        it installs. Only *.json files directly in $Source are copied, each into a new file born
+        administrator-owned and locked (New-CEDataFileSecurity), whoever runs the install. An existing
+        file of the same name is replaced only when it is admin-owned and no non-administrator can
+        change it; a link is removed as a link, and anything else (a folder, or a file a standard user
+        owns or can change) is moved aside out of the data folder with a warning, never written into or
+        re-permissioned in place.
+    #>
+    [CmdletBinding()]
+    param([string]$Source, [string]$ConfigDir, [string]$DataRoot)
+    if (-not (Test-Path -LiteralPath $Source -PathType Container)) { return }
+    foreach ($file in @(Get-ChildItem -LiteralPath $Source -Filter '*.json' -File)) {
+        # -Filter '*.json' also matches longer extensions through 8.3 names, so check it exactly.
+        if ($file.Extension -ne '.json') { continue }
+        $dest = Join-Path $ConfigDir $file.Name
+        $tmp = '{0}.{1}.tmp' -f $dest, [guid]::NewGuid().ToString('n')
+        $bytes = [IO.File]::ReadAllBytes($file.FullName)
+        try {
+            # A new file, born with its owner and locked DACL (New-CEDataFileSecurity), never a copy of
+            # the source's attributes: a read-only copy could not be replaced by the next upgrade.
+            $security = New-CEDataFileSecurity
+            $stream = if ($PSVersionTable.PSVersion.Major -ge 6) {
+                [IO.FileSystemAclExtensions]::Create([IO.FileInfo]::new($tmp), [IO.FileMode]::CreateNew, [Security.AccessControl.FileSystemRights]::Write, [IO.FileShare]::None, 4096, [IO.FileOptions]::None, $security)
+            }
+            else { [IO.File]::Create($tmp, 4096, [IO.FileOptions]::None, $security) }
+            try { $stream.Write($bytes, 0, $bytes.Length) }
+            finally { $stream.Dispose() }
+            if (Test-CEReparsePoint -Path $dest) { Remove-CELink -Path $dest }
+            if (Test-Path -LiteralPath $dest) {
+                $problem = if (Test-Path -LiteralPath $dest -PathType Container) { "$dest is a folder" } else { Test-CELockedFolder -Path $dest }
+                if ($problem) {
+                    $aside = Move-CEItemAside -Path $dest -DataRoot $DataRoot
+                    Write-Warning "$problem, so it was not overwritten in place. It was moved aside to $aside (check it, then delete it) and replaced by the copy staged in the package."
+                }
+                else {
+                    [IO.File]::SetAttributes($dest, [IO.FileAttributes]::Normal)
+                    [IO.File]::Delete($dest)
+                }
+            }
+            [IO.File]::Move($tmp, $dest)
+        }
+        finally {
+            if (Test-Path -LiteralPath $tmp) { [IO.File]::Delete($tmp) }
+        }
+        Write-Host "Deployed the config override $($file.Name) staged in the package"
+    }
 }
 
 function Write-CEInstallEvent {
@@ -474,6 +545,14 @@ try {
     # Every link removed and everything moved aside above goes in this log and the Application event log.
     $noticesWritten = $true
     Write-CESetupNotice -Notice $setupNotices
+
+    # --- Config overrides staged in the package -------------------------------
+    # The supported way to deploy config overrides with the app (docs/INTUNE.md): copied into the
+    # locked config folder on every install, so they survive a moved-aside data folder and reach a
+    # device where a script made the folder before this install ran.
+    $stagedNotices = @()
+    Copy-CEStagedConfig -Source (Join-Path $packageRoot 'data\config') -ConfigDir (Join-Path $dataRoot 'config') -DataRoot $dataRoot -WarningVariable +stagedNotices -WarningAction SilentlyContinue
+    Write-CESetupNotice -Notice $stagedNotices
 
     # --- Copy payload into a staging folder, then swap -----------------------
     $payload = @('src', 'config', 'intune', 'docs', 'app', 'README.md')

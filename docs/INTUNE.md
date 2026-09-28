@@ -127,8 +127,9 @@ The installer:
 - **Background tasks:** registers the event log source and two scheduled tasks. `\EngramicBaseline\Audit` runs as SYSTEM daily at 11:00 with up to 2 hours' random delay, 15 minutes after start-up, when missed, and on battery. `\EngramicBaseline\User probe` runs as each signed-in user (Users-group principal, non-elevated) at logon and daily, for the shadow-AI/WSL User-scope checks. Skip the second with `-NoUserProbeTask`.
 - **Start menu:** adds a Start menu shortcut so users can open the desktop app and fix things themselves.
 - **Detection value:** writes the detection value `HKLM\SOFTWARE\EngramicBaseline\Version`.
+- **No downgrades:** if a newer version is already installed, changes nothing and exits `0`.
 
-Options: `-DailyAt 13:30`, `-RandomDelayMinutes 60`, `-NoShortcut`, `-NoScheduledTask`, `-InstallPath`.
+Options: `-DailyAt 13:30`, `-RandomDelayMinutes 60`, `-NoShortcut`, `-NoScheduledTask`, `-InstallPath`, `-AllowDowngrade` (install over a newer version).
 
 To upgrade, bump `ModuleVersion` in `src/CEAudit/CEAudit.psd1` and `$required` in `intune/Detect-CEChecker.ps1` (the build refuses to run if they differ). Then rebuild, and use Intune's *supersedence* or replace the package content. The installer upgrades in place.
 

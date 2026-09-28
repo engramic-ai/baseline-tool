@@ -15,8 +15,10 @@
     - Writes HKLM\SOFTWARE\EngramicBaseline (Version, InstallPath) for
       Intune detection
 
-    Safe to run again: re-running upgrades in place. Relaunches itself in
-    64-bit PowerShell if started from a 32-bit host (as Intune may do).
+    Safe to run again: re-running upgrades in place. Never downgrades: if a
+    newer version is already installed, changes nothing and exits 0, unless
+    run with -AllowDowngrade. Relaunches itself in 64-bit PowerShell if started
+    from a 32-bit host (as Intune may do).
 
     Exit codes: 0 success, 1 failure.
 
@@ -33,6 +35,10 @@
 .PARAMETER RunNow
     Start the first audit straight after installing.
 
+.PARAMETER AllowDowngrade
+    Install even when a newer version is already installed. Without it, an
+    older package left assigned in Intune could put an old version back.
+
 .EXAMPLE
     powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\intune\Install-CEChecker.ps1 -RunNow
 #>
@@ -44,7 +50,8 @@ param(
     [switch]$NoScheduledTask,
     [switch]$NoUserProbeTask,
     [switch]$NoShortcut,
-    [switch]$RunNow
+    [switch]$RunNow,
+    [switch]$AllowDowngrade
 )
 
 $ErrorActionPreference = 'Stop'
@@ -96,6 +103,16 @@ function Set-CELockedAcl {
     if ($LASTEXITCODE -ne 0) { throw "icacls failed on $Path (exit $LASTEXITCODE)" }
 }
 
+function Test-CENewerInstalled {
+    <# Whether the installed version (the detection value) is newer than this package's. Unreadable counts as not newer. #>
+    param([string]$Installed, [string]$Package)
+    $installedVersion = $null
+    $packageVersion = $null
+    if (-not [version]::TryParse($Installed, [ref]$installedVersion)) { return $false }
+    if (-not [version]::TryParse($Package, [ref]$packageVersion)) { return $false }
+    return $installedVersion -gt $packageVersion
+}
+
 function Reset-CEFolderOwner {
     <#
         Makes Administrators the owner of a folder (not its contents) and drops any permission
@@ -138,6 +155,17 @@ try {
 
     $manifest = Import-PowerShellDataFile -Path (Join-Path $packageRoot 'src\CEAudit\CEAudit.psd1')
     $version = [string]$manifest.ModuleVersion
+
+    # --- Never downgrade -----------------------------------------------------
+    # An older package still assigned (say, to All Devices while a newer one goes to a pilot
+    # group) must not put its version back over a newer install.
+    $installedVersion = ''
+    $installedItem = Get-ItemProperty -LiteralPath $regPath -ErrorAction SilentlyContinue
+    if ($installedItem -and $installedItem.PSObject.Properties['Version']) { $installedVersion = [string]$installedItem.Version }
+    if (-not $AllowDowngrade -and (Test-CENewerInstalled -Installed $installedVersion -Package $version)) {
+        Write-Warning "Engramic Baseline $installedVersion is installed, which is newer than this package ($version), so it is left as it is. Run with -AllowDowngrade to install $version over it."
+        exit 0
+    }
     Write-Host "Installing Engramic Baseline $version to $InstallPath"
 
     # --- Copy payload into a staging folder, then swap -----------------------

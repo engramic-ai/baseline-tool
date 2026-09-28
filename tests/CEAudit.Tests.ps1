@@ -1236,6 +1236,35 @@ Describe 'Intune: status, discovery and compliance rules' {
         $text | Should -Match 'if \(\$transcribing\) \{ Stop-Transcript' -Because 'a failure before logging starts must not hide the real error'
     }
 
+    It 'the install never puts an older version over a newer one: <Installed> installed, package <Package>' -ForEach @(
+        @{ Installed = '0.3.3'; Package = '0.3.2'; Newer = $true }
+        @{ Installed = '0.3.10'; Package = '0.3.9'; Newer = $true }
+        @{ Installed = '1.0'; Package = '0.9.9'; Newer = $true }
+        @{ Installed = '0.3.2'; Package = '0.3.2'; Newer = $false }
+        @{ Installed = '0.3.1'; Package = '0.3.2'; Newer = $false }
+        @{ Installed = ''; Package = '0.3.2'; Newer = $false }
+        @{ Installed = 'not a version'; Package = '0.3.2'; Newer = $false }
+    ) {
+        $installer = Join-Path $script:intune 'Install-CEChecker.ps1'
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile($installer, [ref]$null, [ref]$null)
+        $fn = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Test-CENewerInstalled' }, $true)
+        $fn | Should -Not -BeNullOrEmpty
+        . ([scriptblock]::Create($fn.Extent.Text))
+        Test-CENewerInstalled -Installed $Installed -Package $Package | Should -Be $Newer
+
+        # The check reads the detection value and stops before anything is copied or an audit
+        # starts. -AllowDowngrade overrides it and reaches the 64-bit relaunch.
+        (Get-Command $installer).Parameters['AllowDowngrade'].ParameterType | Should -Be ([switch])
+        $text = (Get-Content -LiteralPath $installer -Raw) -replace '\r\n', "`n"
+        $guard = [regex]::Match($text, '(?m)^    if \(-not \$AllowDowngrade -and \(Test-CENewerInstalled -Installed \$installedVersion -Package \$version\)\) \{\n[^\n]*Write-Warning[^\n]*\n        exit 0\n    \}')
+        $guard.Success | Should -BeTrue
+        $text | Should -Match "(?m)^    \`$installedItem = Get-ItemProperty -LiteralPath \`$regPath -ErrorAction SilentlyContinue\n    if \(\`$installedItem -and \`$installedItem\.PSObject\.Properties\['Version'\]\) \{ \`$installedVersion = \[string\]\`$installedItem\.Version \}\n    if \(-not \`$AllowDowngrade"
+        $guard.Index | Should -BeGreaterThan $text.IndexOf('$version = [string]$manifest.ModuleVersion')
+        foreach ($later in @('New-Item -ItemType Directory -Path $staging', 'Remove-Item -LiteralPath $InstallPath', 'Register-ScheduledTask', 'New-ItemProperty -Path $regPath', 'Start-ScheduledTask')) {
+            $text.IndexOf($later) | Should -BeGreaterThan $guard.Index -Because "$later comes after the downgrade check"
+        }
+    }
+
     It 'Remediations detection prints a summary and exits 1 when not ready, 0 when ready' {
         $pwshExe = (Get-Process -Id $PID).Path
         $detect = Join-Path $script:intune 'Detect-CECompliance.ps1'

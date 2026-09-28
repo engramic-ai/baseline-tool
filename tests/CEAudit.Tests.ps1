@@ -4218,6 +4218,7 @@ Describe 'Security review fixes' {
                 Mock Get-CEWslDistribution { , @() }
                 Mock Get-CEHyperVMachine { [pscustomobject]@{ Readable = $true; Message = ''; Machines = @(); NatMappings = @() } }
                 Mock Get-CEContainer { , @() }
+                Mock Resolve-CEDockerPath { [pscustomobject]@{ Path = ''; Refused = @() } }
                 Mock Get-CEVirtualisationListener { , @() }
                 [pscustomobject]@{
                     User     = Get-CEVirtualisationStateUncached -Context ([pscustomobject]@{ IsSystem = $false; IsElevated = $false })
@@ -4304,6 +4305,7 @@ Describe 'Security review fixes' {
                 Mock Get-CEWslDistribution { , @() }
                 Mock Get-CEHyperVMachine { [pscustomobject]@{ Readable = $true; Message = ''; Machines = @(); NatMappings = @() } }
                 Mock Get-CEContainer { , @() }
+                Mock Resolve-CEDockerPath { [pscustomobject]@{ Path = ''; Refused = @() } }
                 Mock Get-CEVirtualisationListener { , @() }
                 $st = Get-CEVirtualisationStateUncached -Context ([pscustomobject]@{ IsSystem = $false; IsElevated = $true })
                 @($st.VMware | ForEach-Object { $_.Name }) | Should -Be @('Local')
@@ -5580,6 +5582,7 @@ namespace CETest {
             Mock Get-CEWslDistribution { , @() }
             Mock Get-CEHyperVMachine { [pscustomobject]@{ Readable = $true; Message = ''; Machines = @(); NatMappings = @() } }
             Mock Get-CEContainer { , @() }
+            Mock Resolve-CEDockerPath { [pscustomobject]@{ Path = ''; Refused = @() } }
             Mock Get-CEVirtualisationListener { , @() }
             # .wslconfig as a symbolic link to a file (this account can't make one).
             Mock Get-CEReparseKind { if ($Item.Name -eq '.wslconfig') { 'symlink' } elseif ((([long]$Item.Attributes) -band 0x400) -ne 0) { 'junction' } else { 'none' } }
@@ -6146,6 +6149,7 @@ namespace CETest {
                 Mock Get-CEWslDistribution { , @() }
                 Mock Get-CEHyperVMachine { [pscustomobject]@{ Readable = $true; Message = ''; Machines = @(); NatMappings = @() } }
                 Mock Get-CEContainer { , @() }
+                Mock Resolve-CEDockerPath { [pscustomobject]@{ Path = ''; Refused = @() } }
                 Mock Get-CEVirtualisationListener { , @() }
                 $ctx = [pscustomobject]@{ IsSystem = $false; IsElevated = $Above }
                 [pscustomobject]@{

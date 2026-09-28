@@ -854,6 +854,11 @@ Describe 'Remediation engine' {
         }
     }
 
+    It 'warns that script block logging writes to a log signed-in users can read' {
+        $notes = (Get-CERemediation -Id 'Hardening-CommandLineLogging').Notes
+        $notes | Should -Match 'script blocks go to Microsoft-Windows-PowerShell/Operational, which signed-in users can read'
+    }
+
     It 'quotes undo command literals safely' {
         InModuleScope CEAudit {
             ConvertTo-CEPSLiteral "it's; Remove-Item x" | Should -Be "'it''s; Remove-Item x'"

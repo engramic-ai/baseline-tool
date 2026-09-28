@@ -49,7 +49,7 @@ $script:CEHardeningSettings = @(
                   @{ Path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa'; Name = 'RestrictAnonymousSAM'; Value = 1 }) },
     @{ Id = 'SmbClientSigning'; Title = 'Require SMB signing for outgoing connections'; Risk = 'Medium'; Reboot = $false; Notes = 'Old NAS devices without signing support will refuse connections.';
        Values = @(@{ Path = 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters'; Name = 'RequireSecuritySignature'; Value = 1 }) },
-    @{ Id = 'CommandLineLogging'; Title = 'Log process command lines and PowerShell script blocks'; Risk = 'Low'; Reboot = $false; Notes = 'Command lines can contain secrets; restrict who can read the Security log.';
+    @{ Id = 'CommandLineLogging'; Title = 'Log process command lines and PowerShell script blocks'; Risk = 'Low'; Reboot = $false; Notes = 'Command lines and PowerShell script blocks can contain secrets. The Security log is limited to administrators, but script blocks go to Microsoft-Windows-PowerShell/Operational, which signed-in users can read.';
        Values = @(@{ Path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit'; Name = 'ProcessCreationIncludeCmdLine_Enabled'; Value = 1 },
                   @{ Path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging'; Name = 'EnableScriptBlockLogging'; Value = 1 }) }
 )

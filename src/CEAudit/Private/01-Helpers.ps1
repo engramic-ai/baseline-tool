@@ -179,26 +179,53 @@ function New-CELockedDirectorySecurity {
 
 function Get-CELockedFolderProblem {
     <#
-        '' when the folder at $Path is one the tool could itself have sealed at birth, or the reason
-        it is not. Read only: never changes owner or permissions. Accepted only when it is not a link,
-        is owned by SYSTEM or Administrators (a standard user can set neither as owner), and its DACL
-        is exactly the locked, protected form (New-CELockedDirectorySecurity) - no inheritance, no
-        extra allow entries, no deny entries. Comparing the whole DACL catches a folder that already
-        existed when CreateDirectory ran (a silent no-op) whose creator may still hold a handle.
+        '' when the folder at $Path is one the tool may keep in place (created locked at birth, or an
+        admin-only folder an administrator has since read or granted a helpdesk group read), or the
+        reason it is not. Read only: never changes owner or permissions. Judged by trust, not by SDDL
+        equality (design rule 1): accepted only when it is not a link, is owned by SYSTEM,
+        Administrators or TrustedInstaller (a standard user can set none of these), grants no SID
+        outside those (and CREATOR OWNER) any write, add, delete, change-permissions or take-ownership
+        right, and carries no deny entry against a trusted SID. So a read-only ACE an admin added is
+        kept (no data loss), while a folder a standard user made or could write - which they could hold
+        a handle on that keeps add-file/WRITE_DAC access after any later lock - is rejected and moved
+        aside. Exact SDDL equality was too strict: it also rejected a folder locked with icacls (which
+        reads back D:PAI, not D:P) and any benign read ACE. Delegates to Get-CEDataPathProblem so the
+        module and the installer's Test-CELockedFolder judge trust the same way.
     #>
     [CmdletBinding()]
     [OutputType([string])]
-    param([Parameter(Mandatory)][string]$Path, [switch]$UsersRead)
-    if (Test-CEReparsePoint -Path $Path) { return "$Path is a link (junction or symbolic link)" }
-    $acl = $null
-    try { $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop } catch { return "the permissions of $Path could not be read" }
-    $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
-    if (@('S-1-5-18', 'S-1-5-32-544') -notcontains $owner) { return "$Path is owned by $owner, not SYSTEM or Administrators" }
-    if (-not $acl.AreAccessRulesProtected) { return "$Path inherits permissions instead of a locked, protected DACL" }
-    $want = (New-CELockedDirectorySecurity -UsersRead:$UsersRead).GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::Access)
-    $got = $acl.GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::Access)
-    if ($got -ne $want) { return "$Path does not have the locked permissions" }
+    param([Parameter(Mandatory)][string]$Path)
+    $problems = @(Get-CEDataPathProblem -Path $Path)
+    if ($problems.Count) { return [string]$problems[0] }
     return ''
+}
+
+function Move-CEDataItemAside {
+    <#
+        Renames a file or folder out of the data root to a quarantine sibling (<path>.untrusted-<guid>)
+        without opening its contents or following a link, so nothing later reads it. Retries a few
+        times with a short back-off: an old-version audit, an admin with a report open, or any process
+        with a handle in the tree can make the first [IO.Directory]::Move fail with a sharing violation,
+        and Intune would then just report the install failed with no hint why. Returns the new path;
+        throws with a clear reason if every attempt fails.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][string]$Path)
+    $aside = '{0}.untrusted-{1}' -f $Path, [guid]::NewGuid().ToString('n')
+    $isDir = [bool]([IO.File]::GetAttributes($Path) -band [IO.FileAttributes]::Directory)
+    $lastErr = $null
+    for ($attempt = 0; $attempt -lt 5; $attempt++) {
+        try {
+            if ($isDir) { [IO.Directory]::Move($Path, $aside) } else { [IO.File]::Move($Path, $aside) }
+            return $aside
+        }
+        catch {
+            $lastErr = $_
+            Start-Sleep -Milliseconds (200 * ($attempt + 1))
+        }
+    }
+    throw "Could not move $Path aside to $aside - a process may have a file or folder open under the data folder ($($lastErr.Exception.Message)). Close it and try again."
 }
 
 function Initialize-CEDataFolder {
@@ -209,10 +236,12 @@ function Initialize-CEDataFolder {
         their data lives in their own profile, so they get a plain folder. An elevated caller on
         Windows gets the folder with its locked, administrator-owned descriptor applied in the one
         call that makes it, then VERIFIES the result and never repairs it: anything already in its
-        place that is not the locked form (a folder or file a standard user made or took over, or a
-        link) is moved aside and the create retried, never written into or taken back in place (its
-        creator may hold a handle that kept the right to re-permission it). An existing folder that is
-        already the locked form is kept, so status.json and reports survive. Returns the path.
+        place that a standard user made, took over or could write - or a link - is moved aside and the
+        create retried, never written into or taken back in place (its creator may hold a handle that
+        kept add-file or WRITE_DAC access after any later lock). An existing folder that is trusted -
+        admin-owned, not a link, with no non-admin write, delete, DAC or owner right and no deny
+        against a trusted SID - is kept, so status.json and reports survive; a benign read-only ACE an
+        administrator added does not force it aside. Returns the path.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -227,9 +256,8 @@ function Initialize-CEDataFolder {
             continue
         }
         if (Test-Path -LiteralPath $Path) {
-            if (-not (Get-CELockedFolderProblem -Path $Path -UsersRead:$UsersRead)) { return $Path }
-            $aside = '{0}.untrusted-{1}' -f $Path, [guid]::NewGuid().ToString('n')
-            if ([IO.File]::GetAttributes($Path) -band [IO.FileAttributes]::Directory) { [IO.Directory]::Move($Path, $aside) } else { [IO.File]::Move($Path, $aside) }
+            if (-not (Get-CELockedFolderProblem -Path $Path)) { return $Path }
+            $aside = Move-CEDataItemAside -Path $Path
             Write-Warning "Moved an untrusted $Path aside to $aside and will make a fresh, locked one."
             continue
         }
@@ -237,12 +265,9 @@ function Initialize-CEDataFolder {
         if ($PSVersionTable.PSVersion.Major -ge 6) { [void][IO.FileSystemAclExtensions]::Create([IO.DirectoryInfo]::new($Path), $security) }
         else { [void][IO.Directory]::CreateDirectory($Path, $security) }
         # Verify what is now on disk; never repair it. A silent no-op over a pre-existing folder is
-        # rejected here (wrong owner or DACL) instead of being re-owned in place.
-        if (-not (Get-CELockedFolderProblem -Path $Path -UsersRead:$UsersRead)) { return $Path }
-        $aside = '{0}.untrusted-{1}' -f $Path, [guid]::NewGuid().ToString('n')
-        if (Test-Path -LiteralPath $Path) {
-            if ([IO.File]::GetAttributes($Path) -band [IO.FileAttributes]::Directory) { [IO.Directory]::Move($Path, $aside) } else { [IO.File]::Move($Path, $aside) }
-        }
+        # rejected here (wrong owner, or a non-admin write/DAC/owner right) instead of being re-owned in place.
+        if (-not (Get-CELockedFolderProblem -Path $Path)) { return $Path }
+        if (Test-Path -LiteralPath $Path) { Move-CEDataItemAside -Path $Path | Out-Null }
     }
     throw "Could not create a locked, administrator-owned data folder at $Path."
 }

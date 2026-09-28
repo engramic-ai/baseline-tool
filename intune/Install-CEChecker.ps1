@@ -79,6 +79,12 @@ $packageRoot = Split-Path -Parent $PSScriptRoot
 if (-not $InstallPath) { $InstallPath = Join-Path $env:ProgramFiles 'EngramicBaseline' }
 $dataRoot = Join-Path $env:ProgramData 'EngramicBaseline'
 $regPath = 'HKLM:\SOFTWARE\EngramicBaseline'
+# The sealed-at-birth marker lives in a SEPARATE key, so uninstall (which deletes $regPath) leaves it
+# unless -RemoveData is given: an uninstall/reinstall or a supersede-with-uninstall then keeps the
+# locked data folder in place instead of moving it aside and losing config overrides, packs and
+# reports. It is a sibling, not a value under $regPath, so Discover-CECompliance does not read it as
+# 'installed' (it treats the mere existence of SOFTWARE\EngramicBaseline as installed).
+$sealRegPath = 'HKLM:\SOFTWARE\EngramicBaseline.DataRoot'
 $taskPath = '\EngramicBaseline\'
 $taskName = 'Audit'
 $userTaskName = 'User probe'
@@ -131,25 +137,43 @@ function New-CEDataDirectorySecurity {
 
 function Test-CELockedFolder {
     <#
-        '' when the folder at $Path is one this install could itself have sealed at birth, or the
-        reason it is not. Read only: it never changes owner or permissions. A folder is accepted only
-        when it is not a link, is owned by SYSTEM or Administrators (a standard user cannot set either
-        as the owner, so a folder they made or took over is rejected here), and its DACL is exactly
-        the locked, protected form (New-CEDataDirectorySecurity): no inheritance, no extra allow
-        entries, no deny entries. Comparing the whole DACL, not just the absence of non-admin allow
-        entries, catches a folder that already existed when CreateDirectory ran (which returns
-        silently and leaves the existing descriptor untouched) whose creator may still hold a handle.
+        '' when the folder at $Path is one this install may keep in place, or the reason it is not.
+        Read only: it never changes owner or permissions. Judged by trust, not by SDDL equality
+        (design rule 1): a folder is accepted only when it is not a link, is owned by SYSTEM,
+        Administrators or TrustedInstaller (a standard user can set none of these, so a folder they
+        made or took over is rejected here), grants no SID outside those (and CREATOR OWNER) any
+        write, add, delete, change-permissions or take-ownership right, and carries no deny entry
+        against a trusted SID. So a folder a user made or could write - on which they may hold an
+        add-file or WRITE_DAC handle that still works after a later lock - is rejected, while a
+        read-only ACE an administrator added (browsing the folder, or granting a helpdesk group read)
+        is kept, and so is a folder locked with icacls (which reads back D:PAI, not D:P). Exact SDDL
+        equality was stricter than design rule 1 and caused silent data loss. Kept identical in intent
+        to the module's Get-CELockedFolderProblem / Get-CEDataPathProblem.
     #>
-    param([string]$Path, [switch]$UsersRead)
+    param([string]$Path)
+    # SYSTEM, Administrators, TrustedInstaller.
+    $trusted = @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
+    # Rights that let a principal change, delete or re-permission it, incl. GENERIC_WRITE / GENERIC_ALL.
+    $writeRights = 2 -bor 4 -bor 16 -bor 64 -bor 256 -bor 65536 -bor 262144 -bor 524288 -bor 0x40000000 -bor 0x10000000
     if (Test-CEReparsePoint -Path $Path) { return "$Path is a link (junction or symbolic link)" }
     $acl = $null
     try { $acl = Get-Acl -LiteralPath $Path } catch { return "the permissions of $Path could not be read" }
     $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
-    if (@('S-1-5-18', 'S-1-5-32-544') -notcontains $owner) { return "$Path is owned by $owner, not SYSTEM or Administrators" }
-    if (-not $acl.AreAccessRulesProtected) { return "$Path inherits permissions instead of a locked, protected DACL" }
-    $want = (New-CEDataDirectorySecurity -UsersRead:$UsersRead).GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::Access)
-    $got = $acl.GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::Access)
-    if ($got -ne $want) { return "$Path does not have the locked permissions (expected $want, found $got)" }
+    if ($trusted -notcontains $owner) { return "$Path is owned by $owner, not SYSTEM or Administrators" }
+    foreach ($rule in @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))) {
+        $sid = "$($rule.IdentityReference)"
+        if ("$($rule.AccessControlType)" -ne 'Allow') {
+            # A deny against SYSTEM/Administrators/TrustedInstaller could stop the tool replacing a
+            # forged file, so treat it as tampering.
+            if ($trusted -contains $sid) { return "$Path denies $sid, so the tool may be unable to replace it" }
+            continue
+        }
+        # CREATOR OWNER only applies to new items, which only administrators can create in a locked folder.
+        if ($trusted -contains $sid -or $sid -eq 'S-1-3-0') { continue }
+        $rights = [long]0
+        try { $rights = [long]$rule.FileSystemRights } catch { $rights = [long]::MaxValue }
+        if ($rights -band $writeRights) { return "$Path can be changed by $sid, not only administrators" }
+    }
     return ''
 }
 
@@ -179,13 +203,26 @@ function Move-CEItemAside {
         Renames a file or folder out of the way to a quarantine sibling (<path>.untrusted-<guid>),
         so nothing later acts on it. The rename touches only the item itself, never what is inside
         it, and never follows a link. Nothing ever reads the moved-aside item; it is for an
-        administrator to check by hand and delete. Returns the new path.
+        administrator to check by hand and delete. Retries a few times with a short back-off: an
+        old-version audit, or any process with a handle open under the data folder, can make the
+        first rename fail with a sharing violation, and Intune would then just report the install
+        failed with no hint why. Returns the new path; throws with a clear reason on final failure.
     #>
     param([string]$Path)
     $aside = '{0}.untrusted-{1}' -f $Path, [guid]::NewGuid().ToString('n')
-    if ([IO.File]::GetAttributes($Path) -band [IO.FileAttributes]::Directory) { [IO.Directory]::Move($Path, $aside) }
-    else { [IO.File]::Move($Path, $aside) }
-    return $aside
+    $isDir = [bool]([IO.File]::GetAttributes($Path) -band [IO.FileAttributes]::Directory)
+    $lastErr = $null
+    for ($attempt = 0; $attempt -lt 5; $attempt++) {
+        try {
+            if ($isDir) { [IO.Directory]::Move($Path, $aside) } else { [IO.File]::Move($Path, $aside) }
+            return $aside
+        }
+        catch {
+            $lastErr = $_
+            Start-Sleep -Milliseconds (200 * ($attempt + 1))
+        }
+    }
+    throw "Could not move $Path aside to $aside - a process may have a file or folder open under the data folder ($($lastErr.Exception.Message)). Close it (or wait for a running audit to finish) and reinstall."
 }
 
 function Get-CERegistryString {
@@ -203,17 +240,18 @@ function New-CELockedDirectory {
         write it or add to it, and the owner is never changed afterwards. Both calls return silently
         if the folder already exists, leaving the existing descriptor untouched, so after creating it
         this VERIFIES the result with Test-CELockedFolder and never repairs it. Anything already there
-        that isn't the locked form - a folder or file a user made, one taken over, or a link - is moved
-        aside and the create retried a bounded number of times, then the install fails. A folder is
-        never taken back in place: its creator may hold a handle opened while they owned it, which
-        keeps the right to re-permission it even after takeown and icacls (verified Windows behaviour).
-        An existing folder that is already the locked form is kept, so a re-run preserves reports.
+        that a user made, took over or could write - or a link - is moved aside and the create retried
+        a bounded number of times, then the install fails. A folder is never taken back in place: its
+        creator may hold a handle opened while they owned it, which keeps add-file or WRITE_DAC access
+        even after takeown and icacls (verified Windows behaviour). An existing folder that is trusted
+        (admin-owned, not a link, no non-admin write/DAC/owner right) is kept, so a re-run preserves
+        reports; a benign read-only ACE an admin added does not force it aside.
     #>
     param([string]$Path, [switch]$UsersRead)
     for ($attempt = 0; $attempt -lt 5; $attempt++) {
         if (Test-CEReparsePoint -Path $Path) { Remove-CELink -Path $Path }
         if (Test-Path -LiteralPath $Path) {
-            $problem = Test-CELockedFolder -Path $Path -UsersRead:$UsersRead
+            $problem = Test-CELockedFolder -Path $Path
             if (-not $problem) { return }
             Write-Warning "$problem, so a standard user may control it. Moving it aside and creating a fresh, locked folder in its place."
             Move-CEItemAside -Path $Path | Out-Null
@@ -223,8 +261,8 @@ function New-CELockedDirectory {
         if ($PSVersionTable.PSVersion.Major -ge 6) { [void][IO.FileSystemAclExtensions]::Create([IO.DirectoryInfo]::new($Path), $security) }
         else { [void][IO.Directory]::CreateDirectory($Path, $security) }
         # Verify what is now on disk; never repair it. If the folder pre-existed, the create was a
-        # silent no-op and this rejects it (wrong owner or DACL) rather than re-owning a user's folder.
-        $problem = Test-CELockedFolder -Path $Path -UsersRead:$UsersRead
+        # silent no-op and this rejects it (wrong owner, or a non-admin write right) rather than re-owning it.
+        $problem = Test-CELockedFolder -Path $Path
         if (-not $problem) { return }
         Write-Warning "The folder at $Path is not the one this install created ($problem); moving it aside and retrying."
         Move-CEItemAside -Path $Path | Out-Null
@@ -237,17 +275,21 @@ function Initialize-CEDataRoot {
         Establishes the data folder as a locked, administrator-owned folder.
 
         A link found in its place is removed as a link. An existing real folder is KEPT in place only
-        when this version sealed it at birth: HKLM\SOFTWARE\EngramicBaseline\DataRootSealed (which
-        only administrators can write) records that a locked root was created, and Test-CELockedFolder
-        confirms it is still the locked form owned by SYSTEM or Administrators. Such a root was never
-        writable by a standard user, so no one holds a handle to it, and keeping it preserves the
-        admin's config overrides, installed packs and report history across upgrades.
+        when a locked-at-birth version sealed it: the marker HKLM\SOFTWARE\EngramicBaseline.DataRoot
+        \DataRootSealed (which only administrators can write, and which uninstall leaves in place
+        unless -RemoveData is given, so an uninstall/reinstall or supersede does not lose the data)
+        records that a locked root was created, and Test-CELockedFolder confirms it is still trusted
+        (admin-owned, not a link, no non-admin write/DAC/owner right). Such a root was never writable
+        by a standard user, so no one holds a handle to it, and keeping it preserves the admin's config
+        overrides, installed packs and report history across upgrades.
 
-        Anything else - a folder a standard user made, one an older version re-owned in place (which
-        left no marker, so its creator may hold a handle), or one with the wrong permissions - is
-        moved aside whole, never taken back in place, and a fresh locked folder made instead. That
-        one-time move happens only when upgrading from a version that predates the marker. Reports,
-        logs, config overrides and packs in a moved-aside folder are not carried over.
+        Anything else - a folder a standard user made or could write, one an older version re-owned in
+        place (which left no marker, so its creator may hold a handle), or one whose owner is wrong - is
+        moved aside whole, never taken back in place, and a fresh locked folder made instead. Reports,
+        logs, config overrides and packs in a moved-aside folder are not carried over: a folder that
+        could ever have been user-writable cannot be trusted to keep, because a handle opened with
+        add-file rights still creates children after a later lock (verified Windows behaviour), so the
+        data is rebuilt by the next audit rather than copied out of an untrusted tree.
     #>
     param([string]$Path, [string]$RegPath)
     if (Test-CEReparsePoint -Path $Path) { Remove-CELink -Path $Path }
@@ -267,6 +309,7 @@ function Initialize-CEDataRoot {
 
 $auditMutex = $null
 $haveMutex = $false
+$disabledAudit = $false
 
 try {
     $manifest = Import-PowerShellDataFile -Path (Join-Path $packageRoot 'src\CEAudit\CEAudit.psd1')
@@ -285,13 +328,18 @@ try {
     }
 
     # --- Don't set up the data folder underneath a running audit -------------
-    # The scheduled task ran the audit with the data folder as more than a name (its working
-    # directory, an open transcript), so renaming the root would fail with a sharing violation
-    # and the install would report as failed. Stop the task, then take the audit mutex - which
-    # also blocks a manual run or the Remediations audit - and hold it until the folders are
-    # locked. The audit takes the same mutex before it writes anything under the data folder.
+    # An old-version audit that starts while the installer waits (start-up trigger, StartWhenAvailable
+    # catch-up, a restart retry) would take its working directory in the data root and block the rename
+    # with a sharing violation. Stopping the task does not prevent a new start, so DISABLE it first,
+    # then stop any running instance, then take the audit mutex - which also blocks a manual run or the
+    # Remediations audit - and hold it until the folders are locked. The task is re-registered (enabled)
+    # at the end, or re-enabled in the finally if the install fails first. The audit takes the same
+    # mutex before it writes anything under the data folder.
     $running = Get-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction SilentlyContinue
-    if ($running -and $running.State -eq 'Running') { $running | Stop-ScheduledTask -ErrorAction SilentlyContinue }
+    if ($running) {
+        try { $running | Disable-ScheduledTask -ErrorAction SilentlyContinue | Out-Null; $disabledAudit = $true } catch { $null = $_ }
+        if ($running.State -eq 'Running') { $running | Stop-ScheduledTask -ErrorAction SilentlyContinue }
+    }
     $auditMutex = New-Object System.Threading.Mutex($false, 'Global\EngramicBaselineAudit')
     try { $haveMutex = $auditMutex.WaitOne([TimeSpan]::FromMinutes(5)) }
     catch [System.Threading.AbandonedMutexException] { $haveMutex = $true }
@@ -304,14 +352,15 @@ try {
     # call that creates them, so there is never a moment when a standard user can write them or add
     # to them. An existing root this version sealed is kept (config, packs and reports preserved);
     # anything else is moved aside, never taken back in place (Initialize-CEDataRoot says why).
-    Initialize-CEDataRoot -Path $dataRoot -RegPath $regPath
+    Initialize-CEDataRoot -Path $dataRoot -RegPath $sealRegPath
     # Users may read config overrides (the desktop app uses them); status, reports and the rest stay admin-only.
     foreach ($name in @('logs', 'reports', 'cache', 'packs')) { New-CELockedDirectory -Path (Join-Path $dataRoot $name) }
     New-CELockedDirectory -Path (Join-Path $dataRoot 'config') -UsersRead
-    # Record that this version sealed the root at birth, so a later install keeps it in place instead
-    # of moving it aside (only administrators can write here, so a standard user cannot forge it).
-    if (-not (Test-Path -LiteralPath $regPath)) { New-Item -Path $regPath -Force | Out-Null }
-    New-ItemProperty -Path $regPath -Name 'DataRootSealed' -Value $version -PropertyType String -Force | Out-Null
+    # Record that a locked root was sealed at birth, so a later install keeps it in place instead of
+    # moving it aside. Only administrators can write here, so a standard user cannot forge it; it is a
+    # key separate from $regPath so uninstall can leave it unless -RemoveData is given.
+    if (-not (Test-Path -LiteralPath $sealRegPath)) { New-Item -Path $sealRegPath -Force | Out-Null }
+    New-ItemProperty -Path $sealRegPath -Name 'DataRootSealed' -Value $version -PropertyType String -Force | Out-Null
     # Log only once the data folder is locked, so no one else can read or plant the log.
     Start-Transcript -LiteralPath $log | Out-Null
     $transcribing = $true
@@ -445,5 +494,10 @@ finally {
     if ($transcribing) { Stop-Transcript | Out-Null }
     if ($haveMutex) { try { $auditMutex.ReleaseMutex() } catch { $null = $_ } }
     if ($auditMutex) { $auditMutex.Dispose() }
+    # Re-enable the audit task if we disabled it. Re-registration above already left it enabled; this
+    # covers -NoScheduledTask and a failure before re-registration, so the device keeps auditing.
+    if ($disabledAudit) {
+        try { Get-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction SilentlyContinue | Enable-ScheduledTask -ErrorAction SilentlyContinue | Out-Null } catch { $null = $_ }
+    }
 }
 exit $exit

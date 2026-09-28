@@ -59,17 +59,27 @@ if (-not $haveMutex) {
 
 $exitCode = 0
 $transcribing = $false
+# Whether all three data folders were set up and are trusted. Until this is true, $DataRoot, $reportRoot
+# and $logRoot may be untrusted (a folder or junction a standard user controls), so the catch and finally
+# must not write into them or delete through them.
+$foldersReady = $false
 try {
     # Create the data root and its folders the locked way the installer does, INSIDE the error
     # handling: a root this audit makes before the installer runs (an elevated first run) is never
     # briefly writable by a standard user, and a failure here (e.g. a tampered root that has to be
-    # moved aside) is recorded in last-error.json instead of crashing the task silently.
-    foreach ($d in @($DataRoot, $reportRoot, $logRoot)) { Initialize-CEDataFolder -Path $d | Out-Null }
+    # moved aside) is recorded in last-error.json instead of crashing the task silently. Capture any
+    # move-aside warning so it can be written into the transcript below (Initialize runs before it).
+    $setupNotices = @()
+    foreach ($d in @($DataRoot, $reportRoot, $logRoot)) { Initialize-CEDataFolder -Path $d -WarningVariable +setupNotices -WarningAction SilentlyContinue | Out-Null }
+    $foldersReady = $true
 
     $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
     $transcript = Join-Path $logRoot "audit-$stamp.log"
     Start-Transcript -LiteralPath $transcript | Out-Null
     $transcribing = $true
+    # An untrusted folder moved aside is real (possible) data loss, so record it in the transcript, not
+    # only as a warning before logging started.
+    foreach ($n in @($setupNotices)) { if ("$n") { Write-Warning "Data folder set-up: $n" } }
 
     $ctx = Get-CEDeviceContext
     Write-Host "Audit started on $($ctx.ComputerName) as $($ctx.RunningAs) (tool $(Get-CEToolVersion))"
@@ -96,30 +106,35 @@ try {
 catch {
     $exitCode = 1
     Write-Warning "Audit failed: $($_.Exception.Message)"
-    # Record the failure, but only into a data root that was set up: if Initialize-CEDataFolder itself
-    # failed (a tampered root), don't create last-error.json in a folder we don't trust.
-    try {
-        if (Test-Path -LiteralPath $DataRoot -PathType Container) {
+    # Record the failure ONLY into a data root that was set up and is trusted. If Initialize-CEDataFolder
+    # itself failed - which is exactly when $DataRoot may be a folder or junction a standard user controls
+    # - do not write last-error.json (a SYSTEM write could land through the user's junction). The task's
+    # non-zero exit and the stale status.json are the signal instead.
+    if ($foldersReady) {
+        try {
             [pscustomobject]@{
                 Time    = (Get-Date).ToUniversalTime().ToString('o')
                 Message = $_.Exception.Message
                 Where   = [string]$_.InvocationInfo.PositionMessage
             } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $DataRoot 'last-error.json') -Encoding UTF8
         }
+        catch { Write-Warning "Could not record the failure: $($_.Exception.Message)" }
     }
-    catch { Write-Warning "Could not record the failure: $($_.Exception.Message)" }
 }
 finally {
     if ($transcribing) { Stop-Transcript | Out-Null }
-    # Housekeeping: keep the newest reports and logs. Delete old report folders with a recursive
-    # delete that never follows a link (Remove-Item -Recurse follows junctions on 5.1); this runs as
-    # SYSTEM under the data folder.
-    Get-ChildItem -LiteralPath $reportRoot -Directory -ErrorAction SilentlyContinue |
-        Sort-Object Name -Descending | Select-Object -Skip $KeepReports |
-        ForEach-Object { try { Remove-CEDataTree -Path $_.FullName } catch { Write-Warning "Could not remove old report folder $($_.FullName): $_" } }
-    Get-ChildItem -LiteralPath $logRoot -Filter 'audit-*.log' -File -ErrorAction SilentlyContinue |
-        Sort-Object Name -Descending | Select-Object -Skip ($KeepReports * 2) |
-        Remove-Item -Force -ErrorAction SilentlyContinue
+    # Housekeeping: keep the newest reports and logs. Only when the folders were set up and are trusted
+    # - otherwise $reportRoot / $logRoot may be a junction a standard user controls, and following it
+    # would delete through it. Delete old report folders with a recursive delete that never follows a
+    # link (Remove-Item -Recurse follows junctions on 5.1); this runs as SYSTEM under the data folder.
+    if ($foldersReady) {
+        Get-ChildItem -LiteralPath $reportRoot -Directory -ErrorAction SilentlyContinue |
+            Sort-Object Name -Descending | Select-Object -Skip $KeepReports |
+            ForEach-Object { try { Remove-CEDataTree -Path $_.FullName } catch { Write-Warning "Could not remove old report folder $($_.FullName): $_" } }
+        Get-ChildItem -LiteralPath $logRoot -Filter 'audit-*.log' -File -ErrorAction SilentlyContinue |
+            Sort-Object Name -Descending | Select-Object -Skip ($KeepReports * 2) |
+            Remove-Item -Force -ErrorAction SilentlyContinue
+    }
     if ($haveMutex) { try { $mutex.ReleaseMutex() } catch { $null = $_ } }
     $mutex.Dispose()
 }

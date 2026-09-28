@@ -107,26 +107,14 @@ function ConvertTo-CEDateOnly {
 }
 
 function Invoke-CEHttpGet {
-    <# Small GET wrapper (Windows PowerShell 5.1 and pwsh) that reports status codes instead of throwing. #>
+    <#
+        GET through the shared service client (Private\14-ServiceClient.ps1), which applies the
+        proxy settings. Throws on a network failure, as the firmware catalog client expects.
+    #>
     param([Parameter(Mandatory)][string]$Uri, [string]$ETag, [int]$TimeoutSeconds = 20)
-    Add-Type -AssemblyName System.Net.Http -ErrorAction SilentlyContinue
-    if ($PSVersionTable.PSVersion.Major -lt 6) {
-        [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-    }
-    $client = New-Object System.Net.Http.HttpClient
-    try {
-        $client.Timeout = [TimeSpan]::FromSeconds($TimeoutSeconds)
-        $request = New-Object System.Net.Http.HttpRequestMessage([System.Net.Http.HttpMethod]::Get, $Uri)
-        [void]$request.Headers.TryAddWithoutValidation('User-Agent', "EngramicBaseline/$(Get-CEToolVersion)")
-        if ($ETag) { [void]$request.Headers.TryAddWithoutValidation('If-None-Match', $ETag) }
-        $response = $client.SendAsync($request).GetAwaiter().GetResult()
-        $body = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
-        $tag = if ($response.Headers.ETag) { $response.Headers.ETag.ToString() } else { '' }
-        return [pscustomobject]@{ StatusCode = [int]$response.StatusCode; Body = $body; ETag = $tag }
-    }
-    finally {
-        $client.Dispose()
-    }
+    $response = Invoke-CEHttpRequest -Uri $Uri -ETag $ETag -TimeoutSeconds ([math]::Max(1, $TimeoutSeconds)) -MaxBytes 4194304
+    if ($response.Error) { throw $response.Error }
+    return [pscustomobject]@{ StatusCode = $response.StatusCode; Body = $response.Body; ETag = $response.ETag }
 }
 
 function Test-CEFirmwareCatalogRecord {
@@ -161,12 +149,10 @@ function Get-CEFirmwareCatalogRecord {
     }
     $result.Key = $key
 
-    $uri = $null
     $vendorSeg = [Uri]::EscapeDataString([string]$key.Vendor)
     $idSeg = [Uri]::EscapeDataString([string]$key.Id)
-    try { $uri = [Uri]("$($base.TrimEnd('/'))/v1/firmware/$vendorSeg/$idSeg") } catch { $uri = $null }
-    $local = $uri -and @('localhost', '127.0.0.1', '::1', '[::1]') -contains $uri.Host
-    if (-not $uri -or -not ($uri.Scheme -eq 'https' -or ($uri.Scheme -eq 'http' -and $local))) {
+    $uri = (Resolve-CEServiceUri -BaseUrl $base -Path "v1/firmware/$vendorSeg/$idSeg").Uri
+    if (-not $uri) {
         $result.Status = 'Error'
         $result.Message = "Firmware catalog baseUrl must be https (http only for localhost): $base"
         return $result

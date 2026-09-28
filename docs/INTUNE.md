@@ -45,7 +45,11 @@ The audit itself runs locally. One check calls out: **SU-08** asks the firmware 
 
 - **What is sent:** only the vendor and the 4-character model id in the URL, e.g. `GET /v1/firmware/dell/0CF1`. No serial number, device name, user or audit results.
 - **When:** at most every 12 hours per device (answers are cached in `%ProgramData%\EngramicBaseline\cache`), and only for Dell, HP and Lenovo hardware that isn't a virtual machine.
-- **Firewall and proxy:** allow outbound HTTPS (TCP 443) to `baseline.engramic.ai`. The audit runs as **SYSTEM**, which doesn't pick up proxy settings configured for signed-in users, so on networks that only reach the internet through a proxy, set a machine-wide proxy or allow the domain directly.
+- **Firewall and proxy:** allow outbound HTTPS (TCP 443) to `baseline.engramic.ai`. The audit runs as **SYSTEM**, which doesn't pick up proxy settings configured for signed-in users. As SYSTEM it uses the machine's WinHTTP proxy (`netsh winhttp set proxy`, including its bypass list) when one is set. Otherwise deploy `%ProgramData%\EngramicBaseline\config\network.json` with `proxyUrl` (http or https), or allow the domain directly. Add `"proxyUseDefaultCredentials": true` only if that proxy needs Windows sign-in; as SYSTEM that is the computer account. The WinHTTP proxy always gets it, since only an administrator can set it.
+
+  ```json
+  { "proxyUrl": "http://proxy.contoso.com:8080", "proxyUseDefaultCredentials": false, "useWinHttpProxyWhenSystem": true }
+  ```
 - **If it can't connect:** nothing fails. SU-08 uses the cached answer if it has one, otherwise it falls back to judging the BIOS by its release date, and records the reason in the finding's evidence.
 - **To turn it off** or point it at your own firmware catalog service, deploy `%ProgramData%\EngramicBaseline\config\firmware-catalog.json` with `baseUrl` set to `""` or to your own https address. Like every file in that folder, it replaces the packaged copy rather than merging with it, so include every setting:
 

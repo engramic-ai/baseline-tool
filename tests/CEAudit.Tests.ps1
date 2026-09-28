@@ -56,7 +56,9 @@ BeforeAll {
         'Enable-LocalUser', 'Disable-LocalUser', 'Add-MpPreference', 'Remove-MpPreference', 'Set-MpPreference', 'Update-MpSignature',
         'Enable-WindowsOptionalFeature', 'Disable-WindowsOptionalFeature', 'Suspend-BitLocker', 'Start-ScheduledTask',
         'Start-Process', 'Invoke-Expression', 'New-EventLog', 'Write-EventLog',
-        'Set-CESecurityPolicyValue', 'Invoke-CENative'
+        'Set-CESecurityPolicyValue', 'Invoke-CENative',
+        # The one way the module reaches a service over the network.
+        'Invoke-CEHttpRequest'
     )
     function global:Set-TestTripwires {
         # Re-run after any Import-Module -Force: a fresh module instance has no mocks.
@@ -1971,6 +1973,125 @@ Describe 'Firmware catalog (SU-08 with the catalog service)' {
 
             Set-TestCatalog -Status 'NotFound' -Record $null
             (& $script:firmwareOf).Actual | Should -Match 'months ago'
+        }
+    }
+
+    Context 'service client and proxy' {
+        BeforeAll {
+            function global:New-TestWinHttpBlob {
+                param([int]$Flags, [string]$Proxy = '', [string]$Bypass = '')
+                $list = New-Object System.Collections.ArrayList
+                foreach ($n in @(0x28, 0, $Flags)) { $list.AddRange([BitConverter]::GetBytes([uint32]$n)) }
+                $p = [Text.Encoding]::ASCII.GetBytes($Proxy)
+                $list.AddRange([BitConverter]::GetBytes([uint32]$p.Length)); $list.AddRange($p)
+                $b = [Text.Encoding]::ASCII.GetBytes($Bypass)
+                $list.AddRange([BitConverter]::GetBytes([uint32]$b.Length)); $list.AddRange($b)
+                , [byte[]]$list.ToArray()
+            }
+        }
+
+        It 'accepts https, and plain http only for this device' {
+            InModuleScope CEAudit {
+                (Resolve-CEServiceUri -BaseUrl 'https://baseline.engramic.ai/' -Path 'v1/firmware/dell/0CF1').Uri.AbsoluteUri | Should -Be 'https://baseline.engramic.ai/v1/firmware/dell/0CF1'
+                (Resolve-CEServiceUri -BaseUrl 'http://localhost:8787' -Path '/v1/firmware/dell/0CF1').Uri.AbsoluteUri | Should -Be 'http://localhost:8787/v1/firmware/dell/0CF1'
+                (Resolve-CEServiceUri -BaseUrl 'http://baseline.engramic.ai' -Path 'x').Uri | Should -BeNullOrEmpty
+                (Resolve-CEServiceUri -BaseUrl 'http://baseline.engramic.ai' -Path 'x').Error | Should -Match 'https'
+                (Resolve-CEServiceUri -BaseUrl '' -Path 'x').Uri | Should -BeNullOrEmpty
+                (Resolve-CEServiceUri -BaseUrl 'not a url' -Path 'x').Uri | Should -BeNullOrEmpty
+                (Resolve-CEServiceUri -BaseUrl 'file:///C:/x' -Path 'x').Uri | Should -BeNullOrEmpty
+            }
+        }
+
+        It 'parses the machine WinHTTP proxy setting' {
+            InModuleScope CEAudit {
+                ConvertFrom-CEWinHttpProxyBlob -Blob (New-TestWinHttpBlob -Flags 1) | Should -BeNullOrEmpty -Because 'direct access'
+                ConvertFrom-CEWinHttpProxyBlob -Blob ([byte[]]@(1, 2, 3)) | Should -BeNullOrEmpty
+                $one = ConvertFrom-CEWinHttpProxyBlob -Blob (New-TestWinHttpBlob -Flags 3 -Proxy 'proxy.contoso.com:8080')
+                $one.Proxy | Should -Be 'proxy.contoso.com:8080'
+                @($one.Bypass).Count | Should -Be 0
+                (Select-CEWinHttpProxy -Proxy $one.Proxy).AbsoluteUri | Should -Be 'http://proxy.contoso.com:8080/'
+                $schemes = ConvertFrom-CEWinHttpProxyBlob -Blob (New-TestWinHttpBlob -Flags 3 -Proxy 'http=web.contoso.com:80;https=secure.contoso.com:8443' -Bypass '<local>;*.contoso.com')
+                (Select-CEWinHttpProxy -Proxy $schemes.Proxy).Authority | Should -Be 'secure.contoso.com:8443'
+                (Select-CEWinHttpProxy -Proxy 'http=web.contoso.com:80').Authority | Should -Be 'web.contoso.com'
+                @($schemes.Bypass) | Should -Be @('<local>', '*.contoso.com')
+                Test-CEProxyBypass -HostName 'intranet' -Bypass $schemes.Bypass | Should -BeTrue
+                Test-CEProxyBypass -HostName 'files.contoso.com' -Bypass $schemes.Bypass | Should -BeTrue
+                Test-CEProxyBypass -HostName 'baseline.engramic.ai' -Bypass $schemes.Bypass | Should -BeFalse
+            }
+        }
+
+        It 'uses network.json first, then the WinHTTP proxy only as SYSTEM' {
+            InModuleScope CEAudit {
+                $saved = (Get-CEConfig).network
+                try {
+                    $uri = [Uri]'https://baseline.engramic.ai/v1/firmware/dell/0CF1'
+                    Mock Get-CEWinHttpProxyBlob { New-TestWinHttpBlob -Flags 3 -Proxy 'proxy.contoso.com:8080' -Bypass '<local>' }
+                    (Get-CEConfig).network = [pscustomobject]@{ proxyUrl = ''; useWinHttpProxyWhenSystem = $true }
+                    Mock Test-CEIsSystem { $false }
+                    (Get-CEProxySetting -Uri $uri).Mode | Should -Be 'System' -Because 'a user keeps their own proxy settings'
+                    Mock Test-CEIsSystem { $true }
+                    $p = Get-CEProxySetting -Uri $uri
+                    $p.Mode | Should -Be 'Proxy'
+                    $p.Address.Authority | Should -Be 'proxy.contoso.com:8080'
+                    (Get-CEProxySetting -Uri ([Uri]'http://localhost:8787/x')).Mode | Should -Be 'Direct' -Because '<local> covers names without a dot'
+                    (Get-CEConfig).network = [pscustomobject]@{ proxyUrl = ''; useWinHttpProxyWhenSystem = $false }
+                    (Get-CEProxySetting -Uri $uri).Mode | Should -Be 'System'
+                    $p.UseDefaultCredentials | Should -BeTrue -Because 'only an administrator can set the WinHTTP proxy'
+                    (Get-CEConfig).network = [pscustomobject]@{ proxyUrl = 'http://configured.contoso.com:3128'; useWinHttpProxyWhenSystem = $true }
+                    $configured = Get-CEProxySetting -Uri $uri
+                    $configured.Address.Authority | Should -Be 'configured.contoso.com:3128'
+                    $configured.UseDefaultCredentials | Should -BeFalse -Because 'a proxy named in a config file gets no Windows sign-in unless asked'
+                    (Get-CEConfig).network = [pscustomobject]@{ proxyUrl = 'http://configured.contoso.com:3128'; proxyUseDefaultCredentials = $true }
+                    (Get-CEProxySetting -Uri $uri).UseDefaultCredentials | Should -BeTrue
+                    (Get-CEConfig).network = [pscustomobject]@{ proxyUrl = 'http://configured.contoso.com:3128'; proxyUseDefaultCredentials = 'yes' }
+                    (Get-CEProxySetting -Uri $uri).UseDefaultCredentials | Should -BeFalse -Because 'only JSON true turns it on'
+                    (Get-CEConfig).network = [pscustomobject]@{ proxyUrl = 'socks5://x:1080' }
+                    (Get-CEProxySetting -Uri $uri -WarningAction SilentlyContinue).Address.Authority | Should -Be 'proxy.contoso.com:8080'
+                }
+                finally { (Get-CEConfig).network = $saved }
+            }
+        }
+
+        It 'ships network.json with no proxy and the WinHTTP fallback on' {
+            $cfg = Get-Content (Join-Path (Join-Path $script:RepoRoot 'config') 'network.json') -Raw | ConvertFrom-Json
+            $cfg.proxyUrl | Should -Be ''
+            $cfg.proxyUseDefaultCredentials | Should -BeFalse
+            $cfg.useWinHttpProxyWhenSystem | Should -BeTrue
+        }
+
+        It 'keeps the firmware catalog wrapper: throws on network errors with the proxy hint' {
+            InModuleScope CEAudit {
+                Mock Invoke-CEHttpRequest { @{ StatusCode = 0; Body = ''; ETag = ''; Error = 'No such host is known. If this device uses a proxy, set proxyUrl in network.json.' } }
+                { Invoke-CEHttpGet -Uri 'https://baseline.engramic.ai/v1/firmware/dell/0CF1' } | Should -Throw '*proxyUrl in network.json*'
+                Mock Invoke-CEHttpRequest { @{ StatusCode = 304; Body = ''; ETag = '"abc"'; Error = '' } }
+                $r = Invoke-CEHttpGet -Uri 'https://baseline.engramic.ai/v1/firmware/dell/0CF1' -ETag '"abc"'
+                $r.StatusCode | Should -Be 304
+                $r.ETag | Should -Be '"abc"'
+                Should -Invoke Invoke-CEHttpRequest -Times 1 -Exactly -ParameterFilter { $ETag -eq '"abc"' -and $MaxBytes -eq 4194304 }
+            }
+        }
+
+        It 'reports a network failure as data, never an exception' {
+            InModuleScope CEAudit {
+                # The real function (the tripwire mock stands in front of it): nothing listens on port 1.
+                $real = ${function:Invoke-CEHttpRequest}
+                $r = & $real -Uri 'http://localhost:1/v1/firmware/dell/0CF1' -TimeoutSeconds 5
+                $r.StatusCode | Should -Be 0
+                $r.Error | Should -Match 'proxyUrl in network\.json'
+            }
+        }
+
+        It 'sends every service request through the shared client' {
+            # One place applies the proxy, TLS 1.2 on Windows PowerShell 5.1 and the size limits.
+            $src = Join-Path (Join-Path $script:RepoRoot 'src') 'CEAudit'
+            $problems = foreach ($file in Get-ChildItem -Path $src -Recurse -Filter '*.ps1') {
+                if ($file.Name -eq '14-ServiceClient.ps1') { continue }
+                $text = Get-Content -LiteralPath $file.FullName -Raw
+                foreach ($pattern in @('Net\.Http\.HttpClient\b', 'Net\.WebClient\b', '\bInvoke-WebRequest\b', '\bInvoke-RestMethod\b')) {
+                    if ($text -match $pattern) { "$($file.Name) matches $pattern" }
+                }
+            }
+            @($problems) -join "`n" | Should -BeNullOrEmpty
         }
     }
 }

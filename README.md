@@ -212,6 +212,7 @@ Installed apps such as OneDrive, Dropbox, Slack and Xero are detected and listed
 | `config/thresholds.json` | Patch window (14 days), lockout (10), password length (12), PIN length (6), screen lock (900 s), signature age, firmware age warning (730 days) and more |
 | `config/secure-boot.json` | Secure Boot certificates NC-08 expects, the expiry dates of the 2011 CAs they replace, and the servicing event IDs it reads |
 | `config/firmware-catalog.json` | Address of the hosted firmware catalog service. SU-08 compares the installed BIOS with the latest release for the model. On by default (`https://baseline.engramic.ai`); set `baseUrl` to `""` to turn it off |
+| `config/network.json` | Proxy for the tool's own HTTPS requests (the firmware catalog). Empty `proxyUrl` uses the system default; audits running as SYSTEM then use the machine's WinHTTP proxy (`netsh winhttp set proxy`). A `proxyUrl` proxy gets the device's Windows sign-in only with `proxyUseDefaultCredentials: true` |
 | `config/av-products.json` | Security products MP-01 recognises from their service and driver names (25 products), and whether each blocks malware or only detects it. Add products your organisation uses |
 | `config/tpm-firmware-advisories.json` | TPM firmware versions affected by known vulnerabilities, used by SU-08. Review it when new TPM advisories are published |
 | `config/os-lifecycle.json` | Windows 11 end-of-servicing dates by release and edition. **Review this periodically**: SU-01 warns when it's more than 90 days old |

@@ -377,10 +377,41 @@ Describe 'Module structure' {
     }
 
     It 'source files are ASCII only (Windows PowerShell 5.1 safe)' {
-        $files = Get-ChildItem -Path $script:RepoRoot -Recurse -Include *.ps1, *.psm1, *.psd1 | Where-Object { $_.FullName -notmatch '[\\/]output[\\/]' }
+        # The files git tracks: git-ignored output is not source (a sandbox run leaves its step scripts,
+        # UTF-8 with a byte order mark, under build\; a signed release copy is there too).
+        $extensions = @('.ps1', '.psm1', '.psd1')
+        $files = $null
+        $git = @(Get-Command git -CommandType Application -ErrorAction SilentlyContinue)
+        if ($git.Count) {
+            $listed = & { $ErrorActionPreference = 'Continue'; & $git[0].Source -C $script:RepoRoot -c core.quotepath=off ls-files 2>$null }
+            if ($LASTEXITCODE -eq 0 -and @($listed).Count) {
+                $files = @($listed | Where-Object { $extensions -contains [IO.Path]::GetExtension($_).ToLowerInvariant() } |
+                    ForEach-Object { Join-Path $script:RepoRoot $_ } | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf })
+            }
+        }
+        if ($null -eq $files) {
+            # No usable git (the sandbox CI copies the tree without .git; Windows git cannot read a worktree
+            # made from WSL): walk the tree, leaving out what .gitignore names without wildcards - build\,
+            # output\ and a locally installed packs\ among them. 'name/' is a folder at any depth, '/name/'
+            # one at the top of the repository, and 'folder/file' one file.
+            $rules = @(Get-Content -LiteralPath (Join-Path $script:RepoRoot '.gitignore') | ForEach-Object { $_.Trim() } | Where-Object { $_ -and $_ -notmatch '^[#!]' -and $_ -notmatch '[*?\[]' })
+            $files = @(Get-ChildItem -LiteralPath $script:RepoRoot -Recurse -File | Where-Object { $extensions -contains $_.Extension.ToLowerInvariant() } | Where-Object {
+                    $relative = $_.FullName.Substring($script:RepoRoot.Length).TrimStart('\', '/') -replace '\\', '/'
+                    $folders = @($relative -split '/' | Select-Object -SkipLast 1)
+                    $keep = $folders -notcontains '.git'
+                    foreach ($rule in $rules) {
+                        $name = $rule.Trim('/')
+                        if (-not $rule.EndsWith('/')) { if ($relative -eq $name) { $keep = $false } }
+                        elseif ($rule.StartsWith('/')) { if ($folders.Count -and $folders[0] -eq $name) { $keep = $false } }
+                        elseif ($folders -contains $name) { $keep = $false }
+                    }
+                    $keep
+                } | ForEach-Object { $_.FullName })
+        }
+        $files.Count | Should -BeGreaterThan 50 -Because 'the scan must find the sources'
         foreach ($f in $files) {
-            $bytes = [IO.File]::ReadAllBytes($f.FullName)
-            @($bytes | Where-Object { $_ -gt 127 }).Count | Should -Be 0 -Because $f.Name
+            $bytes = [IO.File]::ReadAllBytes($f)
+            @($bytes | Where-Object { $_ -gt 127 }).Count | Should -Be 0 -Because $f
         }
     }
 }

@@ -159,6 +159,75 @@ function Get-CEDataRoot {
     return (Join-Path $base 'EngramicBaseline')
 }
 
+function ConvertTo-CEFullPath {
+    <#
+        $Path as a full path spelled one way, so that two spellings of one place compare equal: a
+        relative path is taken from PowerShell's current location (not the process directory), '.' and
+        '..' names and repeated separators are collapsed (UNC paths included), '/' becomes '\' on
+        Windows, and no separator is left at the end except on a root such as C:\. Only the spelling
+        changes: nothing on disk is read, so a link is not followed and a short (8.3) name is not
+        expanded. ([IO.Path]::GetFullPath expands one only where the rest of the path exists, so it
+        could spell a folder and a folder not yet made inside it differently.) A \\?\ or \\.\ path is
+        kept as written, as Windows keeps it.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][string]$Path)
+    $full = $Path
+    # A drive PowerShell does not know (X: with no X: drive) cannot be resolved: keep it as written.
+    try { $full = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path) } catch { $full = $Path }
+    $separator = [string][IO.Path]::DirectorySeparatorChar
+    if ($separator -eq '\') {
+        if ($full -match '^[\\/]{2}[?.][\\/]') { return $full.TrimEnd('\', '/') }
+        $m = [regex]::Match($full, '^(?:([A-Za-z]:)|[\\/]{2}([^\\/]+)[\\/]+([^\\/]+))(.*)$')
+        if (-not $m.Success) { return $full }
+        $root = if ($m.Groups[1].Success) { $m.Groups[1].Value } else { '\\' + $m.Groups[2].Value + '\' + $m.Groups[3].Value }
+        $names = $m.Groups[4].Value -split '[\\/]+'
+    }
+    else {
+        if (-not $full.StartsWith('/')) { return $full }
+        $root = ''
+        $names = $full -split '/+'
+    }
+    $kept = New-Object System.Collections.ArrayList
+    foreach ($name in $names) {
+        if ($name -eq '' -or $name -eq '.') { continue }
+        if ($name -eq '..') { if ($kept.Count) { $kept.RemoveAt($kept.Count - 1) }; continue }
+        [void]$kept.Add($name)
+    }
+    return $root + $separator + ($kept.ToArray() -join $separator)
+}
+
+function Resolve-CEDataPath {
+    <#
+        Where $Path stands against the machine data folder (Get-CEDataRoot, including one moved on the
+        Import-Module line, as the scheduled audit's -DataRoot and the tests do). Returns Path and Root,
+        both as normalised full paths (ConvertTo-CEFullPath); InDataRoot, true only when Path is the data
+        folder itself or strictly inside it; and Relative, Path relative to Root ('' for the data folder
+        itself). Compared ignoring case once '.' and '..' are collapsed, so '..' never climbs out of the
+        data folder and a look-alike sibling (EngramicBaseline2, EngramicBaseline.untrusted-<id>) is not
+        in it. A path that cannot be parsed is not in it. Only paths in the data folder are ever created
+        locked or moved aside (Initialize-CEDataFolder, Move-CEDataItemAside): any other folder belongs
+        to whoever named it.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Path)
+    $result = [pscustomobject]@{ Path = $Path; Root = ''; InDataRoot = $false; Relative = '' }
+    try {
+        $result.Root = ConvertTo-CEFullPath -Path (Get-CEDataRoot)
+        $result.Path = ConvertTo-CEFullPath -Path $Path
+    }
+    catch { return $result }
+    $separator = [string][IO.Path]::DirectorySeparatorChar
+    $prefix = if ($result.Root.EndsWith($separator)) { $result.Root } else { $result.Root + $separator }
+    if ($result.Path.Equals($result.Root, [StringComparison]::OrdinalIgnoreCase)) { $result.InDataRoot = $true }
+    elseif ($result.Path.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+        $result.InDataRoot = $true
+        $result.Relative = $result.Path.Substring($prefix.Length)
+    }
+    return $result
+}
+
 function New-CELockedDirectorySecurity {
     <#
         The locked security descriptor a machine data folder is born with: owner Administrators, and a
@@ -207,44 +276,42 @@ function Get-CEDataAsidePath {
         for an item inside it (say ...-reports) - never a name inside the data folder. A moved-aside
         item is a tree a standard user may control, so it must be outside every tree the tool reads,
         walks or deletes as SYSTEM; the uninstaller leaves every EngramicBaseline.untrusted-* folder for
-        an administrator. A path outside the data folder (Write-CEStatus -Path elsewhere) goes beside
-        itself. Same volume either way, so the move is a rename. Kept in step with the installer's
-        Get-CEAsidePath.
+        an administrator. Same volume, so the move is a rename. Throws for anything that is not the data
+        folder or in it (Resolve-CEDataPath): nothing else is ever moved aside, so a folder someone
+        named for another purpose (Write-CEStatus -Path elsewhere, say) is never renamed. Kept in step
+        with the installer's Get-CEAsidePath.
     #>
     [CmdletBinding()]
     [OutputType([string])]
     param([Parameter(Mandatory)][string]$Path)
+    $target = Resolve-CEDataPath -Path $Path
+    if (-not $target.InDataRoot) { throw "$Path is not in the data folder $(Get-CEDataRoot), so it is never moved aside." }
     $id = [guid]::NewGuid().ToString('n')
-    $item = $Path.TrimEnd('\', '/')
-    $root = (Get-CEDataRoot).TrimEnd('\', '/')
-    if ($item -eq $root) { return "$root.untrusted-$id" }
-    foreach ($separator in @('\', '/')) {
-        $prefix = $root + $separator
-        if ($item.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
-            return "$root.untrusted-$id-" + ($item.Substring($prefix.Length) -replace '[\\/]+', '-')
-        }
-    }
-    return "$item.untrusted-$id"
+    if (-not $target.Relative) { return "$($target.Root).untrusted-$id" }
+    return "$($target.Root).untrusted-$id-" + ($target.Relative -replace '[\\/]+', '-')
 }
 
 function Move-CEDataItemAside {
     <#
-        Renames a file or folder out of the data folder to a quarantine sibling of it
-        (Get-CEDataAsidePath) without opening its contents or following a link, so nothing later reads
-        or walks it. Retries a few times with a short back-off: an old-version audit, an admin with a
-        report open, or any process with a handle in the tree can make the first [IO.Directory]::Move
-        fail with a sharing violation, and Intune would then just report the install failed with no
-        hint why. Returns the new path; throws with a clear reason if every attempt fails.
+        Renames a file or folder in the data folder out of it, to a quarantine sibling of it
+        (Get-CEDataAsidePath, which refuses anything not in the data folder), without opening its
+        contents or following a link, so nothing later reads or walks it. Retries a few times with a
+        short back-off: an old-version audit, an admin with a report open, or any process with a handle
+        in the tree can make the first [IO.Directory]::Move fail with a sharing violation, and Intune
+        would then just report the install failed with no hint why. Returns the new path; throws with a
+        clear reason if every attempt fails.
     #>
     [CmdletBinding()]
     [OutputType([string])]
     param([Parameter(Mandatory)][string]$Path)
     $aside = Get-CEDataAsidePath -Path $Path
-    $isDir = [bool]([IO.File]::GetAttributes($Path) -band [IO.FileAttributes]::Directory)
+    # The full path Get-CEDataAsidePath judged, not a relative $Path .NET would take from the process directory.
+    $item = (Resolve-CEDataPath -Path $Path).Path
+    $isDir = [bool]([IO.File]::GetAttributes($item) -band [IO.FileAttributes]::Directory)
     $lastErr = $null
     for ($attempt = 0; $attempt -lt 5; $attempt++) {
         try {
-            if ($isDir) { [IO.Directory]::Move($Path, $aside) } else { [IO.File]::Move($Path, $aside) }
+            if ($isDir) { [IO.Directory]::Move($item, $aside) } else { [IO.File]::Move($item, $aside) }
             return $aside
         }
         catch {
@@ -257,46 +324,61 @@ function Move-CEDataItemAside {
 
 function Initialize-CEDataFolder {
     <#
-        Creates a machine data folder the same way the installer does, so a data root is never born
-        user-writable even when an elevated audit (the GUI, Invoke-CEAudit or the scheduled audit)
-        runs before the installer. Non-elevated or non-Windows callers only affect their own user and
-        their data lives in their own profile, so they get a plain folder. An elevated caller on
-        Windows gets the folder with its locked, administrator-owned descriptor applied in the one
-        call that makes it, then VERIFIES the result and never repairs it: anything already in its
-        place that a standard user made, took over or could write - or a link - is moved aside, out of
-        the data folder (Get-CEDataAsidePath), and the create retried, never written into or taken back
-        in place (its creator may hold a handle that kept add-file or WRITE_DAC access after any later
-        lock). Each move-aside is a warning and an Application event (ID 1003) naming where it went.
-        An existing folder that is trusted - admin-owned, not a link, with no non-admin write, delete,
-        DAC or owner right and no deny against a trusted SID - is kept, so status.json and reports
-        survive; a benign read-only ACE an administrator added does not force it aside. Returns the path.
+        Makes sure a folder exists, creating a machine data folder the same way the installer does, so a
+        data root is never born user-writable even when an elevated audit (the GUI, Invoke-CEAudit or the
+        scheduled audit) runs before the installer. Returns $Path.
+
+        Only the data folder (Get-CEDataRoot, including one moved on the Import-Module line or by the
+        scheduled audit's -DataRoot) and folders strictly inside it are ever created locked or moved
+        aside, judged on normalised full paths ignoring case (Resolve-CEDataPath), so '..' or a
+        look-alike name such as EngramicBaseline2 does not count. Any other folder - the one
+        Write-CEStatus -Path names elsewhere, say - belongs to whoever named it: it is created plainly,
+        with its parent's permissions, if it is missing, and otherwise left exactly as it is, whoever
+        runs this. Callers that are not elevated or not on Windows get the same plain folder everywhere:
+        they only affect their own user, whose data lives in their own profile.
+
+        In the data folder, an elevated caller on Windows gets the folder with its locked,
+        administrator-owned descriptor applied in the one call that makes it, then VERIFIES the result
+        and never repairs it: anything already in its place that a standard user made, took over or
+        could write - or a link - is moved aside, out of the data folder (Get-CEDataAsidePath), and the
+        create retried, never written into or taken back in place (its creator may hold a handle that
+        kept add-file or WRITE_DAC access after any later lock). Each move-aside is a warning and an
+        Application event (ID 1003) naming where it went. An existing folder that is trusted -
+        admin-owned, not a link, with no non-admin write, delete, DAC or owner right and no deny
+        against a trusted SID - is kept, so status.json and reports survive; a benign read-only ACE an
+        administrator added does not force it aside.
     #>
     [CmdletBinding()]
     [OutputType([string])]
     param([Parameter(Mandatory)][string]$Path, [switch]$UsersRead)
-    if (-not (Test-CEIsWindows) -or -not (Test-CEIsAdmin)) {
+    $target = $null
+    if ((Test-CEIsWindows) -and (Test-CEIsAdmin)) { $target = Resolve-CEDataPath -Path $Path }
+    if (-not $target -or -not $target.InDataRoot) {
         if (-not (Test-Path -LiteralPath $Path -PathType Container)) { New-Item -ItemType Directory -Path $Path -Force | Out-Null }
         return $Path
     }
+    # From here on, the full path that was judged to be in the data folder, never a relative spelling
+    # .NET would resolve against the process directory instead.
+    $folder = $target.Path
     for ($attempt = 0; $attempt -lt 5; $attempt++) {
-        if (Test-CEReparsePoint -Path $Path) {
-            if ([IO.File]::GetAttributes($Path) -band [IO.FileAttributes]::Directory) { [IO.Directory]::Delete($Path, $false) } else { [IO.File]::Delete($Path) }
+        if (Test-CEReparsePoint -Path $folder) {
+            if ([IO.File]::GetAttributes($folder) -band [IO.FileAttributes]::Directory) { [IO.Directory]::Delete($folder, $false) } else { [IO.File]::Delete($folder) }
             continue
         }
-        if (Test-Path -LiteralPath $Path) {
-            $problem = Get-CELockedFolderProblem -Path $Path
+        if (Test-Path -LiteralPath $folder) {
+            $problem = Get-CELockedFolderProblem -Path $folder
             if (-not $problem) { return $Path }
-            Move-CEDataItemAsideWithNotice -Path $Path -Reason $problem
+            Move-CEDataItemAsideWithNotice -Path $folder -Reason $problem
             continue
         }
         $security = New-CELockedDirectorySecurity -UsersRead:$UsersRead
-        if ($PSVersionTable.PSVersion.Major -ge 6) { [void][IO.FileSystemAclExtensions]::Create([IO.DirectoryInfo]::new($Path), $security) }
-        else { [void][IO.Directory]::CreateDirectory($Path, $security) }
+        if ($PSVersionTable.PSVersion.Major -ge 6) { [void][IO.FileSystemAclExtensions]::Create([IO.DirectoryInfo]::new($folder), $security) }
+        else { [void][IO.Directory]::CreateDirectory($folder, $security) }
         # Verify what is now on disk; never repair it. A silent no-op over a pre-existing folder is
         # rejected here (wrong owner, or a non-admin write/DAC/owner right) instead of being re-owned in place.
-        $problem = Get-CELockedFolderProblem -Path $Path
+        $problem = Get-CELockedFolderProblem -Path $folder
         if (-not $problem) { return $Path }
-        if (Test-Path -LiteralPath $Path) { Move-CEDataItemAsideWithNotice -Path $Path -Reason $problem }
+        if (Test-Path -LiteralPath $folder) { Move-CEDataItemAsideWithNotice -Path $folder -Reason $problem }
     }
     throw "Could not create a locked, administrator-owned data folder at $Path."
 }

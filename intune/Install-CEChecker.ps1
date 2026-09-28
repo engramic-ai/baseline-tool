@@ -214,6 +214,24 @@ function Remove-CELink {
     if (Test-CEReparsePoint -Path $Path) { throw "Could not remove the link at $Path" }
 }
 
+function Assert-CEInDataRoot {
+    <#
+        Throws unless $Path is the data folder $DataRoot or inside it: the install creates nothing
+        locked, and moves nothing aside, anywhere else. Compared ignoring case, so a look-alike sibling
+        (EngramicBaselineX, EngramicBaseline.untrusted-<id>) is not inside; a path with a '.' or '..'
+        name is refused outright, since one could climb out of the data folder while the start of the
+        path still matched, and nothing here builds one. Kept in step with the module's
+        Resolve-CEDataPath.
+    #>
+    param([string]$Path, [string]$DataRoot)
+    $root = $DataRoot.TrimEnd('\')
+    $item = $Path.TrimEnd('\')
+    $climbs = @(@($item, $root) -split '[\\/]' | Where-Object { $_ -eq '.' -or $_ -eq '..' }).Count
+    if ($climbs -or ($item -ne $root -and -not $item.StartsWith("$root\", [StringComparison]::OrdinalIgnoreCase))) {
+        throw "$Path is not in the data folder $DataRoot"
+    }
+}
+
 function Get-CEAsidePath {
     <#
         Where an untrusted item at $Path is moved to: always a sibling of the data folder, never a
@@ -222,13 +240,14 @@ function Get-CEAsidePath {
         moved-aside item is a tree a standard user may control, so it must be outside every tree the
         tool keeps, reads or deletes as SYSTEM; the uninstaller leaves every
         EngramicBaseline.untrusted-* folder for an administrator. Same volume, so the move is a rename.
+        Throws for anything not in the data folder (Assert-CEInDataRoot): nothing else is moved aside.
     #>
     param([string]$Path, [string]$DataRoot)
+    Assert-CEInDataRoot -Path $Path -DataRoot $DataRoot
     $root = $DataRoot.TrimEnd('\')
     $item = $Path.TrimEnd('\')
     $id = [guid]::NewGuid().ToString('n')
     if ($item -eq $root) { return "$root.untrusted-$id" }
-    if (-not $item.StartsWith("$root\", [StringComparison]::OrdinalIgnoreCase)) { throw "$Path is not in the data folder $DataRoot" }
     return "$root.untrusted-$id-" + ($item.Substring($root.Length + 1) -replace '\\', '-')
 }
 
@@ -282,10 +301,12 @@ function New-CELockedDirectory {
         Windows behaviour). An existing folder that is trusted (admin-owned, not a link, no non-admin
         write/DAC/owner right) is kept, so a re-run preserves reports; a benign read-only ACE an admin
         added does not force it aside. Each move-aside is a warning naming where it went, which the
-        install collects and writes to its log and the Application event log.
+        install collects and writes to its log and the Application event log. Only the data folder
+        and folders in it are ever made this way (Assert-CEInDataRoot): anything else throws first.
     #>
     [CmdletBinding()]
     param([string]$Path, [string]$DataRoot, [switch]$UsersRead)
+    Assert-CEInDataRoot -Path $Path -DataRoot $DataRoot
     for ($attempt = 0; $attempt -lt 5; $attempt++) {
         if (Test-CEReparsePoint -Path $Path) { Remove-CELink -Path $Path }
         if (Test-Path -LiteralPath $Path) {

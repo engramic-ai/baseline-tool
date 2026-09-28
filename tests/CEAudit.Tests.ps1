@@ -1520,7 +1520,7 @@ Describe 'Intune: status, discovery and compliance rules' {
         $fn.Value | Should -Match 'Start-Sleep' -Because 'with a back-off between tries'
         $fn.Value | Should -Match 'open under the data folder' -Because 'the final error says why'
         # It still moves a folder aside normally, without following a link inside it.
-        . (Get-TestInstallerCode -Path $installer -Name @('Get-CEAsidePath', 'Move-CEItemAside'))
+        . (Get-TestInstallerCode -Path $installer -Name @('Assert-CEInDataRoot', 'Get-CEAsidePath', 'Move-CEItemAside'))
         $src = Join-Path $TestDrive 'mv-src'
         $outside = Join-Path $TestDrive 'mv-outside'
         New-Item -ItemType Directory -Force -Path (Join-Path $src 'a'), $outside | Out-Null
@@ -1548,7 +1548,7 @@ Describe 'Intune: status, discovery and compliance rules' {
         # handle. This shims the elevated-only bits (a non-admin can't make a folder owned by
         # Administrators) but exercises the real move-aside-and-retry loop.
         $installer = Join-Path $script:intune 'Install-CEChecker.ps1'
-        . (Get-TestInstallerCode -Path $installer -Name @('Test-CEReparsePoint', 'Remove-CELink', 'Get-CEAsidePath', 'Move-CEItemAside', 'New-CELockedDirectory', 'Get-CERegistryString', 'Initialize-CEDataRoot'))
+        . (Get-TestInstallerCode -Path $installer -Name @('Test-CEReparsePoint', 'Remove-CELink', 'Assert-CEInDataRoot', 'Get-CEAsidePath', 'Move-CEItemAside', 'New-CELockedDirectory', 'Get-CERegistryString', 'Initialize-CEDataRoot'))
         # A birth descriptor without an owner (so the create succeeds unelevated) and a stand-in
         # verifier that treats a folder holding 'planted.txt' as a racer's and anything else as locked.
         function New-CEDataDirectorySecurity { param([switch]$UsersRead) $s = New-Object Security.AccessControl.DirectorySecurity; $s.SetSecurityDescriptorSddlForm('D:(A;OICI;FA;;;WD)'); return $s }
@@ -1659,7 +1659,7 @@ Describe 'Intune: status, discovery and compliance rules' {
         # subfolder is kept too, so a second install over the first loses nothing and makes no
         # quarantine folder.
         $installer = Join-Path $script:intune 'Install-CEChecker.ps1'
-        . (Get-TestInstallerCode -Path $installer -Name @('Test-CEReparsePoint', 'Remove-CELink', 'Get-CEAsidePath', 'Move-CEItemAside', 'New-CELockedDirectory', 'Get-CERegistryString', 'Initialize-CEDataRoot'))
+        . (Get-TestInstallerCode -Path $installer -Name @('Test-CEReparsePoint', 'Remove-CELink', 'Assert-CEInDataRoot', 'Get-CEAsidePath', 'Move-CEItemAside', 'New-CELockedDirectory', 'Get-CERegistryString', 'Initialize-CEDataRoot'))
         function New-CEDataDirectorySecurity { param([switch]$UsersRead) $s = New-Object Security.AccessControl.DirectorySecurity; $s.SetSecurityDescriptorSddlForm('D:(A;OICI;FA;;;WD)'); return $s }
         # Everything the test makes counts as the locked form; the marker is present (a previous install wrote it).
         function Test-CELockedFolder { param([string]$Path, [switch]$UsersRead) if (Test-CEReparsePoint -Path $Path) { return "$Path is a link" } return '' }
@@ -1693,13 +1693,39 @@ Describe 'Intune: status, discovery and compliance rules' {
     It 'Get-CEAsidePath always names a sibling of the data folder, never a path inside it' {
         # Rule: a moved-aside item may be a tree a standard user controls, so it must leave the data
         # folder; a quarantine inside it would be walked by a later SYSTEM delete of the data folder.
-        . (Get-TestInstallerCode -Path (Join-Path $script:intune 'Install-CEChecker.ps1') -Name @('Get-CEAsidePath'))
+        . (Get-TestInstallerCode -Path (Join-Path $script:intune 'Install-CEChecker.ps1') -Name @('Assert-CEInDataRoot', 'Get-CEAsidePath'))
         $root = 'C:\ProgramData\EngramicBaseline'
         Get-CEAsidePath -Path $root -DataRoot $root | Should -Match '^C:\\ProgramData\\EngramicBaseline\.untrusted-[0-9a-f]{32}$'
         Get-CEAsidePath -Path "$root\packs" -DataRoot $root | Should -Match '^C:\\ProgramData\\EngramicBaseline\.untrusted-[0-9a-f]{32}-packs$'
         Get-CEAsidePath -Path "$root\config\network.json" -DataRoot "$root\" | Should -Match '^C:\\ProgramData\\EngramicBaseline\.untrusted-[0-9a-f]{32}-config-network\.json$'
         Get-CEAsidePath -Path 'C:\PROGRAMDATA\ENGRAMICBASELINE\Logs' -DataRoot $root | Should -Match '^C:\\ProgramData\\EngramicBaseline\.untrusted-[0-9a-f]{32}-Logs$' -Because 'Windows paths are case-insensitive'
         { Get-CEAsidePath -Path 'C:\ProgramData\EngramicBaselineX\logs' -DataRoot $root } | Should -Throw '*not in the data folder*' -Because 'a look-alike name is not inside the data folder'
+        { Get-CEAsidePath -Path 'C:\ProgramData\EngramicBaseline.untrusted-0123' -DataRoot $root } | Should -Throw '*not in the data folder*'
+        { Get-CEAsidePath -Path "$root\..\Other" -DataRoot $root } | Should -Throw '*not in the data folder*' -Because '.. would climb out of the data folder while the start still matched'
+        { Get-CEAsidePath -Path "$root\packs\..\..\Other" -DataRoot $root } | Should -Throw '*not in the data folder*'
+        { Get-CEAsidePath -Path "$root\.\packs" -DataRoot $root } | Should -Throw '*not in the data folder*' -Because 'nothing in the install builds a . or .. name, so one is refused, not resolved'
+        { Get-CEAsidePath -Path 'C:\ProgramData\Other' -DataRoot 'C:\ProgramData\EngramicBaseline\..\Other' } | Should -Throw '*not in the data folder*'
+    }
+
+    It 'the install makes nothing locked, and moves nothing aside, outside the data folder' {
+        # New-CELockedDirectory is only ever given the data folder and folders in it; a path anywhere else
+        # is refused before anything is created, judged, or moved.
+        $installer = Join-Path $script:intune 'Install-CEChecker.ps1'
+        . (Get-TestInstallerCode -Path $installer -Name @('Test-CEReparsePoint', 'Remove-CELink', 'Assert-CEInDataRoot', 'Get-CEAsidePath', 'Move-CEItemAside', 'New-CELockedDirectory'))
+        function New-CEDataDirectorySecurity { param([switch]$UsersRead) $s = New-Object Security.AccessControl.DirectorySecurity; $s.SetSecurityDescriptorSddlForm('D:(A;OICI;FA;;;WD)'); return $s }
+        # Every folder looks a standard user's, so one judged would be moved aside.
+        function Test-CELockedFolder { param([string]$Path) return "$Path is owned by S-1-5-21-1-2-3-1001" }
+        $pd = Join-Path $TestDrive 'pd-install-scope'
+        $root = Join-Path $pd 'EngramicBaseline'
+        $beside = Join-Path $pd 'EngramicBaselineX'
+        New-Item -ItemType Directory -Force -Path $root, $beside | Out-Null
+        Set-Content -LiteralPath (Join-Path $beside 'mine.txt') -Value 'mine'
+        foreach ($p in @($beside, "$root\..\EngramicBaselineX", (Join-Path $pd 'new-elsewhere'), $pd)) {
+            { New-CELockedDirectory -Path $p -DataRoot $root 3>$null } | Should -Throw '*not in the data folder*' -Because "$p is not in the data folder"
+        }
+        Get-Content -LiteralPath (Join-Path $beside 'mine.txt') | Should -Be 'mine'
+        Test-Path -LiteralPath (Join-Path $pd 'new-elsewhere') | Should -BeFalse -Because 'nothing is created outside the data folder'
+        @(Get-ChildItem -LiteralPath $pd -Filter '*.untrusted-*').Count | Should -Be 0
     }
 
     It 'the install writes every data-folder notice, naming where anything went, to its log and the Application event log' {
@@ -1723,7 +1749,7 @@ Describe 'Intune: status, discovery and compliance rules' {
         [regex]::Match($text, '(?ms)^catch \{.*?\n\}').Value | Should -Match 'if \(-not \$noticesWritten\) \{ Write-CESetupNotice -Notice \$setupNotices \}' -Because 'a failure before logging starts still records them'
 
         # What they record: the warning names the quarantine, and Write-CESetupNotice puts it in the log and the event log.
-        . (Get-TestInstallerCode -Path $installer -Name @('Test-CEReparsePoint', 'Remove-CELink', 'Get-CEAsidePath', 'Move-CEItemAside', 'New-CELockedDirectory', 'Initialize-CEDataRoot', 'Write-CEInstallEvent', 'Write-CESetupNotice'))
+        . (Get-TestInstallerCode -Path $installer -Name @('Test-CEReparsePoint', 'Remove-CELink', 'Assert-CEInDataRoot', 'Get-CEAsidePath', 'Move-CEItemAside', 'New-CELockedDirectory', 'Initialize-CEDataRoot', 'Write-CEInstallEvent', 'Write-CESetupNotice'))
         function New-CEDataDirectorySecurity { param([switch]$UsersRead) $s = New-Object Security.AccessControl.DirectorySecurity; $s.SetSecurityDescriptorSddlForm('D:(A;OICI;FA;;;WD)'); return $s }
         function Test-CELockedFolder { param([string]$Path) if (Test-Path -LiteralPath (Join-Path $Path 'planted.txt')) { return "$Path is owned by S-1-5-21-1-2-3-1001, not SYSTEM or Administrators" } return '' }
         function Get-CERegistryString { param([string]$Path, [string]$Name) return '' }
@@ -1754,7 +1780,7 @@ Describe 'Intune: status, discovery and compliance rules' {
         # and locked it again. So nothing is copied out of it. Config staged in the package's data\config
         # folder, the supported path, reaches the fresh folder instead.
         $installer = Join-Path $script:intune 'Install-CEChecker.ps1'
-        . (Get-TestInstallerCode -Path $installer -Name @('Test-CEReparsePoint', 'Remove-CELink', 'Get-CEAsidePath', 'Move-CEItemAside', 'New-CELockedDirectory', 'Initialize-CEDataRoot', 'Copy-CEStagedConfig'))
+        . (Get-TestInstallerCode -Path $installer -Name @('Test-CEReparsePoint', 'Remove-CELink', 'Assert-CEInDataRoot', 'Get-CEAsidePath', 'Move-CEItemAside', 'New-CELockedDirectory', 'Initialize-CEDataRoot', 'Copy-CEStagedConfig'))
         function New-CEDataDirectorySecurity { param([switch]$UsersRead) $s = New-Object Security.AccessControl.DirectorySecurity; $s.SetSecurityDescriptorSddlForm('D:(A;OICI;FA;;;WD)'); return $s }
         # Owner-less descriptors a standard user can apply (the real ones name Administrators as owner).
         function New-CEDataFileSecurity { $s = New-Object Security.AccessControl.FileSecurity; $s.SetSecurityDescriptorSddlForm('D:P(A;;FA;;;WD)'); return $s }
@@ -1782,7 +1808,7 @@ Describe 'Intune: status, discovery and compliance rules' {
 
     It 'Copy-CEStagedConfig replaces a trusted file, moves anything else aside, removes a link as a link, and copies only .json files' {
         $installer = Join-Path $script:intune 'Install-CEChecker.ps1'
-        . (Get-TestInstallerCode -Path $installer -Name @('Test-CEReparsePoint', 'Remove-CELink', 'Get-CEAsidePath', 'Move-CEItemAside', 'Copy-CEStagedConfig'))
+        . (Get-TestInstallerCode -Path $installer -Name @('Test-CEReparsePoint', 'Remove-CELink', 'Assert-CEInDataRoot', 'Get-CEAsidePath', 'Move-CEItemAside', 'Copy-CEStagedConfig'))
         # An owner-less descriptor a standard user can apply (the real one names Administrators as owner).
         function New-CEDataFileSecurity { $s = New-Object Security.AccessControl.FileSecurity; $s.SetSecurityDescriptorSddlForm('D:P(A;;FA;;;WD)'); return $s }
         # A stand-in trust check: a file holding 'user-owned' is one a standard user owns.
@@ -1840,7 +1866,7 @@ Describe 'Intune: status, discovery and compliance rules' {
             Set-ItResult -Skipped -Because 'needs an elevated session'
             return
         }
-        . (Get-TestInstallerCode -Path (Join-Path $script:intune 'Install-CEChecker.ps1') -Name @('Test-CEReparsePoint', 'Remove-CELink', 'Get-CEAsidePath', 'Move-CEItemAside', 'Test-CELockedFolder', 'New-CEDataFileSecurity', 'Copy-CEStagedConfig'))
+        . (Get-TestInstallerCode -Path (Join-Path $script:intune 'Install-CEChecker.ps1') -Name @('Test-CEReparsePoint', 'Remove-CELink', 'Assert-CEInDataRoot', 'Get-CEAsidePath', 'Move-CEItemAside', 'Test-CELockedFolder', 'New-CEDataFileSecurity', 'Copy-CEStagedConfig'))
         $root = Join-Path $TestDrive 'pd-elevated-copy\EngramicBaseline'
         $src = Join-Path $TestDrive 'pkg-elevated-copy\data\config'
         New-Item -ItemType Directory -Force -Path (Join-Path $root 'config'), $src | Out-Null
@@ -2577,13 +2603,156 @@ Describe 'Locked-at-birth data folders (Initialize-CEDataFolder)' {
             Set-ItResult -Skipped -Because 'needs an elevated session'
             return
         }
+        # Only the data folder and folders in it are made locked, so make this one the data folder.
         $p = Join-Path $TestDrive 'idf-locked'
-        Initialize-CEDataFolder -Path $p | Out-Null
+        InModuleScope CEAudit -Parameters @{ P = $p } {
+            param($P)
+            $script:CEDataRootOverride = $P
+            try { Initialize-CEDataFolder -Path $P | Out-Null }
+            finally { $script:CEDataRootOverride = $null }
+        }
         $acl = Get-Acl -LiteralPath $p
         "$($acl.GetOwner([Security.Principal.SecurityIdentifier]))" | Should -Be 'S-1-5-32-544'
         $acl.AreAccessRulesProtected | Should -BeTrue
         $trusted = @([Security.Principal.SecurityIdentifier]'S-1-5-18', [Security.Principal.SecurityIdentifier]'S-1-5-32-544')
         @($acl.Access | Where-Object { $_.IdentityReference -notin $trusted }).Count | Should -Be 0
+    }
+
+    It 'when elevated, locks or moves aside only the data folder and folders in it, and leaves any other folder as it is' {
+        # An elevated caller once moved aside ANY folder it was handed that a standard user could write, and
+        # made a locked one in its place: Write-CEStatus -Path elsewhere renamed the caller's folder (in CI,
+        # Pester's own TestDrive). Only the data folder, however it is spelled, is the tool's to lock.
+        $pd = Join-Path $TestDrive 'pd-scope'
+        $root = Join-Path $pd 'EngramicBaseline'
+        $reports = Join-Path $root 'reports'
+        $outside = @((Join-Path $pd 'elsewhere'), (Join-Path $pd 'EngramicBaseline2'), (Join-Path $pd 'EngramicBaseline.untrusted-0123'), $pd)
+        foreach ($d in @($outside) + @($reports)) {
+            New-Item -ItemType Directory -Force -Path $d | Out-Null
+            Set-Content -LiteralPath (Join-Path $d 'mine.txt') -Value 'mine'
+        }
+        InModuleScope CEAudit -Parameters @{ Root = $root; Reports = $reports; Outside = $outside; Pd = $pd; Drive = $TestDrive } {
+            param($Root, $Reports, $Outside, $Pd, $Drive)
+            $script:CEDataRootOverride = $Root
+            try {
+                Mock Test-CEIsWindows { $true }
+                Mock Test-CEIsAdmin { $true }
+                # Anything that is not empty looks writable by a standard user, so an elevated caller that
+                # judged it would move it aside. A birth descriptor a standard user can apply (no owner).
+                Mock Get-CELockedFolderProblem { if (@(Get-ChildItem -LiteralPath $Path -Force).Count) { "$Path is writable by S-1-5-21-1-2-3-1001" } else { '' } }
+                Mock New-CELockedDirectorySecurity { $s = New-Object Security.AccessControl.DirectorySecurity; $s.SetSecurityDescriptorSddlForm('D:(A;OICI;FA;;;WD)'); $s }
+                Mock Write-CEEventEntry { }
+                $spellings = @($Outside) + @((Join-Path (Join-Path $Root '..') 'elsewhere'), (Join-Path $Root '..'), $Drive)
+                foreach ($d in $spellings) {
+                    Initialize-CEDataFolder -Path $d -WarningVariable w -WarningAction SilentlyContinue | Should -Be $d
+                    "$w" | Should -BeNullOrEmpty -Because "$d is not in the data folder"
+                }
+                # Write-CEStatus -Path elsewhere writes there and leaves the folder alone.
+                $elsewhere = Join-Path $Pd 'elsewhere'
+                Write-CEStatus -Status ([ordered]@{ schemaVersion = 1 }) -Path (Join-Path $elsewhere 'status.json') | Out-Null
+                (Get-Content -LiteralPath (Join-Path $elsewhere 'status.json') -Raw | ConvertFrom-Json).schemaVersion | Should -Be 1
+                # A missing folder outside it is made plainly, with no locked descriptor.
+                $fresh = Join-Path $Pd 'fresh-elsewhere'
+                Initialize-CEDataFolder -Path $fresh | Should -Be $fresh
+                Test-Path -LiteralPath $fresh -PathType Container | Should -BeTrue
+                foreach ($d in $Outside) { Get-Content -LiteralPath (Join-Path $d 'mine.txt') | Should -Be 'mine' -Because "$d is left where it was" }
+                $names = @('elsewhere', 'EngramicBaseline', 'EngramicBaseline.untrusted-0123', 'EngramicBaseline2', 'fresh-elsewhere', 'mine.txt')
+                @(Get-ChildItem -LiteralPath $Pd -Force | ForEach-Object { $_.Name } | Sort-Object) | Should -Be @($names | Sort-Object) -Because 'nothing outside the data folder is moved aside'
+                @(Get-ChildItem -LiteralPath $Drive -Filter "$(Split-Path -Leaf $Pd).untrusted-*").Count | Should -Be 0
+                @(Get-ChildItem -LiteralPath (Split-Path -Parent $Drive) -Filter "$(Split-Path -Leaf $Drive).untrusted-*").Count | Should -Be 0 -Because 'the test drive itself stays where Pester made it'
+                Should -Invoke Get-CELockedFolderProblem -Times 0 -Exactly -Because 'a folder outside the data folder is not even judged'
+                Should -Invoke New-CELockedDirectorySecurity -Times 0 -Exactly -Because 'nor made locked'
+                Should -Invoke Write-CEEventEntry -Times 0 -Exactly
+                foreach ($d in @($Outside) + @((Join-Path (Join-Path $Root '..') 'elsewhere'))) {
+                    { Get-CEDataAsidePath -Path $d } | Should -Throw '*never moved aside*'
+                    { Move-CEDataItemAside -Path $d } | Should -Throw '*never moved aside*'
+                }
+
+                # The data folder is still handled however it is spelled: '.', '..' and a trailing separator.
+                foreach ($d in @((Join-Path (Join-Path $Root '.') 'reports'), (Join-Path (Join-Path (Join-Path $Root 'sub') '..') 'reports'), ($Reports + [IO.Path]::DirectorySeparatorChar))) {
+                    Set-Content -LiteralPath (Join-Path $Reports 'mine.txt') -Value 'racer'
+                    Initialize-CEDataFolder -Path $d -WarningVariable w -WarningAction SilentlyContinue | Should -Be $d
+                    Test-Path -LiteralPath (Join-Path $Reports 'mine.txt') | Should -BeFalse -Because "$d is in the data folder, so a fresh folder took its place"
+                    "$w" | Should -Match 'Moved an untrusted'
+                }
+                @(Get-ChildItem -LiteralPath $Pd -Directory -Filter 'EngramicBaseline.untrusted-*-reports').Count | Should -Be 3
+                Test-Path -LiteralPath (Join-Path $Root 'sub') | Should -BeFalse -Because 'the .. was collapsed, not created'
+            }
+            finally { $script:CEDataRootOverride = $null }
+        }
+    }
+
+    It 'judges whether a path is in the data folder on its full spelling, ignoring case, so .. and look-alike names do not count' -Skip:(-not ($PSVersionTable.PSVersion.Major -lt 6 -or $IsWindows)) {
+        # This decides whether the tool may lock a folder or move it aside, so '..' must never climb out of
+        # the data folder, and a sibling whose name merely starts the same way is not in it.
+        $here = Join-Path $TestDrive 'rel-here'
+        New-Item -ItemType Directory -Path $here | Out-Null
+        InModuleScope CEAudit -Parameters @{ Here = $here } {
+            param($Here)
+            $script:CEDataRootOverride = 'C:\ProgramData\EngramicBaseline'
+            try {
+                $in = @('C:\ProgramData\EngramicBaseline', 'C:\ProgramData\EngramicBaseline\', 'c:\programdata\ENGRAMICBASELINE\Reports',
+                    'C:/ProgramData/EngramicBaseline/reports', 'C:\ProgramData\EngramicBaseline\.\reports', 'C:\ProgramData\EngramicBaseline\x\..\reports',
+                    'C:\ProgramData\Other\..\EngramicBaseline\cache', 'C:\ProgramData\\EngramicBaseline\\logs')
+                foreach ($p in $in) { (Resolve-CEDataPath -Path $p).InDataRoot | Should -BeTrue -Because "$p is in the data folder" }
+                $out = @('C:\ProgramData\EngramicBaseline2', 'C:\ProgramData\EngramicBaseline2\reports', 'C:\ProgramData\EngramicBaseline.untrusted-0123',
+                    'C:\ProgramData\EngramicBaseline-old\x', 'C:\ProgramData\EngramicBaseline\..', 'C:\ProgramData\EngramicBaseline\..\Other',
+                    'C:\ProgramData\EngramicBaseline\reports\..\..\Other', 'C:\ProgramData', 'C:\', 'D:\ProgramData\EngramicBaseline',
+                    '\\server\share\ProgramData\EngramicBaseline')
+                foreach ($p in $out) { (Resolve-CEDataPath -Path $p).InDataRoot | Should -BeFalse -Because "$p is not in the data folder" }
+                $r = Resolve-CEDataPath -Path 'C:\ProgramData\EngramicBaseline\sub\..\Reports\'
+                $r.Path | Should -Be 'C:\ProgramData\EngramicBaseline\Reports'
+                $r.Root | Should -Be 'C:\ProgramData\EngramicBaseline'
+                $r.Relative | Should -Be 'Reports'
+                (Resolve-CEDataPath -Path 'C:\ProgramData\EngramicBaseline').Relative | Should -Be ''
+                # Only the spelling changes: an 8.3 name is kept as written, never looked up and expanded.
+                ConvertTo-CEFullPath -Path 'C:\PROGRA~1\x\..\y' | Should -Be 'C:\PROGRA~1\y'
+                # A UNC data folder: '..' cannot climb out of it either (Windows leaves that to the caller).
+                $script:CEDataRootOverride = '\\server\share\EngramicBaseline'
+                (Resolve-CEDataPath -Path '\\server\share\EngramicBaseline\reports').InDataRoot | Should -BeTrue
+                (Resolve-CEDataPath -Path '\\server\share\EngramicBaseline\..\Other').InDataRoot | Should -BeFalse
+                (Resolve-CEDataPath -Path '\\server\share\EngramicBaseline2').InDataRoot | Should -BeFalse
+                # A relative path (or data folder) is taken from PowerShell's location, not the process directory.
+                $script:CEDataRootOverride = '.\data'
+                $process = [Environment]::CurrentDirectory
+                Push-Location -LiteralPath $Here
+                try {
+                    [Environment]::CurrentDirectory = [IO.Path]::GetTempPath()
+                    ConvertTo-CEFullPath -Path 'a\..\b' | Should -Be (Join-Path $Here 'b')
+                    (Resolve-CEDataPath -Path (Join-Path (Join-Path $Here 'data') 'reports')).InDataRoot | Should -BeTrue
+                    (Resolve-CEDataPath -Path '.\data\..\elsewhere').InDataRoot | Should -BeFalse
+                }
+                finally { Pop-Location; [Environment]::CurrentDirectory = $process }
+            }
+            finally { $script:CEDataRootOverride = $null }
+        }
+    }
+
+    It 'never locks or moves aside a folder outside the data folder, whoever runs it (no mocks)' -Skip:(-not ($PSVersionTable.PSVersion.Major -lt 6 -or $IsWindows)) {
+        # The real path for whoever runs the suite: a standard user here, an administrator in CI, where a
+        # status.json written to the runner's own temp folder used to move that folder aside (Pester's
+        # TestDrive with it) and put a folder only administrators could change in its place.
+        $mine = Join-Path $TestDrive 'status-elsewhere'
+        New-Item -ItemType Directory -Path $mine | Out-Null
+        Set-Content -LiteralPath (Join-Path $mine 'mine.txt') -Value 'mine'
+        $before = (Get-Acl -LiteralPath $mine).Sddl
+        $driveBefore = (Get-Acl -LiteralPath $TestDrive).Sddl
+        Write-CEStatus -Status ([ordered]@{ schemaVersion = 1 }) -Path (Join-Path $mine 'status.json') | Should -Be (Join-Path $mine 'status.json')
+        Write-CEStatus -Status ([ordered]@{ schemaVersion = 2 }) -Path (Join-Path $TestDrive 'status-in-drive.json') | Out-Null
+        (Get-Content -LiteralPath (Join-Path $mine 'status.json') -Raw | ConvertFrom-Json).schemaVersion | Should -Be 1
+        Get-Content -LiteralPath (Join-Path $mine 'mine.txt') | Should -Be 'mine'
+        (Get-Acl -LiteralPath $mine).Sddl | Should -Be $before -Because 'the folder keeps the permissions its owner gave it'
+        (Get-Acl -LiteralPath $TestDrive).Sddl | Should -Be $driveBefore
+        @(Get-ChildItem -LiteralPath (Split-Path -Parent $TestDrive) -Filter "$(Split-Path -Leaf $TestDrive).untrusted-*").Count | Should -Be 0
+        @(Get-ChildItem -LiteralPath $TestDrive -Filter '*.untrusted-*').Count | Should -Be 0
+        # A missing folder outside the data folder is made plainly: it takes its parent's permissions.
+        $fresh = Join-Path $TestDrive 'fresh-elsewhere'
+        Initialize-CEDataFolder -Path $fresh | Should -Be $fresh
+        (Get-Acl -LiteralPath $fresh).AreAccessRulesProtected | Should -BeFalse -Because 'it is not given the data folder''s locked, protected descriptor'
+        # A bare file name has no folder to make: it is written to the current location.
+        Push-Location -LiteralPath $fresh
+        try { Write-CEStatus -Status ([ordered]@{ schemaVersion = 3 }) -Path 'bare-status.json' | Should -Be 'bare-status.json' }
+        finally { Pop-Location }
+        (Get-Content -LiteralPath (Join-Path $fresh 'bare-status.json') -Raw | ConvertFrom-Json).schemaVersion | Should -Be 3
     }
 
     It 'moves an untrusted data folder, or a folder in it, aside OUT of the data folder, and records where it went' {
@@ -2618,9 +2787,9 @@ Describe 'Locked-at-birth data folders (Initialize-CEDataFolder)' {
                 Set-Content -LiteralPath (Join-Path $Root 'planted.txt') -Value 'racer'
                 Initialize-CEDataFolder -Path $Root -WarningAction SilentlyContinue | Out-Null
                 @(Get-ChildItem -LiteralPath $Pd -Directory | Where-Object { $_.Name -match '^EngramicBaseline\.untrusted-[0-9a-f]{32}$' }).Count | Should -Be 1
-                # Named as the installer names them (Get-CEAsidePath); a path outside the data folder goes beside itself.
+                # Named as the installer names them (Get-CEAsidePath); nothing outside the data folder is moved aside.
                 Get-CEDataAsidePath -Path (Join-Path $Root 'packs') | Should -Match ('^' + [regex]::Escape($Root) + '\.untrusted-[0-9a-f]{32}-packs$')
-                Get-CEDataAsidePath -Path 'X:\elsewhere\status-dir' | Should -Match '^X:\\elsewhere\\status-dir\.untrusted-[0-9a-f]{32}$'
+                { Get-CEDataAsidePath -Path 'X:\elsewhere\status-dir' } | Should -Throw '*not in the data folder*'
             }
             finally { $script:CEDataRootOverride = $null }
         }

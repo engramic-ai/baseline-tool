@@ -183,7 +183,12 @@ function ConvertTo-CEStatus {
 }
 
 function Write-CEStatus {
-    <# Writes status.json atomically so readers never see a half-written file. #>
+    <#
+        Writes status.json atomically so readers never see a half-written file: to the data folder by
+        default, or to -Path. Its folder is made the way Initialize-CEDataFolder makes it: locked when
+        it is the data folder and the audit is elevated, and otherwise (a -Path somewhere else) only
+        created if it is missing and never moved aside or re-permissioned.
+    #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory)]$Status,
@@ -191,8 +196,10 @@ function Write-CEStatus {
     )
     $dir = Split-Path -Parent $Path
     # Create the data folder the locked way (Initialize-CEDataFolder) so an elevated audit that makes
-    # it before the installer runs never leaves it briefly writable by a standard user.
-    Initialize-CEDataFolder -Path $dir | Out-Null
+    # it before the installer runs never leaves it briefly writable by a standard user. A folder
+    # outside the data folder is the caller's: Initialize-CEDataFolder only makes it if it is missing.
+    # A bare file name has no folder to make: it is written to the current location.
+    if ($dir) { Initialize-CEDataFolder -Path $dir | Out-Null }
     if ($PSCmdlet.ShouldProcess($Path, 'Write compliance status')) {
         # A name of its own each time: anything already at a fixed name (a folder a user made
         # before the install locked the data folder, say) would make every write fail.
@@ -242,7 +249,8 @@ function Move-CEAuditFailureAside {
     <#
         Moves an untrusted last-error.json out of the data folder (Move-CEDataItemAside), never reading,
         deleting or writing through it, and says so in a warning (the scheduled audit's log) and an
-        Application event, ID 1003, naming where it went.
+        Application event, ID 1003, naming where it went. One outside the data folder (a -DataRoot that
+        is not Get-CEDataRoot) is never moved: Move-CEDataItemAside throws instead.
     #>
     param([Parameter(Mandatory)][string]$Path, [string]$Reason)
     $aside = Move-CEDataItemAside -Path $Path

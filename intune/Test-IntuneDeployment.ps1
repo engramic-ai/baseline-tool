@@ -50,7 +50,9 @@ $dataRoot = Join-Path $env:ProgramData 'EngramicBaseline'
 # Where the SYSTEM helper tasks' scripts and output go. Made only AFTER the install has created the
 # locked data folder, the same locked way (Initialize-CEDataFolder): making it before the install would
 # create the data folder unlocked, the install would then move it aside, and a standard user could
-# change the scripts this rehearsal runs as SYSTEM.
+# change the scripts this rehearsal runs as SYSTEM. It is in the module's data folder (imported with no
+# folder argument and elevated, so %ProgramData%\EngramicBaseline), the only place Initialize-CEDataFolder
+# makes a folder locked.
 $workDir = Join-Path $dataRoot 'deployment-test'
 $workDirReady = $false
 $ps64 = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'

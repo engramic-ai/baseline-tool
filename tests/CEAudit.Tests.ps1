@@ -1607,6 +1607,56 @@ Describe 'Headless scheduled audit' {
         @(Get-ChildItem (Join-Path $root 'logs') -Filter 'audit-*.log').Count | Should -Be 1
         Test-Path (Join-Path $root 'last-error.json') | Should -BeFalse
     }
+
+    It 'deletes old report folders without following a link that one contains' {
+        # SYSTEM housekeeping under the data folder must not follow a junction (Remove-Item -Recurse
+        # does on 5.1), or it could empty a folder the link points at.
+        $root = Join-Path $TestDrive 'housekeep'
+        $reports = Join-Path $root 'reports'
+        $outside = Join-Path $TestDrive 'housekeep-outside'
+        New-Item -ItemType Directory -Force -Path $reports, $outside | Out-Null
+        Set-Content -LiteralPath (Join-Path $outside 'keep.txt') -Value 'keep'
+        # 16 report folders, oldest first; the newest 14 are kept, so the two oldest are removed.
+        $old = 1..16 | ForEach-Object { $d = Join-Path $reports ('PC-2026010{0:00}-000000' -f $_); New-Item -ItemType Directory -Path $d -Force | Out-Null; $d }
+        $link = Join-Path $old[0] 'to-outside'
+        New-Item -ItemType Junction -Path $link -Target $outside | Out-Null
+        try {
+            Get-ChildItem -LiteralPath $reports -Directory | Sort-Object Name -Descending | Select-Object -Skip 14 |
+                ForEach-Object { Remove-CEDataTree -Path $_.FullName }
+            Test-Path -LiteralPath $old[0] | Should -BeFalse -Because 'the oldest report folder is removed'
+            Test-Path -LiteralPath $old[1] | Should -BeFalse
+            @(Get-ChildItem -LiteralPath $reports -Directory).Count | Should -Be 14
+            Get-Content -LiteralPath (Join-Path $outside 'keep.txt') | Should -Be 'keep' -Because 'the junction inside a deleted folder was not followed'
+        }
+        finally { if ((Test-Path -LiteralPath $link) -and ((Get-Item -LiteralPath $link -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) { [IO.Directory]::Delete($link, $false) } }
+    }
+}
+
+Describe 'Locked-at-birth data folders (Initialize-CEDataFolder)' {
+    It 'creates the data folder, and returns without error when it already exists' {
+        $p = Join-Path $TestDrive 'idf-create'
+        Initialize-CEDataFolder -Path $p | Should -Be $p
+        Test-Path -LiteralPath $p -PathType Container | Should -BeTrue
+        # Idempotent: a second call over an existing folder just returns it.
+        { Initialize-CEDataFolder -Path $p } | Should -Not -Throw
+        Test-Path -LiteralPath $p -PathType Container | Should -BeTrue
+    }
+
+    It 'when elevated, the folder is born administrator-owned and locked to SYSTEM and Administrators' {
+        # This branch only runs where the suite runs elevated (CI). A standard user cannot set an
+        # owner to Administrators, and only affects their own data, so there it gets a plain folder.
+        if (-not (([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))) {
+            Set-ItResult -Skipped -Because 'needs an elevated session'
+            return
+        }
+        $p = Join-Path $TestDrive 'idf-locked'
+        Initialize-CEDataFolder -Path $p | Out-Null
+        $acl = Get-Acl -LiteralPath $p
+        "$($acl.GetOwner([Security.Principal.SecurityIdentifier]))" | Should -Be 'S-1-5-32-544'
+        $acl.AreAccessRulesProtected | Should -BeTrue
+        $trusted = @([Security.Principal.SecurityIdentifier]'S-1-5-18', [Security.Principal.SecurityIdentifier]'S-1-5-32-544')
+        @($acl.Access | Where-Object { $_.IdentityReference -notin $trusted }).Count | Should -Be 0
+    }
 }
 
 Describe 'Per-user probe' {

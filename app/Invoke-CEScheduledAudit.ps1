@@ -43,9 +43,9 @@ $DataRoot = Get-CEDataRoot
 
 $reportRoot = Join-Path $DataRoot 'reports'
 $logRoot = Join-Path $DataRoot 'logs'
-foreach ($d in @($DataRoot, $reportRoot, $logRoot)) {
-    if (-not (Test-Path -LiteralPath $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
-}
+# Create the data root and its folders the locked way the installer does, so a root this audit makes
+# before the installer runs (an elevated first run) is never briefly writable by a standard user.
+foreach ($d in @($DataRoot, $reportRoot, $logRoot)) { Initialize-CEDataFolder -Path $d | Out-Null }
 
 # Only one audit at a time (scheduled task, Intune remediation and a manual run can overlap).
 $mutex = New-Object System.Threading.Mutex($false, 'Global\EngramicBaselineAudit')
@@ -92,11 +92,13 @@ catch {
 }
 finally {
     Stop-Transcript | Out-Null
-    # Housekeeping: keep the newest reports and logs.
+    # Housekeeping: keep the newest reports and logs. Delete old report folders with a recursive
+    # delete that never follows a link (Remove-Item -Recurse follows junctions on 5.1); this runs as
+    # SYSTEM under the data folder.
     Get-ChildItem -LiteralPath $reportRoot -Directory -ErrorAction SilentlyContinue |
         Sort-Object Name -Descending | Select-Object -Skip $KeepReports |
-        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-    Get-ChildItem -LiteralPath $logRoot -Filter 'audit-*.log' -ErrorAction SilentlyContinue |
+        ForEach-Object { try { Remove-CEDataTree -Path $_.FullName } catch { Write-Warning "Could not remove old report folder $($_.FullName): $_" } }
+    Get-ChildItem -LiteralPath $logRoot -Filter 'audit-*.log' -File -ErrorAction SilentlyContinue |
         Sort-Object Name -Descending | Select-Object -Skip ($KeepReports * 2) |
         Remove-Item -Force -ErrorAction SilentlyContinue
     $mutex.ReleaseMutex()

@@ -90,6 +90,8 @@ Export-ModuleMember -Function @(
     'Write-CEStatus',
     'Write-CEEventLog',
     'Get-CEDataRoot',
+    'Initialize-CEDataFolder',
+    'Remove-CEDataTree',
     'Get-CEToolVersion',
     'Test-CEComplianceRules'
 )

@@ -28,6 +28,32 @@ if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProces
     exit $p.ExitCode
 }
 
+function Remove-CETreeNoFollow {
+    <#
+        Deletes a folder and everything in it without ever following a junction or symbolic link (each
+        link is removed as a link). This runs as SYSTEM under the data folder, and Remove-Item -Recurse
+        follows links on Windows PowerShell 5.1, which could empty a folder a link points at.
+    #>
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    $attrs = [IO.File]::GetAttributes($Path)
+    if ($attrs -band [IO.FileAttributes]::ReparsePoint) {
+        if ($attrs -band [IO.FileAttributes]::Directory) { [IO.Directory]::Delete($Path, $false) } else { [IO.File]::Delete($Path) }
+        return
+    }
+    if (-not ($attrs -band [IO.FileAttributes]::Directory)) { [IO.File]::Delete($Path); return }
+    foreach ($child in @([IO.Directory]::GetFileSystemEntries($Path))) {
+        $ca = $null
+        try { $ca = [IO.File]::GetAttributes($child) } catch { continue }
+        if ($ca -band [IO.FileAttributes]::ReparsePoint) {
+            if ($ca -band [IO.FileAttributes]::Directory) { [IO.Directory]::Delete($child, $false) } else { [IO.File]::Delete($child) }
+        }
+        elseif ($ca -band [IO.FileAttributes]::Directory) { Remove-CETreeNoFollow -Path $child }
+        else { [IO.File]::Delete($child) }
+    }
+    [IO.Directory]::Delete($Path, $false)
+}
+
 $regPath = 'HKLM:\SOFTWARE\EngramicBaseline'
 $dataRoot = Join-Path $env:ProgramData 'EngramicBaseline'
 $installPath = Join-Path $env:ProgramFiles 'EngramicBaseline'
@@ -71,7 +97,7 @@ try {
     Remove-Item -Path $regPath -Recurse -Force -ErrorAction SilentlyContinue
 
     if ($RemoveData -and (Test-Path -LiteralPath $dataRoot)) {
-        Remove-Item -LiteralPath $dataRoot -Recurse -Force
+        Remove-CETreeNoFollow -Path $dataRoot
         Write-Host "Removed $dataRoot"
     }
     Write-Host 'Uninstalled.'

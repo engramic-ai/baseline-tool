@@ -159,6 +159,101 @@ function Get-CEDataRoot {
     return (Join-Path $base 'EngramicBaseline')
 }
 
+function New-CELockedDirectorySecurity {
+    <#
+        The locked security descriptor a machine data folder is born with: a protected DACL (no
+        inheritance from %ProgramData%) granting only SYSTEM and Administrators full control, inherited
+        by the folder's children. -UsersRead also grants Users read and execute. SIDs keep it locale
+        independent. Owner is set separately, because applying an owner needs a privilege the
+        descriptor alone can't guarantee. Kept identical to the installer's New-CEDataDirectorySecurity.
+    #>
+    param([switch]$UsersRead)
+    $sddl = 'D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)'
+    if ($UsersRead) { $sddl += '(A;OICI;0x1200A9;;;BU)' }
+    $sec = New-Object Security.AccessControl.DirectorySecurity
+    $sec.SetSecurityDescriptorSddlForm($sddl)
+    return $sec
+}
+
+function Set-CEDirectoryOwnerAdministrators {
+    <#
+        Forces the owner of a folder this tool just created to the Administrators group, since the
+        "default owner for objects created by administrators" policy can otherwise make the owner the
+        specific administrator, which the data-path trust checks would reject. Only ever called on a
+        folder the tool created, never on one a standard user owns.
+    #>
+    param([string]$Path)
+    $admins = New-Object Security.Principal.SecurityIdentifier('S-1-5-32-544')
+    $acl = Get-Acl -LiteralPath $Path
+    if ("$($acl.GetOwner([Security.Principal.SecurityIdentifier]))" -ne $admins.Value) {
+        $acl.SetOwner($admins)
+        Set-Acl -LiteralPath $Path -AclObject $acl
+    }
+}
+
+function Initialize-CEDataFolder {
+    <#
+        Creates a machine data folder the same way the installer does, so a data root is never born
+        user-writable even when an elevated audit (the GUI, Invoke-CEAudit or the scheduled audit)
+        runs before the installer. Non-elevated or non-Windows callers only affect their own user and
+        their data lives in their own profile, so they get a plain folder. An elevated caller on
+        Windows gets the folder with its locked descriptor applied in the one call that makes it, then
+        verifies the owner and permissions; anything untrusted already in its place (a folder or file
+        a standard user made, or a link) is moved aside and the create retried, never written into or
+        taken back in place (its creator may hold a handle that kept the right to re-permission it).
+        Returns the path.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][string]$Path, [switch]$UsersRead)
+    if (-not (Test-CEIsWindows) -or -not (Test-CEIsAdmin)) {
+        if (-not (Test-Path -LiteralPath $Path -PathType Container)) { New-Item -ItemType Directory -Path $Path -Force | Out-Null }
+        return $Path
+    }
+    for ($attempt = 0; $attempt -lt 5; $attempt++) {
+        if (Test-Path -LiteralPath $Path) {
+            if (-not (Test-CEReparsePoint -Path $Path) -and @(Get-CEDataPathProblem -Path $Path).Count -eq 0) { return $Path }
+            $aside = '{0}.untrusted-{1}' -f $Path, [guid]::NewGuid().ToString('n')
+            if ([IO.File]::GetAttributes($Path) -band [IO.FileAttributes]::Directory) { [IO.Directory]::Move($Path, $aside) } else { [IO.File]::Move($Path, $aside) }
+            Write-Warning "Moved an untrusted $Path aside to $aside and will make a fresh, locked one."
+            continue
+        }
+        $security = New-CELockedDirectorySecurity -UsersRead:$UsersRead
+        if ($PSVersionTable.PSVersion.Major -ge 6) { [void][IO.FileSystemAclExtensions]::Create([IO.DirectoryInfo]::new($Path), $security) }
+        else { [void][IO.Directory]::CreateDirectory($Path, $security) }
+        Set-CEDirectoryOwnerAdministrators -Path $Path
+        if (-not (Test-CEReparsePoint -Path $Path) -and @(Get-CEDataPathProblem -Path $Path).Count -eq 0) { return $Path }
+    }
+    throw "Could not create a locked, administrator-owned data folder at $Path."
+}
+
+function Remove-CEDataTree {
+    <#
+        Deletes a folder and everything in it without ever following a junction or symbolic link: each
+        link is removed as a link, each real subfolder is recursed into, each file is deleted. Used for
+        SYSTEM deletes under the data folder (report and log housekeeping). Remove-Item -Recurse is not
+        used because Windows PowerShell 5.1 follows links and would empty what they point at.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    if (Test-CEReparsePoint -Path $Path) {
+        if ([IO.File]::GetAttributes($Path) -band [IO.FileAttributes]::Directory) { [IO.Directory]::Delete($Path, $false) } else { [IO.File]::Delete($Path) }
+        return
+    }
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) { [IO.File]::Delete($Path); return }
+    foreach ($child in @([IO.Directory]::GetFileSystemEntries($Path))) {
+        $attrs = $null
+        try { $attrs = [IO.File]::GetAttributes($child) } catch { continue }
+        if ($attrs -band [IO.FileAttributes]::ReparsePoint) {
+            if ($attrs -band [IO.FileAttributes]::Directory) { [IO.Directory]::Delete($child, $false) } else { [IO.File]::Delete($child) }
+        }
+        elseif ($attrs -band [IO.FileAttributes]::Directory) { Remove-CEDataTree -Path $child }
+        else { [IO.File]::Delete($child) }
+    }
+    [IO.Directory]::Delete($Path, $false)
+}
+
 function Get-CEUserRegistryRoot {
     <#
         Registry root for per-user settings of the person using the device.

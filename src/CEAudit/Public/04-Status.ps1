@@ -190,7 +190,9 @@ function Write-CEStatus {
         [string]$Path = (Join-Path (Get-CEDataRoot) 'status.json')
     )
     $dir = Split-Path -Parent $Path
-    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    # Create the data folder the locked way (Initialize-CEDataFolder) so an elevated audit that makes
+    # it before the installer runs never leaves it briefly writable by a standard user.
+    Initialize-CEDataFolder -Path $dir | Out-Null
     if ($PSCmdlet.ShouldProcess($Path, 'Write compliance status')) {
         # A name of its own each time: anything already at a fixed name (a folder a user made
         # before the install locked the data folder, say) would make every write fail.

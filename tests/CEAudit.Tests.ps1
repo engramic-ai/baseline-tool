@@ -2555,11 +2555,26 @@ Describe 'Counting failed machine audits (last-error.json)' {
 
     It 'the scheduled audit counts failed runs in a fresh process, carrying the first failure time over' {
         $pwshExe = (Get-Process -Id $PID).Path
+        # Every run fails just after the data folders are set up, the same way elevated (CI) or not: it
+        # runs a copy of the tool whose own scheduled-audit.json is not JSON, and the tool's own config is
+        # read with no permission check. A config override in the data folder would not do: an elevated
+        # run uses one only if administrators own it and the folders it is in, and otherwise ignores it,
+        # so the audit succeeds.
+        $tool = Join-Path $TestDrive 'failing-tool'
+        New-Item -ItemType Directory -Path $tool | Out-Null
+        foreach ($part in @('app', 'config', 'src')) { Copy-Item -LiteralPath (Join-Path $script:RepoRoot $part) -Destination $tool -Recurse }
+        Set-Content -LiteralPath (Join-Path (Join-Path $tool 'config') 'scheduled-audit.json') -Value 'not json'
+        # The data folder is made first, the locked way when elevated, as the install makes it. A folder
+        # this test made plainly would be writable by the runner's own account, so an elevated run would
+        # rightly move it aside - taking last-error.json, and the count, with it.
         $root = Join-Path $TestDrive 'headless-failing'
-        # A config override that is not JSON makes the run fail after the data folders are set up.
-        New-Item -ItemType Directory -Path (Join-Path $root 'config') -Force | Out-Null
-        Set-Content -LiteralPath (Join-Path (Join-Path $root 'config') 'scheduled-audit.json') -Value 'not json'
-        $auditScript = Join-Path $script:RepoRoot 'app\Invoke-CEScheduledAudit.ps1'
+        InModuleScope CEAudit -Parameters @{ Root = $root } {
+            param($Root)
+            $script:CEDataRootOverride = $Root
+            try { Initialize-CEDataFolder -Path $Root | Out-Null }
+            finally { $script:CEDataRootOverride = $null }
+        }
+        $auditScript = Join-Path (Join-Path $tool 'app') 'Invoke-CEScheduledAudit.ps1'
         $errPath = Join-Path $root 'last-error.json'
         & $pwshExe -NoProfile -File $auditScript -DataRoot $root *> $null
         $LASTEXITCODE | Should -Be 1
@@ -2572,6 +2587,7 @@ Describe 'Counting failed machine audits (last-error.json)' {
         "$($two.FirstFailure)" | Should -Be "$($one.FirstFailure)"
         "$($two.Time)" | Should -Not -Be "$($one.Time)"
         Test-Path -LiteralPath (Join-Path $root 'status.json') | Should -BeFalse -Because 'a failed run never writes status.json'
+        @(Get-ChildItem -LiteralPath $TestDrive -Filter 'headless-failing.untrusted-*').Count | Should -Be 0 -Because 'each run kept the data folder it found'
     }
 
     It 'only the scheduled machine audit counts failures; the user probe never does' {

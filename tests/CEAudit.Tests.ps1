@@ -458,6 +458,21 @@ Describe 'Static invariants' {
         }
         @($problems) -join "`n" | Should -BeNullOrEmpty
     }
+
+    It 'the installer and the module lock a data folder with the identical descriptor (no drift)' {
+        # The installer can't import the module, so it carries its own copy of the locked-descriptor
+        # builder, like Get-CEStatusTrustProblem. This keeps the two copies from drifting apart.
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path (Join-Path $script:RepoRoot 'intune') 'Install-CEChecker.ps1'), [ref]$null, [ref]$null)
+        $fn = $ast.Find({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq 'New-CEDataDirectorySecurity' }, $true)
+        $fn | Should -Not -BeNullOrEmpty
+        . ([scriptblock]::Create($fn.Extent.Text))
+        foreach ($usersRead in $false, $true) {
+            $installerSddl = (New-CEDataDirectorySecurity -UsersRead:$usersRead).GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::Access)
+            $moduleSddl = InModuleScope CEAudit -Parameters @{ U = $usersRead } { param($U) (New-CELockedDirectorySecurity -UsersRead:$U).GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::Access) }
+            $installerSddl | Should -Be $moduleSddl -Because "the two copies must lock a folder identically (UsersRead=$usersRead)"
+            $installerSddl | Should -Match '^D:P\(A;OICI;FA;;;SY\)\(A;OICI;FA;;;BA\)' -Because 'protected, SYSTEM and Administrators only'
+        }
+    }
 }
 
 Describe 'Parsers' {

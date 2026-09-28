@@ -1240,240 +1240,143 @@ Describe 'Intune: status, discovery and compliance rules' {
         (Get-Content (Join-Path $script:intune 'Detect-CEChecker.ps1') -Raw) | Should -Match ([regex]::Escape("[version]'$v'"))
     }
 
-    It 'the install takes back and locks the data folder before creating, logging or copying anything' {
-        # %ProgramData% lets standard users create folders, and the SYSTEM audit trusts config
-        # overrides there, so a folder a user made first must be taken back before it is used.
+    It 'the install makes the data folder and its subfolders locked at birth, before logging or copying, and never takes an existing one back in place' {
+        # %ProgramData% lets standard users create folders, and the SYSTEM audit and Intune trust a
+        # status.json and config overrides there, so every folder the tool keeps must be born locked.
         $text = (Get-Content (Join-Path $script:intune 'Install-CEChecker.ps1') -Raw) -replace '\r\n', "`n"
         $firstCopy = $text.IndexOf('Copy-Item')
         $firstCopy | Should -BeGreaterThan 0
-        # Initialize-CEDataRoot takes back and locks it (its own test covers how).
-        $lock = $text.IndexOf("`n    Initialize-CEDataRoot -Path `$dataRoot")
-        $lock | Should -BeGreaterThan 0
-        $lock | Should -BeLessThan $text.IndexOf("foreach (`$name in @('logs', 'reports', 'config'))")
-        $lock | Should -BeLessThan $firstCopy
-        $lock | Should -BeLessThan $text.IndexOf('Start-Transcript')
-        $text | Should -Match '(?m)^\s+Reset-CEFolderOwner -Path \$d$' -Because 'each subfolder is taken back too'
-        $text | Should -Match "(?m)^\`$takeown = Join-Path \`$system32 'takeown\.exe'$"
+        $init = $text.IndexOf("`n    Initialize-CEDataRoot -Path `$dataRoot")
+        $init | Should -BeGreaterThan 0
+        $init | Should -BeLessThan $text.IndexOf('Start-Transcript')
+        $init | Should -BeLessThan $firstCopy
+        # The root and every kept subfolder are made with New-CELockedDirectory (locked at birth).
+        $text | Should -Match "foreach \(\`$name in @\('logs', 'reports', 'cache', 'packs'\)\) \{ New-CELockedDirectory -Path \(Join-Path \`$dataRoot \`$name\) \}"
+        $text | Should -Match "New-CELockedDirectory -Path \(Join-Path \`$dataRoot 'config'\) -UsersRead"
+        # Locked in the one call that creates it: CreateDirectory with a descriptor on 5.1, FileSystemAclExtensions.Create on 7.
+        $text | Should -Match '\[IO\.Directory\]::CreateDirectory\(\$Path, \$security\)'
+        $text | Should -Match '\[IO\.FileSystemAclExtensions\]::Create\(\[IO\.DirectoryInfo\]::new\(\$Path\), \$security\)'
+        # The in-place take-back is gone: no takeown, no ownership reset, no repair of a user folder in place.
+        $text | Should -Not -Match '\$takeown'
+        $text | Should -Not -Match 'Reset-CEFolderOwner'
+        $text | Should -Not -Match 'Repair-CEDataFolder'
+        # Anything already there is moved aside, never reused.
+        $text | Should -Match 'Move-CEItemAside -Path \$Path'
+        # Native tools by full path; icacls still locks Program Files (Set-CELockedAcl).
         $text | Should -Match "(?m)^\`$icacls = Join-Path \`$system32 'icacls\.exe'$"
         $text | Should -Not -Match '&\s*(icacls|takeown)(\.exe)?\b' -Because 'native tools run by full path, not through PATH'
         $text | Should -Match 'if \(\$transcribing\) \{ Stop-Transcript' -Because 'a failure before logging starts must not hide the real error'
-        # takeown and icacls change a junction itself, not its target, so a planted link is removed first.
-        $text | Should -Match '(?m)^\s+if \(Test-CEReparsePoint -Path \$d\) \{ Remove-CELink -Path \$d \}\n\s+if \(-not \(Test-Path -LiteralPath \$d\)\).*\n\s+Reset-CEFolderOwner -Path \$d$'
-        $repair = $text.IndexOf('Repair-CEDataFolder -Path $dataRoot -Root $dataRoot -KeepFolders $dataFolders')
-        $repair | Should -BeGreaterThan $lock
-        $repair | Should -BeLessThan $firstCopy
-        $text | Should -Match "(?m)^\`$dataFolders = @\('logs', 'reports', 'config', 'cache', 'packs'\)$"
-        $text | Should -Match "foreach \(\`$name in @\('logs', 'reports', 'cache'\)\) \{ Repair-CEDataFolder -Path \(Join-Path \`$dataRoot \`$name\) -Root \`$dataRoot \}"
-        $text | Should -Match "foreach \(\`$name in @\('config', 'packs'\)\) \{ Repair-CEDataFolder -Path \(Join-Path \`$dataRoot \`$name\) -Root \`$dataRoot -WarnOnly \}"
     }
 
-    It 'the install removes links a user planted in the data folder and deletes what they left there, never following a link' {
-        . (Get-TestInstallerCode -Path (Join-Path $script:intune 'Install-CEChecker.ps1') -Name @('Test-CEReparsePoint', 'Remove-CELink', 'Assert-CEInDataRoot', 'Remove-CEPlantedFile', 'Remove-CEFolderTree', 'Repair-CEDataFolder'))
-        # Stand-ins: trust by name (admin-* is an administrator's), and no takeown as a standard user.
-        Set-Variable -Name trustedOwners -Value @('S-1-5-18', 'S-1-5-32-544')
-        function Get-CEItemTrustProblem { param([string]$Path) if ((Split-Path -Leaf $Path) -like 'admin-*') { '' } else { "$Path is owned by S-1-5-21-1-2-3-1001, not an administrator" } }
-        $global:TestTakenBack = New-Object System.Collections.ArrayList
-        function Reset-CEFolderOwner { param([string]$Path) [void]$global:TestTakenBack.Add($Path) }
-
-        $root = Join-Path $TestDrive 'planted-data'
-        $bob = Join-Path $TestDrive 'bob-folder'
-        $tmpFolder = Join-Path $root 'status.json.tmp'
-        $reports = Join-Path $root 'reports'
-        New-Item -ItemType Directory -Force -Path $root, $bob, (Join-Path $root 'packs'), (Join-Path $root 'config'), (Join-Path $root 'admin-extra'), (Join-Path $tmpFolder 'sub'), (Join-Path $reports 'zz'), (Join-Path $reports 'admin-run') | Out-Null
-        Set-Content -LiteralPath (Join-Path $bob 'keep.txt') -Value 'bob'
-        Set-Content -LiteralPath (Join-Path $root 'status.json') -Value '{ "autoFailCount": 0 }'
-        Set-Content -LiteralPath (Join-Path $root 'admin-note.txt') -Value 'x'
-        Set-Content -LiteralPath (Join-Path (Join-Path $root 'config') 'thresholds.json') -Value '{}'
-        Set-Content -LiteralPath (Join-Path $tmpFolder 'a.txt') -Value 'a'
-        Set-Content -LiteralPath (Join-Path (Join-Path $tmpFolder 'sub') 'b.txt') -Value 'b'
-        $links = @(
-            (Join-Path $root 'cache'),
-            (Join-Path $tmpFolder 'j'),
-            (Join-Path (Join-Path $tmpFolder 'sub') 'k'),
-            (Join-Path (Join-Path $reports 'zz') 'l'),
-            (Join-Path $TestDrive 'root-link')
-        )
-        foreach ($j in $links) { New-Item -ItemType Junction -Path $j -Target $bob | Out-Null }
-        try {
-            Test-CEReparsePoint -Path $links[0] | Should -BeTrue
-            Test-CEReparsePoint -Path $bob | Should -BeFalse
-            Test-CEReparsePoint -Path (Join-Path $TestDrive 'missing') | Should -BeFalse
-
-            $warned = @(Repair-CEDataFolder -Path $root -Root $root -KeepFolders @('logs', 'reports', 'config', 'cache', 'packs') 3>&1) -join "`n"
-            Test-Path -LiteralPath $links[0] | Should -BeFalse -Because 'the planted junction is removed'
-            Test-Path -LiteralPath (Join-Path $root 'status.json') | Should -BeFalse -Because 'a user-owned status.json could be forged until the first audit'
-            Test-Path -LiteralPath $tmpFolder | Should -BeFalse -Because 'a folder a user made where the tool keeps none is deleted, not taken back'
-            Test-Path -LiteralPath (Join-Path $root 'admin-note.txt') | Should -BeTrue
-            Test-Path -LiteralPath (Join-Path $root 'admin-extra') | Should -BeTrue
-            @($global:TestTakenBack) | Should -Contain (Join-Path $root 'packs')
-            @($global:TestTakenBack) | Should -Contain $reports
-            @($global:TestTakenBack) | Should -Contain $tmpFolder -Because 'a folder is taken back before it is emptied'
-            @($global:TestTakenBack) | Should -Not -Contain (Join-Path $root 'admin-extra')
-            $warned | Should -Match 'is a link'
-            $warned | Should -Match 'status\.json'
-
-            Repair-CEDataFolder -Path $reports -Root $root 3>$null
-            Test-Path -LiteralPath (Join-Path $reports 'zz') | Should -BeFalse
-            Test-Path -LiteralPath (Join-Path $reports 'admin-run') | Should -BeTrue
-            Get-Content -LiteralPath (Join-Path $bob 'keep.txt') | Should -Be 'bob' -Because 'no link was followed'
-
-            $warned = @(Repair-CEDataFolder -Path (Join-Path $root 'config') -Root $root -WarnOnly 3>&1) -join "`n"
-            Test-Path -LiteralPath (Join-Path (Join-Path $root 'config') 'thresholds.json') | Should -BeTrue -Because 'config overrides are only warned about; audits ignore them'
-            $warned | Should -Match 'thresholds\.json is owned by S-1-5-21-1-2-3-1001'
-
-            Remove-CELink -Path $links[4] 3>$null
-            Test-Path -LiteralPath $links[4] | Should -BeFalse
-            Get-Content -LiteralPath (Join-Path $bob 'keep.txt') | Should -Be 'bob'
-        }
-        finally {
-            foreach ($j in $links) { if (Test-CEReparsePoint -Path $j) { [IO.Directory]::Delete($j, $false) } }
-        }
+    It 'the locked descriptor a data folder is born with grants only SYSTEM and Administrators (and optionally Users read)' {
+        # Test A checks this descriptor is what CreateDirectory / FileSystemAclExtensions.Create is
+        # given, so the folder is locked in the one call that makes it. The elevated on-disk result
+        # (owner and DACL) is checked by 'Locked-at-birth data folders' when the suite runs elevated.
+        . (Get-TestInstallerCode -Path (Join-Path $script:intune 'Install-CEChecker.ps1') -Name @('New-CEDataDirectorySecurity'))
+        $adminOnly = (New-CEDataDirectorySecurity).GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::Access)
+        $adminOnly | Should -Match '^D:P'                     # protected: no inheritance from %ProgramData%
+        $adminOnly | Should -Match '\(A;OICI;FA;;;SY\)'       # SYSTEM full control, inherited by children
+        $adminOnly | Should -Match '\(A;OICI;FA;;;BA\)'       # Administrators full control
+        $adminOnly | Should -Not -Match ';;;(BU|WD|AU|IU)\)'  # nobody else, not even read
+        $withRead = (New-CEDataDirectorySecurity -UsersRead).GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::Access)
+        $withRead | Should -Match '(?i)\(A;OICI;0x1200a9;;;BU\)' -Because 'the config folder lets Users read, never write'
+        $withRead | Should -Not -Match '\(A;OICI;FA;;;BU\)'
     }
 
-    It 'the install repairs nothing reached through a link or outside the data folder' {
-        # Test-CEReparsePoint reads only the last part of a path: data\logs through a junction at data
-        # looks like a real folder, and everything done to it would happen where the junction leads.
-        . (Get-TestInstallerCode -Path (Join-Path $script:intune 'Install-CEChecker.ps1') -Name @('Test-CEReparsePoint', 'Remove-CELink', 'Assert-CEInDataRoot', 'Remove-CEPlantedFile', 'Remove-CEFolderTree', 'Repair-CEDataFolder'))
-        Set-Variable -Name trustedOwners -Value @('S-1-5-18', 'S-1-5-32-544')
-        function Get-CEItemTrustProblem { param([string]$Path) "$Path is owned by S-1-5-21-1-2-3-1001, not an administrator" }
-        function Reset-CEFolderOwner { param([string]$Path) }
-
-        $victim = Join-Path $TestDrive 'victim-profile'
-        New-Item -ItemType Directory -Force -Path (Join-Path $victim 'logs'), (Join-Path $victim 'Documents') | Out-Null
-        Set-Content -LiteralPath (Join-Path (Join-Path $victim 'logs') 'sentinel3.txt') -Value 'keep'
-        Set-Content -LiteralPath (Join-Path $victim 'top.txt') -Value 'keep'
-        $real = Join-Path $TestDrive 'real-data2'
-        New-Item -ItemType Directory -Force -Path $real | Out-Null
-        $rootLink = Join-Path $TestDrive 'data2'
-        $subLink = Join-Path $real 'reports'
-        New-Item -ItemType Junction -Path $rootLink -Target $victim | Out-Null
-        New-Item -ItemType Junction -Path $subLink -Target $victim | Out-Null
-        try {
-            { Repair-CEDataFolder -Path (Join-Path $rootLink 'logs') -Root $rootLink } | Should -Throw '*is a link*'
-            { Repair-CEDataFolder -Path $rootLink -Root $rootLink } | Should -Throw '*is a link*'
-            { Repair-CEDataFolder -Path (Join-Path $subLink 'logs') -Root $real } | Should -Throw '*is a link*'
-            { Repair-CEDataFolder -Path $victim -Root $real } | Should -Throw '*not in the data folder*'
-            { Repair-CEDataFolder -Path (Join-Path $real '..\victim-profile') -Root $real } | Should -Throw '*not in the data folder*'
-            { Repair-CEDataFolder -Path "$real-other" -Root $real } | Should -Throw '*not in the data folder*'
-            Get-Content -LiteralPath (Join-Path (Join-Path $victim 'logs') 'sentinel3.txt') | Should -Be 'keep'
-            Get-Content -LiteralPath (Join-Path $victim 'top.txt') | Should -Be 'keep'
-            Test-Path -LiteralPath (Join-Path $victim 'Documents') | Should -BeTrue
-            # A path with no link on the way is repaired as usual.
-            Set-Content -LiteralPath (Join-Path $real 'planted.txt') -Value 'x'
-            Repair-CEDataFolder -Path (Join-Path $real 'logs') -Root $real
-            Repair-CEDataFolder -Path $real -Root $real -KeepFolders @('reports') 3>$null
-            Test-Path -LiteralPath (Join-Path $real 'planted.txt') | Should -BeFalse
-            Test-Path -LiteralPath $subLink | Should -BeFalse
-            Get-Content -LiteralPath (Join-Path (Join-Path $victim 'logs') 'sentinel3.txt') | Should -Be 'keep'
-        }
-        finally {
-            foreach ($j in @($rootLink, $subLink)) { if (Test-CEReparsePoint -Path $j) { [IO.Directory]::Delete($j, $false) } }
-        }
-    }
-
-    It 'the install moves aside a data folder a user made, and stops if it becomes a link while being locked' {
-        . (Get-TestInstallerCode -Path (Join-Path $script:intune 'Install-CEChecker.ps1') -Name @('Test-CEReparsePoint', 'Remove-CELink', 'Initialize-CEDataRoot'))
-        # Stand-ins: a folder with planted.txt in it is a user's; no takeown or icacls as a standard user.
-        function Get-CEItemTrustProblem { param([string]$Path) if (Test-Path -LiteralPath (Join-Path $Path 'planted.txt')) { "$Path is owned by S-1-5-21-1-2-3-1001, not an administrator" } else { '' } }
-        $global:TestLockSteps = New-Object System.Collections.ArrayList
-        $global:TestSwap = $null
-        function Reset-CEFolderOwner { param([string]$Path) [void]$global:TestLockSteps.Add("owner $Path") }
-        function Set-CELockedAcl { param([string]$Path) [void]$global:TestLockSteps.Add("lock $Path"); if ($global:TestSwap) { & $global:TestSwap } }
+    It 'the install moves an existing data folder aside and makes a fresh one, following no link and re-permissioning nothing a user owns' {
+        $installer = Join-Path $script:intune 'Install-CEChecker.ps1'
+        . (Get-TestInstallerCode -Path $installer -Name @('Test-CEReparsePoint', 'Remove-CELink', 'Move-CEItemAside', 'New-CELockedDirectory', 'Initialize-CEDataRoot'))
+        # Stand-ins for the elevated-only steps: a standard user can't set an owner to Administrators,
+        # so the fresh folders stay this account's. Give them a permissive descriptor the test can
+        # clean up, treat a folder holding 'planted.txt' as a user's, and record what would be
+        # re-permissioned - which must never include a folder a user owns.
+        $global:TestReownd = New-Object System.Collections.ArrayList
+        function New-CEDataDirectorySecurity { param([switch]$UsersRead) $s = New-Object Security.AccessControl.DirectorySecurity; $s.SetSecurityDescriptorSddlForm('D:(A;OICI;FA;;;WD)'); return $s }
+        function Set-CEOwnerAdministrators { param([string]$Path) [void]$global:TestReownd.Add($Path) }
+        function Get-CEItemTrustProblem { param([string]$Path) if (Test-Path -LiteralPath (Join-Path $Path 'planted.txt')) { "$Path is owned by a standard user" } else { '' } }
 
         $pd = Join-Path $TestDrive 'pd-init'
         $root = Join-Path $pd 'EngramicBaseline'
         $victim = Join-Path $TestDrive 'victim-init'
         New-Item -ItemType Directory -Force -Path $root, (Join-Path $victim 'sub') | Out-Null
         Set-Content -LiteralPath (Join-Path $victim 'keep.txt') -Value 'keep'
-        Set-Content -LiteralPath (Join-Path (Join-Path $victim 'sub') 'keep2.txt') -Value 'keep'
         Set-Content -LiteralPath (Join-Path $root 'planted.txt') -Value 'x'
-        $innerLink = Join-Path $root 'logs'
-        New-Item -ItemType Junction -Path $innerLink -Target $victim | Out-Null
+        Set-Content -LiteralPath (Join-Path $root 'status.json') -Value '{ "autoFailCount": 0 }'
         $links = New-Object System.Collections.ArrayList
-        [void]$links.Add($root)
+        [void]$links.Add((Join-Path $root 'logs'))
+        New-Item -ItemType Junction -Path (Join-Path $root 'logs') -Target $victim | Out-Null
         try {
-            # A folder a user made is moved aside whole, so nothing in it is taken back or followed.
+            # 1) A user-made root is moved aside whole; a fresh folder takes its place, not the user's taken back.
             Initialize-CEDataRoot -Path $root 3>$null
             Test-Path -LiteralPath $root -PathType Container | Should -BeTrue
-            Test-Path -LiteralPath (Join-Path $root 'planted.txt') | Should -BeFalse -Because 'the folder is a new one, not the user''s taken back'
+            Test-Path -LiteralPath (Join-Path $root 'planted.txt') | Should -BeFalse -Because 'the folder is new, not the user''s taken back'
+            Test-Path -LiteralPath (Join-Path $root 'status.json') | Should -BeFalse -Because 'a user-owned status.json is not carried over'
             $aside = @(Get-ChildItem -LiteralPath $pd -Directory -Filter 'EngramicBaseline.untrusted-*')
             $aside.Count | Should -Be 1
             [void]$links.Add((Join-Path $aside[0].FullName 'logs'))
-            Test-Path -LiteralPath (Join-Path $aside[0].FullName 'planted.txt') | Should -BeTrue
-            Test-CEReparsePoint -Path (Join-Path $aside[0].FullName 'logs') | Should -BeTrue
-            @($global:TestLockSteps) | Should -Be @("owner $root", "lock $root")
+            Test-Path -LiteralPath (Join-Path $aside[0].FullName 'planted.txt') | Should -BeTrue -Because 'the user''s folder is moved aside intact'
+            Test-CEReparsePoint -Path (Join-Path $aside[0].FullName 'logs') | Should -BeTrue -Because 'a link inside it is neither followed nor removed, only carried along'
+            Get-Content -LiteralPath (Join-Path $victim 'keep.txt') | Should -Be 'keep' -Because 'nothing the link points at is touched'
+            @($global:TestReownd) | Should -Not -Contain $aside[0].FullName -Because 'a folder a standard user owns is never taken back in place'
+            @($global:TestReownd) | Should -Contain $root -Because 'only the fresh folder the install made is owned to Administrators'
 
-            # An administrator's folder is kept.
-            Set-Content -LiteralPath (Join-Path $root 'status.json') -Value '{}'
-            Initialize-CEDataRoot -Path $root 3>$null
-            Test-Path -LiteralPath (Join-Path $root 'status.json') | Should -BeTrue
-            @(Get-ChildItem -LiteralPath $pd -Directory -Filter 'EngramicBaseline.untrusted-*').Count | Should -Be 1
-
-            # A junction in its place is removed, never followed.
-            [IO.Directory]::Move($root, "$root-old")
+            # 2) A junction left in place of the root is removed as a link, never followed.
+            Remove-Item -LiteralPath $root -Recurse -Force
             New-Item -ItemType Junction -Path $root -Target $victim | Out-Null
+            [void]$links.Add($root)
             Initialize-CEDataRoot -Path $root 3>$null
-            Test-CEReparsePoint -Path $root | Should -BeFalse
+            Test-CEReparsePoint -Path $root | Should -BeFalse -Because 'the link was removed and a real folder made'
             Get-Content -LiteralPath (Join-Path $victim 'keep.txt') | Should -Be 'keep'
 
-            # Swapped for a junction while it is being locked (before that, its owner could rename it).
-            $global:TestSwap = { [IO.Directory]::Move($root, "$root-moved"); New-Item -ItemType Junction -Path $root -Target $victim | Out-Null }.GetNewClosure()
-            { Initialize-CEDataRoot -Path $root 3>$null } | Should -Throw '*became a link*'
-            Test-Path -LiteralPath $root | Should -BeFalse -Because 'the link is removed'
-            Get-Content -LiteralPath (Join-Path $victim 'keep.txt') | Should -Be 'keep'
-            Get-Content -LiteralPath (Join-Path (Join-Path $victim 'sub') 'keep2.txt') | Should -Be 'keep'
+            # 3) New-CELockedDirectory moves an untrusted folder that appears at the path aside, then makes a fresh one.
+            $sub = Join-Path $root 'packs'
+            New-Item -ItemType Directory -Path $sub -Force | Out-Null
+            Set-Content -LiteralPath (Join-Path $sub 'planted.txt') -Value 'x'
+            New-CELockedDirectory -Path $sub 3>$null
+            Test-Path -LiteralPath (Join-Path $sub 'planted.txt') | Should -BeFalse -Because 'the user folder was moved aside, not taken back'
+            @(Get-ChildItem -LiteralPath $root -Directory -Filter 'packs.untrusted-*').Count | Should -Be 1
         }
         finally {
-            $global:TestSwap = $null
-            foreach ($j in $links) { if (Test-CEReparsePoint -Path $j) { [IO.Directory]::Delete($j, $false) } }
+            Remove-Variable -Name TestReownd -Scope Global -ErrorAction SilentlyContinue
+            foreach ($j in $links) { if ((Test-Path -LiteralPath $j) -and (Test-CEReparsePoint -Path $j)) { [IO.Directory]::Delete($j, $false) } }
         }
     }
 
-    It 'the install treats a file standard users can change as theirs, whoever owns it, and removes a hard link to it' {
-        # A hard link is not a link to Test-CEReparsePoint and shows the owner of the file it shares,
-        # such as an administrator-owned ntuser.ini the user has full control of.
+    It 'Get-CEItemTrustProblem treats a file a standard user can change as untrusted, whoever owns it' {
+        # A hard link is not a reparse point and shows the owner of the file it shares, such as an
+        # administrator-owned ntuser.ini a user has full control of. Owner alone is not enough.
         $installer = Join-Path $script:intune 'Install-CEChecker.ps1'
-        . (Get-TestInstallerCode -Path $installer -Name @('Test-CEReparsePoint', 'Remove-CELink', 'Get-CEItemTrustProblem', 'Assert-CEInDataRoot', 'Remove-CEPlantedFile', 'Remove-CEFolderTree', 'Repair-CEDataFolder'))
+        . (Get-TestInstallerCode -Path $installer -Name @('Test-CEReparsePoint', 'Get-CEItemTrustProblem'))
         . (Get-TestInstallerCode -Path $installer -Variable 'writeRights')
-        # This account stands in for an administrator, so its own files look like the SYSTEM audit's.
         $me = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
         Set-Variable -Name trustedOwners -Value @('S-1-5-18', 'S-1-5-32-544', $me)
-        function Reset-CEFolderOwner { param([string]$Path) }
         function Set-TestAcl {
-            <# Only SYSTEM, Administrators and this account, plus whatever -Grant adds. icacls needs no privilege for this. #>
             param([string]$Path, [string[]]$Grant = @())
             $icaclsArgs = @($Path, '/inheritance:r', '/grant:r', '*S-1-5-18:F', '*S-1-5-32-544:F', "*${me}:F") + $Grant
             & (Join-Path ([Environment]::GetFolderPath('System')) 'icacls.exe') @icaclsArgs | Out-Null
             $LASTEXITCODE | Should -Be 0
         }
-
-        $root = Join-Path $TestDrive 'acl-data'
-        $userProfile = Join-Path $TestDrive 'acl-profile'
+        $root = Join-Path $TestDrive 'trustprob'
+        $userProfile = Join-Path $TestDrive 'trustprob-profile'
         New-Item -ItemType Directory -Force -Path $root, $userProfile | Out-Null
         $ini = Join-Path $userProfile 'ntuser.ini'
         Set-Content -LiteralPath $ini -Value 'real'
         Set-TestAcl -Path $ini -Grant @('*S-1-5-32-545:M')
-        $own = Join-Path $root 'admin-own.json'
-        Set-Content -LiteralPath $own -Value '{}'
-        Set-TestAcl -Path $own
-        $readable = Join-Path $root 'readable.json'
-        Set-Content -LiteralPath $readable -Value '{}'
-        Set-TestAcl -Path $readable -Grant @('*S-1-5-32-545:RX')
+        $own = Join-Path $root 'admin-own.json'; Set-Content -LiteralPath $own -Value '{}'; Set-TestAcl -Path $own
+        $readable = Join-Path $root 'readable.json'; Set-Content -LiteralPath $readable -Value '{}'; Set-TestAcl -Path $readable -Grant @('*S-1-5-32-545:RX')
         $status = Join-Path $root 'status.json'
         New-Item -ItemType HardLink -Path $status -Target $ini | Out-Null
-
-        Test-CEReparsePoint -Path $status | Should -BeFalse
-        Get-CEItemTrustProblem -Path $own | Should -BeNullOrEmpty
-        Get-CEItemTrustProblem -Path $readable | Should -BeNullOrEmpty -Because 'reading is not changing'
-        Get-CEItemTrustProblem -Path $status | Should -Match 'status\.json can be changed by S-1-5-32-545'
-
-        Repair-CEDataFolder -Path $root -Root $root 3>$null
-        Test-Path -LiteralPath $status | Should -BeFalse -Because 'a status.json the user can write could be forged'
-        Test-Path -LiteralPath $own | Should -BeTrue
-        Get-Content -LiteralPath $ini | Should -Be 'real' -Because 'only the planted name is removed'
-
-        Set-Variable -Name trustedOwners -Value @('S-1-5-18', 'S-1-5-32-544')
-        Get-CEItemTrustProblem -Path $own | Should -Match "is owned by $me"
+        try {
+            Test-CEReparsePoint -Path $status | Should -BeFalse
+            Get-CEItemTrustProblem -Path $own | Should -BeNullOrEmpty
+            Get-CEItemTrustProblem -Path $readable | Should -BeNullOrEmpty -Because 'reading is not changing'
+            Get-CEItemTrustProblem -Path $status | Should -Match 'status\.json can be changed by S-1-5-32-545'
+            Set-Variable -Name trustedOwners -Value @('S-1-5-18', 'S-1-5-32-544')
+            Get-CEItemTrustProblem -Path $own | Should -Match "is owned by $me"
+        }
+        finally {
+            foreach ($f in @($status, $own, $readable, $ini)) { if (Test-Path -LiteralPath $f) { & (Join-Path ([Environment]::GetFolderPath('System')) 'icacls.exe') $f '/grant' "*${me}:F" '/Q' 2>&1 | Out-Null } }
+        }
     }
 
     It 'writes status.json even when something is in the way at a fixed temporary name' {

@@ -1265,6 +1265,29 @@ Describe 'Intune: status, discovery and compliance rules' {
         }
     }
 
+    It 'the build takes a relative -OutputPath from the PowerShell location, not the process directory' {
+        $pwshExe = (Get-Process -Id $PID).Path
+        $buildPath = Join-Path $script:intune 'Build-IntunePackage.ps1'
+        $fakeDir = Join-Path $TestDrive 'fake iwau'
+        New-Item -ItemType Directory -Path $fakeDir -Force | Out-Null
+        $fake = Join-Path $fakeDir 'IntuneWinAppUtil.cmd'
+        # Stands in for IntuneWinAppUtil: -c <payload> -s <setup> -o <output> -q.
+        Set-Content -LiteralPath $fake -Encoding Ascii -Value @('@echo off', 'echo package> "%~6\Install-CEChecker.intunewin"')
+        $here = Join-Path $TestDrive 'build-here'
+        $elsewhere = Join-Path $TestDrive 'process-dir'
+        New-Item -ItemType Directory -Path $here, $elsewhere -Force | Out-Null
+        $cmd = "[Environment]::CurrentDirectory = '$elsewhere'; Set-Location -LiteralPath '$here'; & '$buildPath' -OutputPath '.\rel-build' -IntuneWinAppUtilPath '$fake'; exit [int](-not `$?)"
+        $log = Join-Path $TestDrive 'intune-build-rel.log'
+        # Windows PowerShell turns redirected native output on stderr into error records; the exit code is what is tested.
+        & { $ErrorActionPreference = 'Continue'; & $pwshExe -NoProfile -ExecutionPolicy Bypass -Command $cmd *> $log }
+        $LASTEXITCODE | Should -Be 0 -Because (Get-Content $log -Raw)
+        $out = Join-Path $here 'rel-build'
+        Test-Path -LiteralPath (Join-Path (Join-Path $out 'upload') 'Detect-CEChecker.ps1') | Should -BeTrue
+        @(Get-ChildItem -LiteralPath $out -Filter 'EngramicBaseline-*.intunewin').Count | Should -Be 1
+        Test-Path -LiteralPath (Join-Path $elsewhere 'rel-build') | Should -BeFalse
+        (Get-Content $log -Raw) | Should -Match ([regex]::Escape("Next: follow $(Join-Path $out 'INTUNE-SETTINGS.md')")) -Because 'it prints the full path'
+    }
+
     It 'Remediations detection prints a summary and exits 1 when not ready, 0 when ready' {
         $pwshExe = (Get-Process -Id $PID).Path
         $detect = Join-Path $script:intune 'Detect-CECompliance.ps1'

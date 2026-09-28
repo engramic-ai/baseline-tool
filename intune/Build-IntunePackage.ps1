@@ -41,6 +41,9 @@ param(
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
 if (-not $OutputPath) { $OutputPath = Join-Path $repo 'build' }
+# A full path, so every step (native tools and .NET calls, which resolve a relative path against
+# the process directory that Set-Location does not change) writes to the same place.
+$OutputPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputPath)
 $version = [string](Import-PowerShellDataFile -Path (Join-Path $repo 'src\CEAudit\CEAudit.psd1')).ModuleVersion
 
 # Keep the detection script's minimum version in step with the module.

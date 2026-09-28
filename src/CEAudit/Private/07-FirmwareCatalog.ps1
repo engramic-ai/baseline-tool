@@ -158,15 +158,19 @@ function Get-CEFirmwareCatalogRecord {
         return $result
     }
 
-    $cacheDir = Join-Path (Get-CEDataRoot) 'cache'
+    $dataRoot = Get-CEDataRoot
+    $cacheDir = Join-Path $dataRoot 'cache'
     $cacheFile = Join-Path $cacheDir "firmware-$($key.Vendor)-$($key.Id).json"
     $cached = $null
     $cachedEtag = ''
     $cacheAgeHours = [double]::MaxValue
     # Don't trust a cached record an elevated audit could have had planted (a forged
     # "up to date" record would suppress SU-08). Skip reading; a fresh fetch still runs.
-    # The file is checked too: it keeps the owner who created it, even in a folder locked later.
-    $cacheTrusted = (-not (Test-Path -LiteralPath $cacheDir)) -or (Test-CEDataPathTrusted -Path $cacheDir)
+    # Check the data folder itself as well as cache\ and the file, as Get-CEConfig and the packs
+    # loader do: whoever can write the data folder could replace cache\ wholesale, and a file
+    # keeps the owner who created it even in a folder locked later.
+    $rootTrusted = Test-CEDataPathTrusted -Path $dataRoot
+    $cacheTrusted = $rootTrusted -and ((-not (Test-Path -LiteralPath $cacheDir)) -or (Test-CEDataPathTrusted -Path $cacheDir))
     if ($cacheTrusted -and (Test-Path -LiteralPath $cacheFile) -and (Test-CEDataPathTrusted -Path $cacheFile)) {
         try {
             $wrapper = Get-Content -LiteralPath $cacheFile -Raw | ConvertFrom-Json
@@ -188,8 +192,11 @@ function Get-CEFirmwareCatalogRecord {
 
     $save = {
         param($record, $etag)
+        # Don't write the cache into a data folder an elevated audit doesn't trust: a standard user
+        # who owns it could turn cache\ into a junction and redirect this SYSTEM write elsewhere.
+        if (-not $cacheTrusted) { Write-Verbose 'Not caching the firmware record: the data folder or cache folder is not trusted.'; return }
         try {
-            if (-not (Test-Path -LiteralPath $cacheDir)) { New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null }
+            Initialize-CEDataFolder -Path $cacheDir | Out-Null
             [pscustomobject]@{ fetchedAt = (Get-Date).ToUniversalTime().ToString('o'); etag = $etag; record = $record } |
                 ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $cacheFile -Encoding UTF8
         }

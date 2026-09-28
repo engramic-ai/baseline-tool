@@ -2313,6 +2313,36 @@ Describe 'Firmware catalog (SU-08 with the catalog service)' {
             }
         }
 
+        It 'does not read or write the cache when the data folder itself is untrusted, even if cache and the file are not' {
+            # The data folder is checked as well as cache\ and the file, as Get-CEConfig and packs do:
+            # whoever can write %ProgramData%\EngramicBaseline could replace cache\ wholesale.
+            InModuleScope CEAudit -Parameters @{ Hw = $script:hw; Root = $script:dataRoot } {
+                param($Hw, $Root)
+                $body = New-TestCatalogRecord -Vendor 'dell' -Id '0CF1' -Releases @(New-TestRelease '1.17.0' 30) | ConvertTo-Json -Depth 5
+                Mock Invoke-CEHttpGet { [pscustomobject]@{ StatusCode = 200; Body = $body; ETag = '"abc"' } }
+                Get-CEFirmwareCatalogRecord -Hardware $Hw | Out-Null      # a valid record is now cached
+                $cacheFile = Join-Path (Join-Path $Root 'cache') 'firmware-dell-0CF1.json'
+                Test-Path -LiteralPath $cacheFile | Should -BeTrue
+
+                # Elevated, with only the data root flagged (cache\ and the file look admin-only).
+                Mock Test-CEIsAdmin { $true }
+                Mock Get-CEPathAclProblem { if ($Path -eq $Root) { "$Path is owned by S-1-5-21-1-2-3-1001" } }
+                Mock Invoke-CEHttpGet { throw 'No connection could be made' }
+                $r = Get-CEFirmwareCatalogRecord -Hardware $Hw
+                $r.FromCache | Should -BeFalse -Because 'a forged record could sit in a cache folder inside a data folder the user controls'
+                $r.Status | Should -Be 'Error'
+
+                # And a fresh fetch is not written back into the untrusted data folder.
+                $before = (Get-Item -LiteralPath $cacheFile).LastWriteTimeUtc
+                Mock Invoke-CEHttpGet { [pscustomobject]@{ StatusCode = 200; Body = $body; ETag = '"xyz"' } }
+                Get-CEFirmwareCatalogRecord -Hardware $Hw | Out-Null
+                (Get-Item -LiteralPath $cacheFile).LastWriteTimeUtc | Should -Be $before -Because 'SYSTEM must not write into a folder a standard user could redirect'
+
+                Mock Get-CEPathAclProblem { }
+                (Get-CEFirmwareCatalogRecord -Hardware $Hw).FromCache | Should -BeTrue -Because 'a trusted data folder reads the cache again'
+            }
+        }
+
         It 'reports unknown models, bad records and failures without a cache' {
             InModuleScope CEAudit -Parameters @{ Hw = $script:hw } {
                 param($Hw)

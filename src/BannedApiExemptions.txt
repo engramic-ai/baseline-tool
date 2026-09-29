@@ -11,4 +11,8 @@
 // "#pragma warning restore RS0030", around as few lines as possible. Adding a file here, or a use to
 // a listed file, needs the maintainer's review. tests/Engramic.Baseline.Invariants.Tests enforces this.
 //
+// The same goes for a sensitive Win32 function in src/Engramic.Baseline.Windows/NativeMethods.txt (one
+// that opens files by path, touches the registry, starts a process and so on): only a listed file may
+// name it, and only inside such a pragma region.
+//
 // No file needs an exemption yet.

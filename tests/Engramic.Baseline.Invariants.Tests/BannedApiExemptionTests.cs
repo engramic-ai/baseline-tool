@@ -50,7 +50,7 @@ public sealed partial class BannedApiExemptionTests
                 }
 
                 var where = $"{file.Path}({i + 1})";
-                if (Disable().Match(line) is { Success: true } disable)
+                if (BannedApiPragmas.Disable().Match(line) is { Success: true } disable)
                 {
                     if (disable.Groups["reason"].Value.Trim().Length == 0)
                     {
@@ -62,7 +62,7 @@ public sealed partial class BannedApiExemptionTests
                         problems.Add($"{where}: disabled again before it was restored");
                     }
                 }
-                else if (Restore().IsMatch(line))
+                else if (BannedApiPragmas.Restore().IsMatch(line))
                 {
                     if (open-- == 0)
                     {
@@ -95,7 +95,7 @@ public sealed partial class BannedApiExemptionTests
             {
                 problems.Add($"{path}: not a C# file under src/");
             }
-            else if (!File.ReadAllLines(full).Any(l => Disable().IsMatch(l)))
+            else if (!File.ReadAllLines(full).Any(l => BannedApiPragmas.Disable().IsMatch(l)))
             {
                 problems.Add($"{path}: uses no banned API any more; take it off the list");
             }
@@ -202,10 +202,4 @@ public sealed partial class BannedApiExemptionTests
 
     [GeneratedRegex(@"^\s*#pragma\s+warning\s+disable\s*(//.*)?$")]
     private static partial Regex BareDisable();
-
-    [GeneratedRegex(@"^\s*#pragma\s+warning\s+disable\s+RS0030\s*(//(?<reason>.*))?$")]
-    private static partial Regex Disable();
-
-    [GeneratedRegex(@"^\s*#pragma\s+warning\s+restore\s+RS0030\s*(//.*)?$")]
-    private static partial Regex Restore();
 }

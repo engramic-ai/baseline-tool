@@ -87,13 +87,17 @@ P:System.DateTimeOffset.Now;Use a TimeProvider
 P:System.DateTimeOffset.UtcNow;Use a TimeProvider
 
 // Loading code. Nothing is loaded that did not ship with the product; custom checks, if they ever
-// come, will be data, never assemblies.
+// come, will be data, never assemblies. Native code is reached only through CsWin32, never by loading
+// a library or calling a function pointer (tests/Engramic.Baseline.Invariants.Tests, NativeCodeTests).
 M:System.Reflection.Assembly.LoadFrom(System.String);Load nothing from a path
 M:System.Reflection.Assembly.LoadFrom(System.String,System.Byte[],System.Configuration.Assemblies.AssemblyHashAlgorithm);Load nothing from a path
 M:System.Reflection.Assembly.LoadFile(System.String);Load nothing from a path
 M:System.Reflection.Assembly.UnsafeLoadFrom(System.String);Load nothing from a path
 M:System.Runtime.Loader.AssemblyLoadContext.LoadFromAssemblyPath(System.String);Load nothing from a path
 M:System.Runtime.Loader.AssemblyLoadContext.LoadFromNativeImagePath(System.String,System.String);Load nothing from a path
+T:System.Runtime.InteropServices.NativeLibrary;Reach Win32 through the functions CsWin32 generates in Engramic.Baseline.Windows, never by loading a library
+M:System.Runtime.InteropServices.Marshal.GetDelegateForFunctionPointer(System.IntPtr,System.Type);Reach Win32 through the functions CsWin32 generates in Engramic.Baseline.Windows, never through a function pointer
+M:System.Runtime.InteropServices.Marshal.GetDelegateForFunctionPointer``1(System.IntPtr);Reach Win32 through the functions CsWin32 generates in Engramic.Baseline.Windows, never through a function pointer
 
 // JSON. Source-generated only: pass a JsonTypeInfo from a JsonSerializerContext, never options alone.
 // The reflection-based overloads are not AOT-safe and bind to whatever members a type has.

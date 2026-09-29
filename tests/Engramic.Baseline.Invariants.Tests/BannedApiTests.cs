@@ -86,6 +86,16 @@ public sealed class BannedApiTests
     }
 
     [Fact]
+    public void Every_way_to_reach_native_code_by_hand_is_banned()
+    {
+        AssertBanned(
+            "way to reach native code by hand (Win32 is reached through CsWin32 only)",
+            typeof(Marshal).GetMethods(BindingFlags.Public | BindingFlags.Static)
+                .Where(m => m.Name == nameof(Marshal.GetDelegateForFunctionPointer))
+                .Append<MemberInfo>(typeof(NativeLibrary)));
+    }
+
+    [Fact]
     public void Every_line_names_an_API_that_exists()
     {
         var unknown = new List<string>();

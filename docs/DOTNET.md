@@ -70,6 +70,7 @@ RS0030 and says what to use instead.
 | Reading environment variables | Whoever starts the process sets them | A known folder or config |
 | `DateTime.Now`, `UtcNow`, `Today`, `DateTimeOffset.Now`, `UtcNow` | Tests must be able to set the time | `TimeProvider` |
 | Loading an assembly from a path | Nothing runs that did not ship with the product | - |
+| `NativeLibrary`, `Marshal.GetDelegateForFunctionPointer` | Native code is reached only through CsWin32 (below) | A function in `NativeMethods.txt` |
 | Reflection-based `JsonSerializer` overloads | Not AOT-safe | A `JsonTypeInfo` from a source-generated `JsonSerializerContext` |
 
 **Exemptions.** A few audited classes, added as the port goes on, do these things safely: SecureStore,
@@ -94,6 +95,24 @@ the rule down:
   `Directory.Build.*` or other build settings under `src/`. The same tests check that every line of `BannedSymbols.txt` names
 an API that exists and that every overload of what it bans is listed, so an overload .NET adds later
 fails them.
+
+**Native code.** A Win32 call can do what a banned API does, so native code follows the same rules,
+checked by `Engramic.Baseline.Invariants.Tests`:
+
+- Win32 is reached only through the functions CsWin32 generates in `Engramic.Baseline.Windows`, which
+  stay internal (`"public": false` in `NativeMethods.json`). Hand-written code declares no `DllImport`,
+  `LibraryImport`, `extern` method, COM import or unmanaged function pointer, and loads no library.
+- `NativeMethods.txt` lists plain names, one per line: no wildcards, modules or namespaces, so every
+  function is reviewed by name.
+- A function that opens, creates, copies, moves or deletes a file or folder by path, uses the temp
+  folder, touches the registry, starts a process, sets a security descriptor, reads or sets the
+  environment, loads a library or creates a COM object is sensitive (the list is in `NativeCodeTests`).
+  It may be named only in a file on `src/BannedApiExemptions.txt`, only between the same
+  `#pragma warning disable RS0030 // <reason>` and restore as a banned API, and it comes off
+  `NativeMethods.txt` when no exempt file uses it.
+
+The analyser cannot ban these functions itself, because CsWin32's generated overloads call one another
+and RS0030 would fail the generated code, so this rule is checked on the source text instead.
 
 **Packages.** Add or change a version in `Directory.Packages.props`, run `dotnet restore Baseline.slnx`,
 and commit the `packages.lock.json` files it changes; CI restores in locked mode and fails if a lock

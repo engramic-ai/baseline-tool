@@ -32,14 +32,30 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install the .NET SDK that global.json names
+      # The exact SDK in global.json, by version. Given global-json-file, setup-dotnet turns rollForward
+      # latestPatch into the feature band's channel (10.0.4xx) and installs the newest patch in it, whose
+      # implicit packages (the trimming and AOT tools) would not match the lock files.
+      - name: Read the SDK version from global.json
+        id: sdk
+        run: |
+          $version = (Get-Content -LiteralPath global.json -Raw | ConvertFrom-Json).sdk.version
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Install that SDK
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         env:
-          # A folder of its own, so the SDK in global.json is the only one there. The lock files record
-          # packages whose versions follow the SDK, which a newer SDK already on the image would not match.
+          # A folder of its own, so this SDK is the only one there: latestPatch cannot roll forward to a
+          # newer one already on the image.
           DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
         with:
-          global-json-file: global.json
+          dotnet-version: ${{ steps.sdk.outputs.version }}
+
+      - name: Check that the build uses that SDK
+        env:
+          SDK_VERSION: ${{ steps.sdk.outputs.version }}
+        run: |
+          $actual = dotnet --version
+          if ($actual -ne $env:SDK_VERSION) { throw "dotnet --version is $actual, but global.json names $env:SDK_VERSION" }
 
       - name: Restore (locked)
         run: dotnet restore Baseline.slnx --locked-mode
@@ -83,12 +99,28 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install the .NET SDK that global.json names
+      # As in the Windows job: the exact SDK in global.json, alone in its folder.
+      - name: Read the SDK version from global.json
+        id: sdk
+        shell: pwsh
+        run: |
+          $version = (Get-Content -LiteralPath global.json -Raw | ConvertFrom-Json).sdk.version
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Install that SDK
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         env:
           DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
         with:
-          global-json-file: global.json
+          dotnet-version: ${{ steps.sdk.outputs.version }}
+
+      - name: Check that the build uses that SDK
+        shell: pwsh
+        env:
+          SDK_VERSION: ${{ steps.sdk.outputs.version }}
+        run: |
+          $actual = dotnet --version
+          if ($actual -ne $env:SDK_VERSION) { throw "dotnet --version is $actual, but global.json names $env:SDK_VERSION" }
 
       # Baseline.Portable.slnf lists the projects that target net10.0 and their tests.
       - name: Restore the portable projects (locked)

@@ -9,7 +9,7 @@ This note covers the layout, the rules the build enforces, and how to build and 
 | Path | What it holds |
 |---|---|
 | `Baseline.slnx` | The solution. `Baseline.Portable.slnf` lists the projects that build and test on Linux. |
-| `global.json` | The .NET SDK (10.0.401, or a later patch of the same feature band) and the test runner. |
+| `global.json` | The .NET SDK (10.0.401, which CI installs exactly and the lock files follow) and the test runner. |
 | `Directory.Build.props` | Settings for every project, including the one version of the product. |
 | `Directory.Packages.props` | The version of every package, set once. |
 | `src/Engramic.Baseline.Model` | Contracts: the status files, findings, changesets and config, and how they are written. |
@@ -90,9 +90,12 @@ fails them.
 
 **Packages.** Add or change a version in `Directory.Packages.props`, run `dotnet restore Baseline.slnx`,
 and commit the `packages.lock.json` files it changes; CI restores in locked mode and fails if a lock
-file is out of date. Some implicit packages (the trimming and AOT tools) follow the SDK version, so after
-changing `global.json` run `dotnet restore Baseline.slnx --force-evaluate` and commit the result; if a
-restore changes lock files you did not mean to change, check that `dotnet --version` matches `global.json`.
+file is out of date. Some implicit packages (the trimming and AOT tools) follow the SDK version, so
+`global.json` and the lock files move together: to take a new patch SDK, install it, change the version
+in `global.json`, run `dotnet restore Baseline.slnx --force-evaluate` and commit all of it in one change.
+CI installs exactly the SDK that `global.json` names, never the newest patch of its feature band, so it
+keeps passing when a new patch ships and moves only when `global.json` does. If a restore changes lock
+files you did not mean to change, check that `dotnet --version` matches `global.json`.
 CsWin32 is still 0.x and pinned to an exact version.
 
 **Text.** Sources are ASCII only (write other characters as escapes, such as `"\u00e9"` in C#),

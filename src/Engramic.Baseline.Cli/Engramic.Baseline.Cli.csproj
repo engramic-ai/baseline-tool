@@ -25,6 +25,15 @@
     <PackageReference Include="System.CommandLine" />
   </ItemGroup>
 
+  <!--
+    A package's assembly ships exactly as its publisher signed it. ReadyToRun compiles an assembly into a new
+    file, which drops that signature, and a release signs only what this repository builds, so each package
+    assembly stays out of it. tools/Test-ReleaseSignatures.ps1 fails a published folder with an unsigned one.
+  -->
+  <ItemGroup>
+    <PublishReadyToRunExclude Include="System.CommandLine.dll" />
+  </ItemGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\Engramic.Baseline.Controls\Engramic.Baseline.Controls.csproj" />
     <ProjectReference Include="..\Engramic.Baseline.Windows\Engramic.Baseline.Windows.csproj" />

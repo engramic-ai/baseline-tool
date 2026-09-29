@@ -7199,13 +7199,14 @@ Mock New-CELockedDirectorySecurity { $s = New-Object Security.AccessControl.Dire
                     [pscustomobject]@{ ItemId = $_; Undo = @([pscustomobject]@{ Type = 'Command'; Description = 'Restore previous audit policy'; Command = "auditpol.exe /restore /file:'$($files[$_])'" }) }
                 })
         } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $log -Encoding UTF8
-        InModuleScope CEAudit -Parameters @{ Log = $log; Good = $files.C004 } {
-            param($Log, $Good)
+        InModuleScope CEAudit -Parameters @{ Log = $log; Good = $files.C004; Planted = $planted } {
+            param($Log, $Good, $Planted)
             Mock Test-CEIsAdmin { $true }
             Mock Test-CEIsWindows { $true }
             Mock Test-CEDataLink { $Path -like '*linked.csv' }
             Mock Get-CEPathAclProblem {
-                if ($Path -like '*bk-planted*') { return "$Path is writable by S-1-5-21-1-2-3-1001" }
+                # Only the folder is writable: the planted file itself looks trusted, so the refusal must come from the folder test.
+                if ($Path.TrimEnd('\') -like '*\bk-planted') { return "$Path is writable by S-1-5-21-1-2-3-1001" }
                 if ($Path -like '*swapped.csv') { return "$Path is owned by S-1-5-21-1-2-3-1001" }
             }
             Mock Write-Host { }
@@ -7216,7 +7217,9 @@ Mock New-CELockedDirectorySecurity { $s = New-Object Security.AccessControl.Dire
             Should -Invoke auditpol.exe -Times 1 -Exactly -ParameterFilter { ($args -join ' ') -eq "/restore /file:$Good" }
             $refused = @($warnings | Where-Object { "$_" -match 'Refusing to run undo command.*planted or swapped' })
             $refused.Count | Should -Be 3 -Because ($warnings -join "`n")
-            ($refused -join ' ') | Should -Match 'C001.*bk-planted'
+            $c001 = @($refused | Where-Object { "$_" -match 'C001' })
+            $c001.Count | Should -Be 1 -Because ($warnings -join "`n")
+            "$($c001[0])" | Should -Match ([regex]::Escape("$Planted is writable by"))
             ($refused -join ' ') | Should -Match 'linked\.csv is a link'
             ($refused -join ' ') | Should -Match 'swapped\.csv is owned by'
         }

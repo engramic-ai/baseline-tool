@@ -22,6 +22,7 @@ This note covers the layout, the rules the build enforces, and how to build and 
 | `tests/Engramic.Baseline.Invariants.Tests` | Tests of the repository's own rules, described below. |
 | `tests/Engramic.Baseline.Testing` | Fakes and recorded responses that the tests share. |
 | `tests/AotCanary` | Compiles the AOT-clean libraries with Native AOT and calls into each one. |
+| `tools/parity` | Compares the ported checks with the PowerShell module on a device (below). |
 
 Model, Platform, Engine and Controls target `net10.0` and must not depend on Windows, so their tests
 run on Linux too. Windows, the CLI and their tests target `net10.0-windows`. All build output goes
@@ -175,6 +176,20 @@ scheduled audit brings.
 ```
 baseline.exe audit --id SU-01
 baseline.exe audit --id SU-01 --json status > status.json
+```
+
+## Comparing with the PowerShell module
+
+`tools/parity/Compare-Parity.ps1` runs the same checks in the untouched module, out of process in Windows
+PowerShell 5.1, and in `baseline.exe` on this device, then compares every field of every finding, every
+value of status.json and what the Intune discovery script reports for each. It ignores what differs by
+design (the tool version, times and paths), lists each difference it expects with the reason, and exits
+1 on any other difference. Run it as the account whose audit you want to compare: a standard user, an
+elevated administrator or SYSTEM.
+
+```
+dotnet build Baseline.slnx -c Release
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/parity/Compare-Parity.ps1 -Id SU-01
 ```
 
 ## CI

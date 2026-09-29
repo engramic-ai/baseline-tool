@@ -25,6 +25,12 @@ namespace Engramic.Baseline.Controls.Checks;
 /// A date is Fail once passed, Warn (High) up to upcomingEndWarningDays before it, the day itself
 /// included, and Pass before that. Config the check needs but cannot read makes an Error finding.
 /// </para>
+/// <para>
+/// A member the branch taken reads but the file does not have is an Error too, as reading it is under
+/// the PowerShell tool's strict mode: source when the data is out of date, build in each entry up to the
+/// one that matches, version and the date the edition uses in that entry, and endOfSupport for Windows 10.
+/// A member written as null is read as null (empty in text), as there.
+/// </para>
 /// </remarks>
 internal sealed class OperatingSystemSupported : Check
 {
@@ -60,7 +66,7 @@ internal sealed class OperatingSystemSupported : Check
                 Severity = Severity.Low,
                 Expected = Invariant($"Lifecycle data reviewed within {lifecycle.ReviewWarningDays} days"),
                 Actual = $"config/os-lifecycle.json last reviewed {lifecycle.LastReviewed}",
-                Recommendation = $"Update config/os-lifecycle.json from {Require(lifecycle.Source, "source")}.",
+                Recommendation = $"Update config/os-lifecycle.json from {Member(lifecycle.HasSource, lifecycle.Source, "source")}.",
             });
         }
 
@@ -72,7 +78,8 @@ internal sealed class OperatingSystemSupported : Check
     {
         if (device.OSFamily == WindowsFamily.Server)
         {
-            var server = Require(lifecycle.WindowsServer, "windowsServer").FirstOrDefault(r => r.Build == device.Build);
+            var server = Require(lifecycle.WindowsServer, "windowsServer")
+                .FirstOrDefault(r => ListedBuild(r.Build, r.HasBuild, "windowsServer") == device.Build);
             if (server is null)
             {
                 return new CheckResult(FindingStatus.Manual)
@@ -86,7 +93,7 @@ internal sealed class OperatingSystemSupported : Check
             return AgainstDate(
                 lifecycle,
                 today,
-                $"Windows Server {server.Version} {device.EditionId} (build {device.FullBuild})",
+                $"Windows Server {Member(server.HasVersion, server.Version, Invariant($"version for Windows Server build {server.Build}"))} {device.EditionId} (build {device.FullBuild})",
                 server.ExtendedEnd,
                 "Migrate to a supported Windows Server release, or enrol in Extended Security Updates and record the evidence.",
                 "Plan the migration to a newer Windows Server release (or ESU) before this date.");
@@ -97,7 +104,7 @@ internal sealed class OperatingSystemSupported : Check
             return new CheckResult(FindingStatus.Fail)
             {
                 Expected = SupportedExpected,
-                Actual = $"Windows 10 build {device.FullBuild}: support ended {Require(lifecycle.Windows10, "windows10").EndOfSupport}",
+                Actual = $"Windows 10 build {device.FullBuild}: support ended {EndOfWindows10(lifecycle)}",
                 Recommendation = "Upgrade to a supported Windows 11 release. A device enrolled in Extended Security Updates can remain in scope only while ESU is active and updates are applied; record the ESU evidence if so.",
             };
         }
@@ -112,7 +119,8 @@ internal sealed class OperatingSystemSupported : Check
             };
         }
 
-        var release = Require(lifecycle.Windows11, "windows11").FirstOrDefault(r => r.Build == device.Build);
+        var release = Require(lifecycle.Windows11, "windows11")
+            .FirstOrDefault(r => ListedBuild(r.Build, r.HasBuild, "windows11") == device.Build);
         if (release is null)
         {
             return new CheckResult(FindingStatus.Manual)
@@ -123,13 +131,16 @@ internal sealed class OperatingSystemSupported : Check
             };
         }
 
-        var end = device.EditionClass == EditionClass.Enterprise ? release.Enterprise : release.HomePro;
+        var end = device.EditionClass == EditionClass.Enterprise
+            ? Member(release.HasEnterprise, release.Enterprise, Invariant($"enterprise for Windows 11 build {release.Build}"))
+            : Member(release.HasHomePro, release.HomePro, Invariant($"homePro for Windows 11 build {release.Build}"));
+        var version = Member(release.HasVersion, release.Version, Invariant($"version for Windows 11 build {release.Build}"));
         if (string.IsNullOrEmpty(end))
         {
             return new CheckResult(FindingStatus.Manual)
             {
                 Expected = "Known end-of-servicing date",
-                Actual = $"Windows 11 {release.Version} ({device.EditionId}): end date not recorded",
+                Actual = $"Windows 11 {version} ({device.EditionId}): end date not recorded",
                 Recommendation = "Confirm the end-of-servicing date on Microsoft release health and add it to config/os-lifecycle.json.",
             };
         }
@@ -137,7 +148,7 @@ internal sealed class OperatingSystemSupported : Check
         return AgainstDate(
             lifecycle,
             today,
-            $"Windows 11 {release.Version} {device.EditionId} (build {device.FullBuild})",
+            $"Windows 11 {version} {device.EditionId} (build {device.FullBuild})",
             end,
             "Install the latest Windows 11 feature update now (Settings > Windows Update).",
             "Plan the upgrade to the next Windows 11 feature update before this date, or the device drops out of scope.");
@@ -174,10 +185,29 @@ internal sealed class OperatingSystemSupported : Check
         return DateOnly.ParseExact(Require(text, what), "yyyy-MM-dd", CultureInfo.InvariantCulture);
     }
 
+    /// <summary>What Windows 10's end of support reads in the PowerShell tool: $lc.windows10.endOfSupport.</summary>
+    private static string? EndOfWindows10(OsLifecycle lifecycle)
+    {
+        var windows10 = Require(lifecycle.Windows10, "windows10");
+        return Member(windows10.HasEndOfSupport, windows10.EndOfSupport, "endOfSupport in windows10");
+    }
+
     private static T Require<T>(T? value, string what)
         where T : class
     {
         return value ?? throw new InvalidDataException($"config/os-lifecycle.json has no {what}.");
+    }
+
+    /// <summary>An entry's build, as the PowerShell tool's [int]$_.build reads it for each entry up to the one that matches.</summary>
+    private static int ListedBuild(int build, bool present, string section)
+    {
+        return present ? build : throw new InvalidDataException($"config/os-lifecycle.json has an entry in {section} with no build.");
+    }
+
+    /// <summary>A member as strict mode reads it: an error when the file does not have it, whatever it holds when it does.</summary>
+    private static T Member<T>(bool present, T value, string what)
+    {
+        return present ? value : throw new InvalidDataException($"config/os-lifecycle.json has no {what}.");
     }
 
     private static string Invariant(FormattableString text) => text.ToString(CultureInfo.InvariantCulture);

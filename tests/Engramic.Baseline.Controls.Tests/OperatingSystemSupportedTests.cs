@@ -287,6 +287,106 @@ public sealed class OperatingSystemSupportedTests
         Assert.Equal("Check failed: config/os-lifecycle.json has no windows10.", finding.Actual);
     }
 
+    // The PowerShell tool reads os-lifecycle.json under strict mode, where a member the object does not have
+    // throws, so the check becomes an Error (which status.json lists in autoFails) wherever the branch it
+    // takes reads one.
+    [Theory]
+    [InlineData("26200", "Professional", """{ "build": 26200, "version": "25H2", "enterprise": "2028-10-10" }""", "homePro for Windows 11 build 26200")]
+    [InlineData("26200", "Enterprise", """{ "build": 26200, "version": "25H2", "homePro": "2027-10-12" }""", "enterprise for Windows 11 build 26200")]
+    [InlineData("26300", "Professional", """{ "build": 26300, "version": "26H2" }""", "homePro for Windows 11 build 26300")]
+    [InlineData("26200", "Professional", """{ "build": 26200, "homePro": "2027-10-12", "enterprise": "2028-10-10" }""", "version for Windows 11 build 26200")]
+    [InlineData("26200", "Professional", """{ "build": 26200, "homePro": null, "enterprise": null }""", "version for Windows 11 build 26200")]
+    public async Task A_Windows_11_entry_without_a_member_the_check_reads_is_an_Error(string build, string editionId, string entry, string missing)
+    {
+        var lifecycle = $$"""{ "lastReviewed": "2026-09-16", "reviewWarningDays": 90, "upcomingEndWarningDays": 60, "windows11": [ {{entry}} ] }""";
+
+        var finding = Assert.Single(await Run(Devices.Windows11(build, 1, "25H2", editionId), Noon(Today), lifecycle));
+
+        Assert.Equal(FindingStatus.Error, finding.Status);
+        Assert.Equal($"Check failed: config/os-lifecycle.json has no {missing}.", finding.Actual);
+    }
+
+    [Theory]
+    // Only the date the edition uses is read, as in the PowerShell tool.
+    [InlineData("Professional", """{ "build": 26200, "version": "25H2", "homePro": "2027-10-12" }""", "Windows 11 25H2 Professional (build 26200.1): supported until 2027-10-12")]
+    [InlineData("Enterprise", """{ "build": 26200, "version": "25H2", "enterprise": "2028-10-10" }""", "Windows 11 25H2 Enterprise (build 26200.1): supported until 2028-10-10")]
+    // A version written as null is read as null, and shows as nothing.
+    [InlineData("Professional", """{ "build": 26200, "version": null, "homePro": "2027-10-12" }""", "Windows 11  Professional (build 26200.1): supported until 2027-10-12")]
+    public async Task A_Windows_11_entry_needs_only_the_members_the_check_reads(string editionId, string entry, string actual)
+    {
+        var lifecycle = $$"""{ "lastReviewed": "2026-09-16", "reviewWarningDays": 90, "upcomingEndWarningDays": 60, "windows11": [ {{entry}} ] }""";
+
+        var finding = Assert.Single(await Run(Devices.Windows11("26200", 1, "25H2", editionId), Noon(Today), lifecycle));
+
+        Assert.Equal(actual, finding.Actual);
+    }
+
+    [Fact]
+    public async Task An_entry_without_a_build_is_an_Error_only_when_it_comes_before_the_match()
+    {
+        const string Before = """{ "lastReviewed": "2026-09-16", "reviewWarningDays": 90, "upcomingEndWarningDays": 60, "windows11": [ { "version": "26H2" }, { "build": 26200, "version": "25H2", "homePro": "2027-10-12" } ] }""";
+        const string After = """{ "lastReviewed": "2026-09-16", "reviewWarningDays": 90, "upcomingEndWarningDays": 60, "windows11": [ { "build": 26200, "version": "25H2", "homePro": "2027-10-12" }, { "version": "26H2" } ] }""";
+        var device = Devices.Windows11("26200", 1, "25H2");
+
+        var before = Assert.Single(await Run(device, Noon(Today), Before));
+        var after = Assert.Single(await Run(device, Noon(Today), After));
+
+        Assert.Equal(FindingStatus.Error, before.Status);
+        Assert.Equal("Check failed: config/os-lifecycle.json has an entry in windows11 with no build.", before.Actual);
+        Assert.Equal(FindingStatus.Pass, after.Status);
+    }
+
+    [Theory]
+    [InlineData("""{ "build": 26100, "extendedEnd": "2034-11-14" }""", "Check failed: config/os-lifecycle.json has no version for Windows Server build 26100.")]
+    [InlineData("""{ "version": "2025", "extendedEnd": "2034-11-14" }""", "Check failed: config/os-lifecycle.json has an entry in windowsServer with no build.")]
+    public async Task A_Windows_Server_entry_without_a_member_the_check_reads_is_an_Error(string entry, string actual)
+    {
+        var lifecycle = $$"""{ "lastReviewed": "2026-09-16", "reviewWarningDays": 90, "upcomingEndWarningDays": 60, "windowsServer": [ {{entry}} ] }""";
+
+        var finding = Assert.Single(await Run(Devices.Server("26100", 1), Noon(Today), lifecycle));
+
+        Assert.Equal(FindingStatus.Error, finding.Status);
+        Assert.Equal(actual, finding.Actual);
+    }
+
+    [Theory]
+    [InlineData("""{ "esuConsumerEnd": "2026-10-13" }""", FindingStatus.Error, "Check failed: config/os-lifecycle.json has no endOfSupport in windows10.")]
+    [InlineData("""{ "endOfSupport": null }""", FindingStatus.Fail, "Windows 10 build 19045.1: support ended ")]
+    [InlineData("null", FindingStatus.Error, "Check failed: config/os-lifecycle.json has no windows10.")]
+    public async Task Windows_10_reads_its_end_of_support_as_the_PowerShell_tool_does(string windows10, FindingStatus status, string actual)
+    {
+        var lifecycle = $$"""{ "lastReviewed": "2026-09-16", "reviewWarningDays": 90, "upcomingEndWarningDays": 60, "windows10": {{windows10}} }""";
+
+        var finding = Assert.Single(await Run(Devices.Read(Devices.Registry("19045", 1, "22H2", "Professional")), Noon(Today), lifecycle));
+
+        Assert.Equal(status, finding.Status);
+        Assert.Equal(status == FindingStatus.Fail, finding.AutoFail);
+        Assert.Equal(actual, finding.Actual);
+    }
+
+    [Theory]
+    [InlineData("", null)]
+    [InlineData("\"source\": null,", "Update config/os-lifecycle.json from .")]
+    public async Task Out_of_date_data_reads_its_source_as_the_PowerShell_tool_does(string source, string? recommendation)
+    {
+        var lifecycle = $$"""{ "lastReviewed": "2026-01-01", {{source}} "reviewWarningDays": 90, "upcomingEndWarningDays": 60, "windows11": [ { "build": 26200, "version": "25H2", "homePro": "2027-10-12" } ] }""";
+
+        var findings = await Run(Devices.Windows11("26200", 1, "25H2"), Noon(Today), lifecycle);
+
+        if (recommendation is null)
+        {
+            var finding = Assert.Single(findings);
+            Assert.Equal(FindingStatus.Error, finding.Status);
+            Assert.Equal("Check failed: config/os-lifecycle.json has no source.", finding.Actual);
+        }
+        else
+        {
+            Assert.Equal(2, findings.Count);
+            Assert.Equal(recommendation, findings[0].Recommendation);
+            Assert.Equal(FindingStatus.Pass, findings[1].Status);
+        }
+    }
+
     [Fact]
     public async Task Runs_with_the_shipped_lifecycle_data()
     {
@@ -300,9 +400,10 @@ public sealed class OperatingSystemSupportedTests
 
     private static Task<IReadOnlyList<Finding>> Run(DeviceContext device, DateOnly? today = null)
     {
-        var noon = new DateTimeOffset((today ?? Today).ToDateTime(new TimeOnly(12, 0)), TimeSpan.Zero);
-        return Run(device, new FakeTimeProvider(noon), Lifecycle);
+        return Run(device, Noon(today ?? Today), Lifecycle);
     }
+
+    private static FakeTimeProvider Noon(DateOnly day) => new(new DateTimeOffset(day.ToDateTime(new TimeOnly(12, 0)), TimeSpan.Zero));
 
     private static Task<IReadOnlyList<Finding>> Run(DeviceContext device, TimeProvider time, string? lifecycle)
     {

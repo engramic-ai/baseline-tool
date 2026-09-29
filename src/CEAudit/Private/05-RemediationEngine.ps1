@@ -145,8 +145,39 @@ function Test-CEUndoCommandArgument {
             }
             return 'Set-ItemProperty in an undo command must name the key it writes'
         }
+        '^auditpol(\.exe)?$' {
+            # 'auditpol /restore /file:<backup>' is the only form generated, with the path as a literal.
+            $file = if ($elements.Count -eq 3 -and $elements[2] -is [System.Management.Automation.Language.StringConstantExpressionAst]) { [string]$elements[2].Value } else { '' }
+            if ((& $text 1) -ne '/restore' -or $file -notmatch '^/file:(.+)$') { return "only 'auditpol /restore /file:<backup>' is allowed in an undo command" }
+            return (Get-CEAuditPolicyBackupProblem -Path $Matches[1])
+        }
         default { return $null }
     }
+}
+
+function Get-CEAuditPolicyBackupProblem {
+    <#
+        $null when an elevated rollback may hand this auditpol backup to auditpol /restore, otherwise
+        the reason it may not. auditpol applies whatever policy the file holds, so a backup a standard
+        user planted, or swapped in after the change, could switch security auditing off. When elevated
+        the backup must be a full local path, and both it and its folder must pass the data-path trust
+        test (Get-CEDataPathProblem: not a link, administrator-owned, no non-administrator write, delete,
+        permission or owner right). AuditPolicy-Set writes it into a locked folder in the data folder
+        for that reason. A standard user's rollback only affects what they can change anyway.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][string]$Path)
+    if (-not (Test-CEIsAdmin)) { return $null }
+    if ($Path -notmatch '^[A-Za-z]:\\' -or $Path -match '[*?]|(^|[\\/])\.\.?([\\/]|$)') {
+        return "the audit policy backup '$Path' is not a full local path"
+    }
+    $problems = @(Get-CEDataPathProblem -Path (Split-Path -Parent $Path)) + @(Get-CEDataPathProblem -Path $Path)
+    if ($problems.Count) {
+        return ("the audit policy backup '$Path' is not in a folder only administrators can change, so it may have been " +
+                "planted or swapped: $($problems -join '; '). Restore the audit policy by hand if needed")
+    }
+    return $null
 }
 
 function Register-CERemediation {

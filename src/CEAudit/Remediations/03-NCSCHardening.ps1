@@ -90,9 +90,18 @@ Register-CERemediation -Id 'AuditPolicy-Set' -Title 'Enable key security audit c
     } `
     -Apply {
         param($p, $undo)
-        $backup = Join-Path $script:CEUndoDirectory ("auditpol-backup-{0}.csv" -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
+        # auditpol /restore later applies whatever policy the backup holds, so when elevated it goes in a
+        # GUID-named locked folder in the data folder (New-CEScratchFolder), not next to the undo log,
+        # which may be somewhere a standard user can write. The rollback refuses a backup that is not.
+        $folder = $script:CEUndoDirectory
+        $locked = (Test-CEIsWindows) -and (Test-CEIsAdmin)
+        if ($locked) { $folder = New-CEScratchFolder -Area 'backups' }
+        $backup = Join-Path $folder ("auditpol-backup-{0}.csv" -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
         $b = Invoke-CENative -FilePath 'auditpol.exe' -ArgumentList @('/backup', "/file:$backup")
-        if ($b.ExitCode -ne 0) { throw "auditpol backup failed: $($b.Output -join ' ')" }
+        if ($b.ExitCode -ne 0) {
+            if ($locked) { try { Remove-CEDataTree -Path $folder | Out-Null } catch { Write-Warning "Could not remove $folder ($($_.Exception.Message))." } }
+            throw "auditpol backup failed: $($b.Output -join ' ')"
+        }
         Add-CEUndoCommand $undo 'Restore previous audit policy' "auditpol.exe /restore /file:$(ConvertTo-CEPSLiteral $backup)"
         foreach ($entry in @($p.Subcategories)) {
             $guid, $need = ([string]$entry) -split '\|', 2

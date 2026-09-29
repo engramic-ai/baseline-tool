@@ -215,6 +215,42 @@ public sealed class AuditRunnerTests
     }
 
     [Fact]
+    public async Task A_check_that_blocks_before_it_yields_still_runs_out_of_time()
+    {
+        var time = new FakeTimeProvider(Samples.AuditTime);
+        using var gate = new ManualResetEventSlim();
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var blocking = new FakeCheck(Samples.Info("SU-03"), (_, cancel) =>
+        {
+            // Blocks the thread it is called on, as a check waiting on a registry, CIM or process call does. If the
+            // runner called it on its own thread, RunAsync would not return for 30 seconds and then find a Pass.
+            started.SetResult();
+            gate.Wait(TimeSpan.FromSeconds(30), cancel);
+            return ValueTask.FromResult<IReadOnlyList<CheckResult>>([new CheckResult(FindingStatus.Pass)]);
+        });
+        var next = FakeCheck.Returning(Samples.Info("SU-04"), new CheckResult(FindingStatus.Pass));
+        var runner = new AuditRunner(Samples.Catalog(blocking, next), new AuditRunnerOptions { CheckTimeout = TimeSpan.FromMinutes(10) });
+
+        try
+        {
+            var run = runner.RunAsync(CheckSelection.All, Samples.Context(time: time), TestContext.Current.CancellationToken);
+            await started.Task.WaitAsync(TestContext.Current.CancellationToken);
+            Assert.False(run.IsCompleted);
+            time.Advance(TimeSpan.FromMinutes(10));
+            var findings = await run;
+
+            Assert.Equal(2, findings.Count);
+            Assert.Equal(FindingStatus.Error, findings[0].Status);
+            Assert.Equal("Check failed: it did not finish within 10 minutes, so it was stopped.", findings[0].Actual);
+            Assert.Equal(FindingStatus.Pass, findings[1].Status);
+        }
+        finally
+        {
+            gate.Set();
+        }
+    }
+
+    [Fact]
     public async Task A_check_that_ignores_being_stopped_is_left_behind()
     {
         var time = new FakeTimeProvider(Samples.AuditTime);

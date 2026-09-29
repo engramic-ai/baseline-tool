@@ -57,15 +57,33 @@ public sealed class WindowsRegistry : IRegistry
             throw new UnauthorizedAccessException($"The registry key {keyPath} cannot be read by this account.", e);
         }
 
-        return kind switch
+        return ToRegistryValue(kind, data);
+    }
+
+    /// <summary>
+    /// A value from its registry type and the object RegistryKey.GetValue returned for it.
+    /// </summary>
+    /// <remarks>
+    /// The object is not always of the type the registry type suggests: a REG_DWORD whose data is longer
+    /// than 4 bytes comes back as a long, or as bytes when longer than 8, a REG_QWORD longer than 8 bytes
+    /// comes back as bytes, and the value can change between reading it and asking its type. A value whose
+    /// object does not match its type is an Other value, with the bytes of the number when it is one, rather
+    /// than an exception.
+    /// </remarks>
+    internal static RegistryValue ToRegistryValue(Win32.RegistryValueKind kind, object data)
+    {
+        return (kind, data) switch
         {
-            Win32.RegistryValueKind.String => RegistryValue.FromText((string)data),
-            Win32.RegistryValueKind.ExpandString => RegistryValue.FromExpandText((string)data),
-            Win32.RegistryValueKind.MultiString => RegistryValue.FromMultiText((string[])data),
-            Win32.RegistryValueKind.DWord => RegistryValue.FromDWord(unchecked((uint)(int)data)),
-            Win32.RegistryValueKind.QWord => RegistryValue.FromQWord(unchecked((ulong)(long)data)),
-            Win32.RegistryValueKind.Binary => RegistryValue.FromBinary((byte[])data),
-            _ => RegistryValue.FromOther(data as byte[] ?? []),
+            (Win32.RegistryValueKind.String, string text) => RegistryValue.FromText(text),
+            (Win32.RegistryValueKind.ExpandString, string text) => RegistryValue.FromExpandText(text),
+            (Win32.RegistryValueKind.MultiString, string[] lines) => RegistryValue.FromMultiText(lines),
+            (Win32.RegistryValueKind.DWord, int number) => RegistryValue.FromDWord(unchecked((uint)number)),
+            (Win32.RegistryValueKind.QWord, long number) => RegistryValue.FromQWord(unchecked((ulong)number)),
+            (Win32.RegistryValueKind.Binary, byte[] bytes) => RegistryValue.FromBinary(bytes),
+            (_, byte[] bytes) => RegistryValue.FromOther(bytes),
+            (_, int number) => RegistryValue.FromOther(BitConverter.GetBytes(number)),
+            (_, long number) => RegistryValue.FromOther(BitConverter.GetBytes(number)),
+            _ => RegistryValue.FromOther([]),
         };
     }
 }

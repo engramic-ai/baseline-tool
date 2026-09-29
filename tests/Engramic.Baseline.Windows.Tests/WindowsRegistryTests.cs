@@ -71,6 +71,32 @@ public sealed class WindowsRegistryTests
     }
 
     [Fact]
+    public void Converts_what_RegistryKey_returns_for_each_type()
+    {
+        Assert.Equal(RegistryValue.FromText("26200"), WindowsRegistry.ToRegistryValue(Microsoft.Win32.RegistryValueKind.String, "26200"));
+        Assert.Equal(RegistryValue.FromExpandText("%ProgramFiles%"), WindowsRegistry.ToRegistryValue(Microsoft.Win32.RegistryValueKind.ExpandString, "%ProgramFiles%"));
+        Assert.Equal(RegistryValue.FromMultiText(["a", "b"]), WindowsRegistry.ToRegistryValue(Microsoft.Win32.RegistryValueKind.MultiString, new[] { "a", "b" }));
+        Assert.Equal(RegistryValue.FromDWord(uint.MaxValue), WindowsRegistry.ToRegistryValue(Microsoft.Win32.RegistryValueKind.DWord, -1));
+        Assert.Equal(RegistryValue.FromQWord(ulong.MaxValue), WindowsRegistry.ToRegistryValue(Microsoft.Win32.RegistryValueKind.QWord, -1L));
+        Assert.Equal(RegistryValue.FromBinary([1, 2]), WindowsRegistry.ToRegistryValue(Microsoft.Win32.RegistryValueKind.Binary, new byte[] { 1, 2 }));
+        Assert.Equal(RegistryValue.FromOther([3]), WindowsRegistry.ToRegistryValue(Microsoft.Win32.RegistryValueKind.None, new byte[] { 3 }));
+    }
+
+    [Fact]
+    public void A_value_whose_data_does_not_match_its_type_is_Other_rather_than_an_exception()
+    {
+        // RegistryKey.GetValue gives a long for a REG_DWORD of 5 to 8 bytes, bytes for a longer REG_DWORD or
+        // REG_QWORD, and the value can change type between reading it and asking its type.
+        Assert.Equal(RegistryValue.FromOther([5, 0, 0, 0, 1, 0, 0, 0]), WindowsRegistry.ToRegistryValue(Microsoft.Win32.RegistryValueKind.DWord, 0x1_0000_0005L));
+        Assert.Equal(RegistryValue.FromOther([1, 2, 3, 4, 5, 6, 7, 8, 9]), WindowsRegistry.ToRegistryValue(Microsoft.Win32.RegistryValueKind.DWord, new byte[] { 1, 2, 3, 4, 5, 6, 7, 8, 9 }));
+        Assert.Equal(RegistryValue.FromOther([1, 2, 3, 4, 5, 6, 7, 8, 9]), WindowsRegistry.ToRegistryValue(Microsoft.Win32.RegistryValueKind.QWord, new byte[] { 1, 2, 3, 4, 5, 6, 7, 8, 9 }));
+        Assert.Equal(RegistryValue.FromOther([7, 0, 0, 0]), WindowsRegistry.ToRegistryValue(Microsoft.Win32.RegistryValueKind.QWord, 7));
+        Assert.Equal(RegistryValue.FromOther([]), WindowsRegistry.ToRegistryValue(Microsoft.Win32.RegistryValueKind.DWord, "7"));
+        Assert.Equal(RegistryValue.FromOther([]), WindowsRegistry.ToRegistryValue(Microsoft.Win32.RegistryValueKind.String, new[] { "a" }));
+        Assert.Equal(RegistryValue.FromOther([]), WindowsRegistry.ToRegistryValue(Microsoft.Win32.RegistryValueKind.MultiString, "a"));
+    }
+
+    [Fact]
     public void Refuses_an_empty_key_path()
     {
         Assert.Throws<ArgumentException>(() => _registry.GetValue(RegistryHive.LocalMachine, RegistryView.Registry64, string.Empty, "Value"));

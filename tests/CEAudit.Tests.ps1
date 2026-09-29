@@ -6944,32 +6944,47 @@ Describe 'MCP inventory never records a credential value' {
 Describe 'Undo log cannot be used to escalate privilege' {
     # A tampered undo log is the one input a rollback trusts, and a rollback often runs elevated.
     # Naming an allow-listed command was once enough; these are the shapes that got through.
-    It 'refuses a registry record outside the keys the tool writes' {
+    It 'refuses a registry record outside the values the tool writes' {
         InModuleScope CEAudit {
             $bad = @(
-                'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon',
-                'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run',
-                'HKLM:\SYSTEM\CurrentControlSet\Services\Foo',
-                'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\sethc.exe',
-                'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\..\..\..\SOFTWARE\Microsoft\Windows\CurrentVersion\Run',
-                'HKLM:\SOFTWARE\Policies\*'
+                @('HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon', 'Userinit'),
+                @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run', 'x'),
+                @('HKLM:\SYSTEM\CurrentControlSet\Services\Foo', 'ImagePath'),
+                @('HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\sethc.exe', 'Debugger'),
+                @('HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\..\..\..\SOFTWARE\Microsoft\Windows\CurrentVersion\Run', 'RunAsPPL'),
+                @('HKLM:\SOFTWARE\Policies\*', 'RunAsPPL'),
+                # Allowed keys, values the tool never writes.
+                @('HKLM:\SYSTEM\CurrentControlSet\Control\Lsa', 'Security Packages'),
+                @('HKLM:\SYSTEM\CurrentControlSet\Control\Lsa', 'Notification Packages'),
+                @('HKLM:\SYSTEM\CurrentControlSet\Control\Lsa', 'Authentication Packages'),
+                @('HKLM:\SOFTWARE\Policies\Google\Chrome', 'ExtensionInstallForcelist'),
+                @('HKLM:\SOFTWARE\Policies\Google\Chrome\ExtensionInstallForcelist', '1'),
+                @('HKLM:\SOFTWARE\Policies\Microsoft\Edge\ExtensionInstallForcelist', '1'),
+                @('HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp', 'InitialProgram'),
+                @('HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\OSConfig', 'Security Packages'),
+                # A listed value under a key the tool does not write.
+                @('HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0', 'RunAsPPL'),
+                @('HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters\Interfaces\a\b', 'NetbiosOptions'),
+                @('HKCU:\Software\Policies\Microsoft\Office\16.0\outlook\Security', 'VBAWarnings'),
+                @('HKLM:\SYSTEM\CurrentControlSet\Control\Lsa', ''),
+                @('HKLM:\SYSTEM\CurrentControlSet\Control\Lsa', '*')
             )
-            foreach ($p in $bad) { Test-CEUndoRegistryPathAllowed $p | Should -Not -BeNullOrEmpty -Because $p }
+            foreach ($b in $bad) { Test-CEUndoRegistryValueAllowed -Path $b[0] -Name $b[1] | Should -Not -BeNullOrEmpty -Because "$($b[0])\$($b[1])" }
         }
     }
 
-    It 'still allows every key the shipped remediations write' {
+    It 'still allows the values the shipped remediations write' {
         InModuleScope CEAudit {
             $ok = @(
-                'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa',
-                'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp',
-                'HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters\Interfaces\{1234}',
-                'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection',
-                'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit',
-                'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU',
-                'HKCU:\Software\Policies\Microsoft\Office\16.0\Word\Security'
+                @('HKLM:\SYSTEM\CurrentControlSet\Control\Lsa', 'RunAsPPL'),
+                @('HKLM:\SYSTEM\CurrentControlSet\Control\Lsa', 'LsaCfgFlags'),
+                @('HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp', 'UserAuthentication'),
+                @('HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters\Interfaces\Tcpip_{1234}', 'NetbiosOptions'),
+                @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit', 'ProcessCreationIncludeCmdLine_Enabled'),
+                @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU', 'NoAutoUpdate'),
+                @('HKCU:\Software\Policies\Microsoft\Office\16.0\Word\Security', 'VBAWarnings')
             )
-            foreach ($p in $ok) { Test-CEUndoRegistryPathAllowed $p | Should -BeNullOrEmpty -Because $p }
+            foreach ($o in $ok) { Test-CEUndoRegistryValueAllowed -Path $o[0] -Name $o[1] | Should -BeNullOrEmpty -Because "$($o[0])\$($o[1])" }
         }
     }
 
@@ -6983,6 +6998,8 @@ Describe 'Undo log cannot be used to escalate privilege' {
                 "Set-Service -Name 'Foo' -BinaryPathName 'C:\payload.exe'",
                 "Set-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run' -Name x -Value 'payload'",
                 "Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Foo' -Name ImagePath -Value 'payload'",
+                "Set-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Control\SecureBoot' -Name 'Other' -Value 0",
+                "Set-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Control\SecureBoot' -Value 0",
                 "Write-Warning 'x' > C:\Windows\System32\payload.ps1"
             )
             foreach ($c in $bad) { Test-CEUndoCommandAllowed $c | Should -Not -BeNullOrEmpty -Because $c }
@@ -7012,6 +7029,147 @@ Describe 'Undo log cannot be used to escalate privilege' {
             Should -Invoke New-ItemProperty -Times 0
             ($warnings -join ' ') | Should -Match 'Refusing to restore'
         }
+    }
+}
+
+Describe 'Undo round trip through the registry allow-list' {
+    # Every value a remediation writes must be one a rollback will restore; a value missing from the
+    # allow-list makes the fix silently one-way (AppUpdate-Unblock was, until this was tested).
+    BeforeAll {
+        # OfficeMacros-Harden refuses to run as someone other than the signed-in user.
+        Set-TestDevice -Kind Insecure -ContextOverride @{ RunningAs = 'TESTPC\paul' }
+        # The value each conditional fix looks for before it writes.
+        $global:CETestUndoCurrent = @{
+            NoAutoUpdate = 1; ConsentPromptBehaviorAdmin = 0; ConsentPromptBehaviorUser = 2; MaximumPINLength = 6
+            DisableAntiSpyware = 1; DisableAntiVirus = 1; SafeBrowsingProtectionLevel = 0; DownloadRestrictions = 0
+            UpdateDefault = 0; 'Update{56EB18F8-B008-4CBD-B6D2-8C97FE7E9062}' = 0; 'Update{8A69D345-D564-463C-AFF1-A69D9E530F96}' = 0
+            DisableAppUpdate = 1; AutoDownload = 2; enableautomaticupdates = 0; UpdatesEnabled = 'False'
+        }
+        $global:CETestUndoWrites = New-Object System.Collections.ArrayList
+        Mock -ModuleName CEAudit Get-CERegistryValue { if ($global:CETestUndoCurrent.ContainsKey($Name)) { $global:CETestUndoCurrent[$Name] } else { $Default } }
+        Mock -ModuleName CEAudit Get-CERegistryState { @{ Path = $Path; Name = $Name; Existed = $true; Value = 12345; Kind = 'DWord' } }
+        Mock -ModuleName CEAudit Test-CERegistryValueExists { $true }
+        Mock -ModuleName CEAudit Test-Path { $true }
+        Mock -ModuleName CEAudit Test-CEIsAdmin { $false }
+        Mock -ModuleName CEAudit New-ItemProperty { [void]$global:CETestUndoWrites.Add("$LiteralPath|$Name") }
+        Mock -ModuleName CEAudit Remove-ItemProperty { [void]$global:CETestUndoWrites.Add("$LiteralPath|$Name") }
+        Mock -ModuleName CEAudit Get-ChildItem { [pscustomobject]@{ PSChildName = 'Tcpip_{0A1B2C3D-0000-1111-2222-333344445555}' } }
+        Mock -ModuleName CEAudit Get-Service { [pscustomobject]@{ StartType = 'Manual' } }
+        Mock -ModuleName CEAudit Get-MpPreference {
+            [pscustomobject]@{ DisableRealtimeMonitoring = $false; DisableBehaviorMonitoring = $false; DisableIOAVProtection = $false; DisableScriptScanning = $false }
+        }
+        Mock -ModuleName CEAudit Confirm-SecureBootUEFI { $true }
+        Mock -ModuleName CEAudit Start-ScheduledTask { }
+
+        function global:Invoke-TestUndoRoundTrip {
+            <# Applies one fix against the mocked registry, then rolls it back from a written undo log. #>
+            param([string]$Id, [hashtable]$Params = @{})
+            $global:CETestUndoWrites.Clear()
+            $r = Invoke-CERemediation -Id $Id -Parameters $Params
+            $records = @($r.Undo | Where-Object { $_.Type -eq 'Registry' })
+            $commands = @($r.Undo | Where-Object { $_.Type -eq 'Command' -and $_.Command -match '^Set-ItemProperty ' })
+            $applied = @($global:CETestUndoWrites)
+            $refusedCommands = @(foreach ($c in $commands) {
+                    InModuleScope CEAudit -Parameters @{ C = $c.Command } { param($C) Test-CEUndoCommandAllowed $C }
+                })
+            $log = Join-Path $TestDrive "undo-$Id-$(@($Params.Values) -join '-').json"
+            [pscustomobject]@{
+                ComputerName = $env:COMPUTERNAME
+                Items        = @([pscustomobject]@{ ItemId = 'C001'; Undo = $records })
+            } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $log -Encoding UTF8
+            $global:CETestUndoWrites.Clear()
+            $warnings = @()
+            Restore-CEUndoLog -Path $log -Confirm:$false -WarningVariable warnings -WarningAction SilentlyContinue
+            [pscustomobject]@{
+                Status          = $r.Status
+                Message         = $r.Message
+                Records         = @($records | ForEach-Object { "$($_.Path)|$($_.Name)" })
+                Applied         = $applied
+                Restored        = @($global:CETestUndoWrites)
+                Commands        = $commands.Count
+                RefusedCommands = @($refusedCommands | Where-Object { $_ })
+                Warnings        = @($warnings)
+            }
+        }
+
+        $script:UndoCases = @(
+            @{ Id = 'RDP-RequireNLA' }, @{ Id = 'RDP-Disable' }, @{ Id = 'Autorun-Disable' },
+            @{ Id = 'Lock-InactivityTimeout'; Params = @{ Seconds = 600 } }, @{ Id = 'HelloPin-MinLength'; Params = @{ Length = 8 } },
+            @{ Id = 'RemoteAssistance-Disable' }, @{ Id = 'WindowsUpdate-EnableAuto' }, @{ Id = 'WindowsUpdate-Resume' },
+            @{ Id = 'WindowsUpdate-RemoveQualityDeferral' }, @{ Id = 'UAC-Harden' }, @{ Id = 'Defender-EnableRealtime' },
+            @{ Id = 'SmartScreen-Enforce'; Params = @{ Target = 'Windows' } }, @{ Id = 'SmartScreen-Enforce'; Params = @{ Target = 'Edge' } },
+            @{ Id = 'SmartScreen-Enforce'; Params = @{ Target = 'Chrome' } },
+            @{ Id = 'OfficeMacros-Harden'; Params = @{ App = 'word' } }, @{ Id = 'OfficeMacros-Harden'; Params = @{ App = 'excel' } },
+            @{ Id = 'OfficeMacros-Harden'; Params = @{ App = 'powerpoint' } },
+            @{ Id = 'VBS-EnableHVCI' }, @{ Id = 'VBS-EnableCredentialGuard' }, @{ Id = 'Lsa-EnablePPL' },
+            @{ Id = 'Hardening-WDigestOff' }, @{ Id = 'Hardening-NtlmV2Only' }, @{ Id = 'Hardening-LlmnrOff' },
+            @{ Id = 'Hardening-RestrictAnonymous' }, @{ Id = 'Hardening-SmbClientSigning' }, @{ Id = 'Hardening-CommandLineLogging' },
+            @{ Id = 'Hardening-NetbiosOff' }, @{ Id = 'SecureBoot-Deploy2023Certs' }
+        )
+        foreach ($app in @('Edge', 'Chrome', 'Firefox', 'Store', 'Office', 'OfficeC2R')) { $script:UndoCases += @{ Id = 'AppUpdate-Unblock'; Params = @{ App = $app } } }
+    }
+
+    AfterAll {
+        Remove-Item -Path 'function:global:Invoke-TestUndoRoundTrip' -ErrorAction SilentlyContinue
+        Remove-Variable -Name CETestUndoCurrent, CETestUndoWrites -Scope Global -ErrorAction SilentlyContinue
+    }
+
+    It 'covers every remediation that writes the registry' {
+        $writers = @(Get-CERemediation | Where-Object { $_.Apply.ToString() -match 'RegistryValueTracked|ItemProperty' } | ForEach-Object { $_.Id })
+        $writers.Count | Should -BeGreaterThan 20
+        $tested = @($script:UndoCases | ForEach-Object { $_.Id })
+        foreach ($w in $writers) { $tested | Should -Contain $w -Because "$w writes the registry, so its undo must be round-tripped here" }
+    }
+
+    It 'restores every value each fix writes, with nothing refused' {
+        foreach ($c in $script:UndoCases) {
+            $p = if ($c.ContainsKey('Params')) { $c.Params } else { @{} }
+            $label = "$($c.Id) $(@($p.Values) -join ',')"
+            $rt = Invoke-TestUndoRoundTrip -Id $c.Id -Params $p
+            $rt.Status | Should -Be 'Applied' -Because "$label should apply against the mocked registry ($($rt.Message))"
+            ($rt.Records.Count + $rt.Commands) | Should -BeGreaterThan 0 -Because "$label should record undo data"
+            # SecureBoot-Deploy2023Certs writes directly and records a command instead.
+            if (-not $rt.Commands) { ($rt.Records | Sort-Object) -join ';' | Should -Be (($rt.Applied | Sort-Object) -join ';') -Because "$label records one undo entry per value it writes" }
+            $rt.Warnings.Count | Should -Be 0 -Because "$label undo must not be refused: $($rt.Warnings -join '; ')"
+            ($rt.Restored | Sort-Object) -join ';' | Should -Be (($rt.Records | Sort-Object) -join ';') -Because "$label restores every value it wrote"
+            $rt.RefusedCommands.Count | Should -Be 0 -Because "$label undo command must be allowed: $($rt.RefusedCommands -join '; ')"
+        }
+    }
+
+    It 'restores AppUpdate-Unblock, whose undo used to be refused' {
+        $rt = Invoke-TestUndoRoundTrip -Id 'AppUpdate-Unblock' -Params @{ App = 'Chrome' }
+        ($rt.Records | Sort-Object) -join ';' | Should -Be 'HKLM:\SOFTWARE\Policies\Google\Update|Update{8A69D345-D564-463C-AFF1-A69D9E530F96};HKLM:\SOFTWARE\Policies\Google\Update|UpdateDefault' -Because 'both Chrome update policies were blocked'
+        $rt.Warnings.Count | Should -Be 0
+        ($rt.Restored | Sort-Object) -join ';' | Should -Be (($rt.Records | Sort-Object) -join ';')
+        $rt = Invoke-TestUndoRoundTrip -Id 'AppUpdate-Unblock' -Params @{ App = 'OfficeC2R' }
+        $rt.Warnings.Count | Should -Be 0
+        $rt.Restored -join ';' | Should -Be 'HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\Configuration|UpdatesEnabled'
+    }
+
+    It 'refuses an unlisted value under an allowed key and still restores the listed ones' {
+        $log = Join-Path $TestDrive 'undo-unlisted.json'
+        $rec = { param($Path, $Name, $Existed, $Kind, $Value) [pscustomobject]@{ Type = 'Registry'; Path = $Path; Name = $Name; Existed = $Existed; Kind = $Kind; Value = $Value; KeyCreated = $false } }
+        [pscustomobject]@{
+            ComputerName = $env:COMPUTERNAME
+            Items        = @([pscustomobject]@{
+                    ItemId = 'C001'
+                    Undo   = @(
+                        (& $rec 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' 'RunAsPPL' $true 'DWord' 0),
+                        (& $rec 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' 'Security Packages' $true 'MultiString' @('kerberos', 'evil')),
+                        (& $rec 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' 'Notification Packages' $false $null $null),
+                        (& $rec 'HKLM:\SOFTWARE\Policies\Google\Chrome\ExtensionInstallForcelist' '1' $true 'String' 'abcdefghijklmnop;https://evil/update.xml'),
+                        (& $rec 'HKLM:\SOFTWARE\Policies\Microsoft\Edge\ExtensionInstallForcelist' '1' $true 'String' 'abcdefghijklmnop;https://evil/update.xml'),
+                        (& $rec 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' 'ExtensionInstallForcelist' $true 'String' 'x')
+                    )
+                })
+        } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $log -Encoding UTF8
+        $global:CETestUndoWrites.Clear()
+        $warnings = @()
+        Restore-CEUndoLog -Path $log -Confirm:$false -WarningVariable warnings -WarningAction SilentlyContinue
+        @($global:CETestUndoWrites) -join ';' | Should -Be 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa|RunAsPPL'
+        @($warnings).Count | Should -Be 5
+        ($warnings -join ' ') | Should -Match 'Security Packages'
+        ($warnings -join ' ') | Should -Match 'Notification Packages'
     }
 }
 

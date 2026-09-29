@@ -57,6 +57,47 @@ public sealed class ConfigFileTests
         Assert.Null(lifecycle.Windows10);
     }
 
+    [Fact]
+    public void Tells_a_member_written_as_null_from_one_that_is_not_there()
+    {
+        var lifecycle = ConfigFile.ReadOsLifecycle("""
+            {
+              "lastReviewed": "2026-09-16",
+              "reviewWarningDays": 90,
+              "upcomingEndWarningDays": 60,
+              "source": null,
+              "windows11": [
+                { "build": 28000, "version": null, "homePro": null, "enterprise": null },
+                { "version": "26H2" }
+              ],
+              "windowsServer": [ { "build": 26100, "version": null }, { "extendedEnd": "2034-11-14" } ],
+              "windows10": { "esuConsumerEnd": "2026-10-13" }
+            }
+            """u8);
+        var other = ConfigFile.ReadOsLifecycle("""{ "lastReviewed": "2026-09-16", "reviewWarningDays": 90, "upcomingEndWarningDays": 60, "windows10": { "endOfSupport": null } }"""u8);
+
+        Assert.True(lifecycle.HasSource);
+        Assert.Null(lifecycle.Source);
+        Assert.Equal((true, true, true, true), Present(lifecycle.Windows11![0]));
+        Assert.Equal((false, true, false, false), Present(lifecycle.Windows11[1]));
+        Assert.True(lifecycle.WindowsServer![0].HasBuild);
+        Assert.True(lifecycle.WindowsServer[0].HasVersion);
+        Assert.False(lifecycle.WindowsServer[1].HasBuild);
+        Assert.False(lifecycle.WindowsServer[1].HasVersion);
+        Assert.False(lifecycle.Windows10!.HasEndOfSupport);
+        Assert.False(other.HasSource);
+        Assert.True(other.Windows10!.HasEndOfSupport);
+        Assert.Null(other.Windows10.EndOfSupport);
+    }
+
+    [Fact]
+    public void Setting_a_member_in_code_counts_as_writing_it()
+    {
+        var release = new Windows11Release { Build = 26100, HomePro = null };
+
+        Assert.Equal((true, false, true, false), Present(release));
+    }
+
     [Theory]
     [InlineData("""{ "reviewWarningDays": 90, "upcomingEndWarningDays": 60 }""")]
     [InlineData("""{ "lastReviewed": "2026-09-16", "upcomingEndWarningDays": 60 }""")]
@@ -68,5 +109,10 @@ public sealed class ConfigFileTests
     public void A_file_without_what_every_audit_needs_is_not_valid(string json)
     {
         Assert.Throws<JsonException>(() => ConfigFile.ReadOsLifecycle(Encoding.UTF8.GetBytes(json)));
+    }
+
+    private static (bool Build, bool Version, bool HomePro, bool Enterprise) Present(Windows11Release release)
+    {
+        return (release.HasBuild, release.HasVersion, release.HasHomePro, release.HasEnterprise);
     }
 }

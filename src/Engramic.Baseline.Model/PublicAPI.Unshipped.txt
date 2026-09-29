@@ -117,6 +117,7 @@ Engramic.Baseline.Model.FrameworkRollup.NotApplicable.init -> void
 Engramic.Baseline.Model.OsLifecycle
 Engramic.Baseline.Model.OsLifecycle.<Clone>$() -> Engramic.Baseline.Model.OsLifecycle!
 Engramic.Baseline.Model.OsLifecycle.Equals(Engramic.Baseline.Model.OsLifecycle? other) -> bool
+Engramic.Baseline.Model.OsLifecycle.HasSource.get -> bool
 Engramic.Baseline.Model.OsLifecycle.LastReviewed.get -> string!
 Engramic.Baseline.Model.OsLifecycle.LastReviewed.init -> void
 Engramic.Baseline.Model.OsLifecycle.OsLifecycle() -> void
@@ -273,6 +274,7 @@ Engramic.Baseline.Model.Windows10Lifecycle.EsuCommercialYear3End.get -> string?
 Engramic.Baseline.Model.Windows10Lifecycle.EsuCommercialYear3End.init -> void
 Engramic.Baseline.Model.Windows10Lifecycle.EsuConsumerEnd.get -> string?
 Engramic.Baseline.Model.Windows10Lifecycle.EsuConsumerEnd.init -> void
+Engramic.Baseline.Model.Windows10Lifecycle.HasEndOfSupport.get -> bool
 Engramic.Baseline.Model.Windows10Lifecycle.Windows10Lifecycle() -> void
 Engramic.Baseline.Model.Windows11Release
 Engramic.Baseline.Model.Windows11Release.<Clone>$() -> Engramic.Baseline.Model.Windows11Release!
@@ -281,6 +283,10 @@ Engramic.Baseline.Model.Windows11Release.Build.init -> void
 Engramic.Baseline.Model.Windows11Release.Enterprise.get -> string?
 Engramic.Baseline.Model.Windows11Release.Enterprise.init -> void
 Engramic.Baseline.Model.Windows11Release.Equals(Engramic.Baseline.Model.Windows11Release? other) -> bool
+Engramic.Baseline.Model.Windows11Release.HasBuild.get -> bool
+Engramic.Baseline.Model.Windows11Release.HasEnterprise.get -> bool
+Engramic.Baseline.Model.Windows11Release.HasHomePro.get -> bool
+Engramic.Baseline.Model.Windows11Release.HasVersion.get -> bool
 Engramic.Baseline.Model.Windows11Release.HomePro.get -> string?
 Engramic.Baseline.Model.Windows11Release.HomePro.init -> void
 Engramic.Baseline.Model.Windows11Release.Version.get -> string?
@@ -293,6 +299,8 @@ Engramic.Baseline.Model.WindowsServerRelease.Build.init -> void
 Engramic.Baseline.Model.WindowsServerRelease.Equals(Engramic.Baseline.Model.WindowsServerRelease? other) -> bool
 Engramic.Baseline.Model.WindowsServerRelease.ExtendedEnd.get -> string?
 Engramic.Baseline.Model.WindowsServerRelease.ExtendedEnd.init -> void
+Engramic.Baseline.Model.WindowsServerRelease.HasBuild.get -> bool
+Engramic.Baseline.Model.WindowsServerRelease.HasVersion.get -> bool
 Engramic.Baseline.Model.WindowsServerRelease.Version.get -> string?
 Engramic.Baseline.Model.WindowsServerRelease.Version.init -> void
 Engramic.Baseline.Model.WindowsServerRelease.WindowsServerRelease() -> void

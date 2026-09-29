@@ -13,37 +13,115 @@
 # If the audit is more than a day old it kicks the scheduled task so the next
 # evaluation (Intune runs these every 8 hours) sees fresh data.
 #
+# A failed audit leaves status.json alone (so CEAuditAgeHours keeps growing)
+# and writes last-error.json with the number of failed runs in a row and the
+# time of the first. CEAuditFailedRuns and CEAuditFailingHours report those,
+# so the rules can flag a device whose audit keeps failing (3 runs in a row,
+# or 2 or more over 72 hours) while one failed run changes nothing.
+#
 # Output: a single line of compressed JSON (Intune requirement). Unknown
 # values are reported as failing values so a broken install is never
 # reported as compliant.
+
+function Get-CEStatusTrustProblem {
+    <#
+        Why status.json or last-error.json can't be trusted, or '' when they can: the data folder or
+        either file is a link (junction or symbolic link), is owned by someone other than SYSTEM,
+        Administrators or TrustedInstaller, or has permissions that let anyone else change it. Only
+        the SYSTEM audit should write them, and a standard user who could change any of them could
+        make the device look compliant (or reset its count of failed audits). The owner alone is not
+        enough: a hard link to a file the user can write, such as their ntuser.ini, keeps that file's
+        administrator owner. A file that is not there is not a problem. The same function is in
+        Detect-CECompliance.ps1 and Discover-CECompliance.ps1 (each is uploaded on its own).
+    #>
+    param([string]$DataRoot)
+    $trusted = @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
+    # Rights that let someone change, delete or re-permission it, including GENERIC_WRITE and GENERIC_ALL.
+    $writeRights = 2 -bor 4 -bor 16 -bor 64 -bor 256 -bor 65536 -bor 262144 -bor 524288 -bor 0x40000000 -bor 0x10000000
+    foreach ($path in @($DataRoot, (Join-Path $DataRoot 'status.json'), (Join-Path $DataRoot 'last-error.json'))) {
+        $attributes = $null
+        try { $attributes = [IO.File]::GetAttributes($path) } catch { continue }
+        if ($attributes -band [IO.FileAttributes]::ReparsePoint) { return "$path is a link (junction or symbolic link)" }
+        $acl = $null
+        try { $acl = Get-Acl -LiteralPath $path } catch { return "the permissions of $path could not be read" }
+        $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+        if ($trusted -notcontains $owner) { return "$path is owned by $owner, not an administrator" }
+        foreach ($rule in @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))) {
+            $sid = "$($rule.IdentityReference)"
+            if ("$($rule.AccessControlType)" -ne 'Allow') {
+                # A deny entry against SYSTEM, Administrators or TrustedInstaller could stop the audit
+                # replacing status.json, freezing a forged one in place, so treat it as tampering.
+                if ($trusted -contains $sid) { return "$path denies $sid, so the audit may be unable to replace it" }
+                continue
+            }
+            # CREATOR OWNER only applies to new items, which only administrators can create in a locked folder.
+            if ($trusted -contains $sid -or $sid -eq 'S-1-3-0') { continue }
+            $rights = [long]0
+            try { $rights = [long]$rule.FileSystemRights } catch { $rights = [long]::MaxValue }
+            if ($rights -band $writeRights) { return "$path can be changed by $sid, not only administrators" }
+        }
+    }
+    return ''
+}
+
+function Get-CEAuditFailureRun {
+    <#
+        FailedRuns (failed SYSTEM audits in a row since the last success) and FailingHours (hours since
+        the first of them, 0 unless at least 2 have failed) from last-error.json, which a successful
+        audit removes. No file is 0 and 0. A file from before failures were counted, or one that can't
+        be read, is one failed run. With 2 or more runs but no readable first-failure time the hours are
+        unknown, reported as 99999.
+    #>
+    param([string]$Path, [datetime]$Now = [datetime]::UtcNow)
+    $run = [ordered]@{ FailedRuns = [long]0; FailingHours = [long]0 }
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $run }
+    $record = $null
+    try { $record = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json } catch { $record = $null }
+    $runs = [long]0
+    $raw = if ($record -and $record.PSObject.Properties['FailedRuns']) { [string]$record.FailedRuns } else { '' }
+    if (-not [long]::TryParse($raw, [ref]$runs) -or $runs -lt 1) { $runs = 1 }
+    $run.FailedRuns = $runs
+    if ($runs -ge 2) {
+        $first = [datetime]::MinValue
+        $value = if ($record.PSObject.Properties['FirstFailure']) { $record.FirstFailure } else { $null }
+        if ($value -is [datetime]) { $first = $value.ToUniversalTime() }
+        elseif ([datetime]::TryParse([string]$value, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind, [ref]$first)) { $first = $first.ToUniversalTime() }
+        if ($first -gt [datetime]::MinValue) { $run.FailingHours = [long][math]::Max(0, [math]::Floor(($Now - $first).TotalHours)) }
+        else { $run.FailingHours = [long]99999 }
+    }
+    return $run
+}
 
 function Get-CEComplianceData {
     param(
         [string]$DataRoot = (Join-Path $env:ProgramData 'EngramicBaseline'),
         [Nullable[bool]]$Installed = $null,
+        [Nullable[bool]]$Elevated = $null,
         [datetime]$Now = [datetime]::UtcNow,
         [switch]$NoKick
     )
     $result = [ordered]@{
-        CECheckerInstalled = $false
-        CEToolVersion      = '0.0.0'
-        CEAuditAgeHours    = [long]99999
-        CEAuditError       = $false
-        CEAutoFailCount    = [long]-1
-        CEFailCount        = [long]-1
-        CEReviewCount      = [long]-1
-        CEv33MetPct        = [long]-1
-        CENcscMetPct       = [long]-1
-        CEOSSupported      = $false
-        CEPatchingOK       = $false
-        CEFirewallOK       = $false
-        CEAntimalwareOK    = $false
-        CEStandardUserOK   = $false
-        CEMfaAttested      = $false
-        CEPlusTC2          = 'Unknown'
-        CEPlusTC3          = 'Unknown'
-        CEPlusTC5          = 'Unknown'
-        CEFailing          = ''
+        CECheckerInstalled  = $false
+        CEToolVersion       = '0.0.0'
+        CEAuditAgeHours     = [long]99999
+        CEAuditError        = $false
+        CEAuditFailedRuns   = [long]0
+        CEAuditFailingHours = [long]0
+        CEAutoFailCount     = [long]-1
+        CEFailCount         = [long]-1
+        CEReviewCount       = [long]-1
+        CEv33MetPct         = [long]-1
+        CENcscMetPct        = [long]-1
+        CEOSSupported       = $false
+        CEPatchingOK        = $false
+        CEFirewallOK        = $false
+        CEAntimalwareOK     = $false
+        CEStandardUserOK    = $false
+        CEMfaAttested       = $false
+        CEPlusTC2           = 'Unknown'
+        CEPlusTC3           = 'Unknown'
+        CEPlusTC5           = 'Unknown'
+        CEFailing           = ''
     }
 
     if ($null -eq $Installed) {
@@ -60,8 +138,26 @@ function Get-CEComplianceData {
 
     $statusPath = Join-Path $DataRoot 'status.json'
     $status = $null
-    if (Test-Path -LiteralPath $statusPath) {
+    # Intune runs this as SYSTEM. A status.json a standard user could have written counts as no
+    # data, so every setting reports a failing value.
+    if ($null -eq $Elevated) {
+        $Elevated = (New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    }
+    $trusted = -not ($Elevated -and (Get-CEStatusTrustProblem -DataRoot $DataRoot))
+    if ($trusted -and (Test-Path -LiteralPath $statusPath)) {
         try { $status = Get-Content -LiteralPath $statusPath -Raw | ConvertFrom-Json } catch { $status = $null }
+    }
+
+    # Failed runs since the last successful audit, from last-error.json (the trust check above covers
+    # it too). Untrusted counts as unknown, which reports failing values like everything else.
+    if (-not $trusted) {
+        $result.CEAuditFailedRuns = [long]99999
+        $result.CEAuditFailingHours = [long]99999
+    }
+    else {
+        $failure = Get-CEAuditFailureRun -Path (Join-Path $DataRoot 'last-error.json') -Now $Now
+        $result.CEAuditFailedRuns = $failure.FailedRuns
+        $result.CEAuditFailingHours = $failure.FailingHours
     }
 
     if ($status -and $status.SchemaVersion -eq 1) {

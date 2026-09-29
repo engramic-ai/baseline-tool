@@ -107,26 +107,14 @@ function ConvertTo-CEDateOnly {
 }
 
 function Invoke-CEHttpGet {
-    <# Small GET wrapper (Windows PowerShell 5.1 and pwsh) that reports status codes instead of throwing. #>
+    <#
+        GET through the shared service client (Private\14-ServiceClient.ps1), which applies the
+        proxy settings. Throws on a network failure, as the firmware catalog client expects.
+    #>
     param([Parameter(Mandatory)][string]$Uri, [string]$ETag, [int]$TimeoutSeconds = 20)
-    Add-Type -AssemblyName System.Net.Http -ErrorAction SilentlyContinue
-    if ($PSVersionTable.PSVersion.Major -lt 6) {
-        [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-    }
-    $client = New-Object System.Net.Http.HttpClient
-    try {
-        $client.Timeout = [TimeSpan]::FromSeconds($TimeoutSeconds)
-        $request = New-Object System.Net.Http.HttpRequestMessage([System.Net.Http.HttpMethod]::Get, $Uri)
-        [void]$request.Headers.TryAddWithoutValidation('User-Agent', "EngramicBaseline/$(Get-CEToolVersion)")
-        if ($ETag) { [void]$request.Headers.TryAddWithoutValidation('If-None-Match', $ETag) }
-        $response = $client.SendAsync($request).GetAwaiter().GetResult()
-        $body = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
-        $tag = if ($response.Headers.ETag) { $response.Headers.ETag.ToString() } else { '' }
-        return [pscustomobject]@{ StatusCode = [int]$response.StatusCode; Body = $body; ETag = $tag }
-    }
-    finally {
-        $client.Dispose()
-    }
+    $response = Invoke-CEHttpRequest -Uri $Uri -ETag $ETag -TimeoutSeconds ([math]::Max(1, $TimeoutSeconds)) -MaxBytes 4194304
+    if ($response.Error) { throw $response.Error }
+    return [pscustomobject]@{ StatusCode = $response.StatusCode; Body = $response.Body; ETag = $response.ETag }
 }
 
 function Test-CEFirmwareCatalogRecord {
@@ -161,26 +149,29 @@ function Get-CEFirmwareCatalogRecord {
     }
     $result.Key = $key
 
-    $uri = $null
     $vendorSeg = [Uri]::EscapeDataString([string]$key.Vendor)
     $idSeg = [Uri]::EscapeDataString([string]$key.Id)
-    try { $uri = [Uri]("$($base.TrimEnd('/'))/v1/firmware/$vendorSeg/$idSeg") } catch { $uri = $null }
-    $local = $uri -and @('localhost', '127.0.0.1', '::1', '[::1]') -contains $uri.Host
-    if (-not $uri -or -not ($uri.Scheme -eq 'https' -or ($uri.Scheme -eq 'http' -and $local))) {
+    $uri = (Resolve-CEServiceUri -BaseUrl $base -Path "v1/firmware/$vendorSeg/$idSeg").Uri
+    if (-not $uri) {
         $result.Status = 'Error'
         $result.Message = "Firmware catalog baseUrl must be https (http only for localhost): $base"
         return $result
     }
 
-    $cacheDir = Join-Path (Get-CEDataRoot) 'cache'
+    $dataRoot = Get-CEDataRoot
+    $cacheDir = Join-Path $dataRoot 'cache'
     $cacheFile = Join-Path $cacheDir "firmware-$($key.Vendor)-$($key.Id).json"
     $cached = $null
     $cachedEtag = ''
     $cacheAgeHours = [double]::MaxValue
     # Don't trust a cached record an elevated audit could have had planted (a forged
     # "up to date" record would suppress SU-08). Skip reading; a fresh fetch still runs.
-    $cacheTrusted = (-not (Test-Path -LiteralPath $cacheDir)) -or (Test-CEDataPathTrusted -Path $cacheDir)
-    if ($cacheTrusted -and (Test-Path -LiteralPath $cacheFile)) {
+    # Check the data folder itself as well as cache\ and the file, as Get-CEConfig and the packs
+    # loader do: whoever can write the data folder could replace cache\ wholesale, and a file
+    # keeps the owner who created it even in a folder locked later.
+    $rootTrusted = Test-CEDataPathTrusted -Path $dataRoot
+    $cacheTrusted = $rootTrusted -and ((-not (Test-Path -LiteralPath $cacheDir)) -or (Test-CEDataPathTrusted -Path $cacheDir))
+    if ($cacheTrusted -and (Test-Path -LiteralPath $cacheFile) -and (Test-CEDataPathTrusted -Path $cacheFile)) {
         try {
             $wrapper = Get-Content -LiteralPath $cacheFile -Raw | ConvertFrom-Json
             if (Test-CEFirmwareCatalogRecord $wrapper.record $key.Vendor $key.Id) {
@@ -201,8 +192,11 @@ function Get-CEFirmwareCatalogRecord {
 
     $save = {
         param($record, $etag)
+        # Don't write the cache into a data folder an elevated audit doesn't trust: a standard user
+        # who owns it could turn cache\ into a junction and redirect this SYSTEM write elsewhere.
+        if (-not $cacheTrusted) { Write-Verbose 'Not caching the firmware record: the data folder or cache folder is not trusted.'; return }
         try {
-            if (-not (Test-Path -LiteralPath $cacheDir)) { New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null }
+            Initialize-CEDataFolder -Path $cacheDir | Out-Null
             [pscustomobject]@{ fetchedAt = (Get-Date).ToUniversalTime().ToString('o'); etag = $etag; record = $record } |
                 ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $cacheFile -Encoding UTF8
         }

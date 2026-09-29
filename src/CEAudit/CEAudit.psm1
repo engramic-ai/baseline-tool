@@ -88,8 +88,12 @@ Export-ModuleMember -Function @(
     'Get-CEBucketStyle',
     'ConvertTo-CEStatus',
     'Write-CEStatus',
+    'Write-CEAuditFailure',
+    'Clear-CEAuditFailure',
     'Write-CEEventLog',
     'Get-CEDataRoot',
+    'Initialize-CEDataFolder',
+    'Remove-CEDataTree',
     'Get-CEToolVersion',
     'Test-CEComplianceRules'
 )

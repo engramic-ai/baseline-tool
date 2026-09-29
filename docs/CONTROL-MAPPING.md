@@ -123,7 +123,7 @@ Changesets can only reference these. **Default** = ticked in a new changeset (Hi
 | `FW-EnableLogging` | Log dropped connections (16 MB log) | Low | Yes | Yes |  | Yes |  |
 | `FW-EnableProfiles` | Turn on Microsoft Defender Firewall | Low | Yes | Yes |  | Yes |  |
 | `FW-PublicBlockAll` | Block all inbound connections on public networks | Medium | Yes | Yes |  | Yes | Apps that listen for connections (casting, file sharing, dev servers) will not be reachable while on a Public network. |
-| `Hardening-CommandLineLogging` | Log process command lines and PowerShell script blocks | Low | Yes | Yes |  | Yes | Command lines can contain secrets; restrict who can read the Security log. |
+| `Hardening-CommandLineLogging` | Log process command lines and PowerShell script blocks | Low | Yes | Yes |  | Yes | Command lines and PowerShell script blocks can contain secrets. The Security log is limited to administrators, but script blocks go to Microsoft-Windows-PowerShell/Operational, which signed-in users can read. |
 | `Hardening-LlmnrOff` | Disable LLMNR name resolution | Low | Yes | Yes |  | Yes | Name lookups for devices without DNS entries may fail on home networks; mDNS still works. |
 | `Hardening-NetbiosOff` | Disable NetBIOS over TCP/IP on all adapters | Medium | Yes | Yes |  | Yes | Legacy file sharing by computer name (without DNS) and some old devices rely on NetBIOS. |
 | `Hardening-NtlmV2Only` | Refuse LM and NTLMv1 authentication | Medium | Yes | Yes | Yes | Yes | Very old NAS devices and printers may stop working. |

@@ -6,7 +6,8 @@
 .DESCRIPTION
     Does what Intune would do, the way Intune would do it, and checks each step:
 
-      1. Installs with intune\Install-CEChecker.ps1 (as the Win32 app would)
+      1. Installs with intune\Install-CEChecker.ps1 (as the Win32 app would),
+         and checks any config overrides staged in data\config were deployed
       2. Runs the detection script and checks it reports "installed"
       3. Runs the scheduled audit task as SYSTEM and waits for status.json
       4. Runs the compliance discovery script as SYSTEM in BOTH the 32-bit and
@@ -46,7 +47,14 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 $repo = Split-Path -Parent $PSScriptRoot
 Import-Module (Join-Path $repo 'src\CEAudit\CEAudit.psd1') -Force
 $dataRoot = Join-Path $env:ProgramData 'EngramicBaseline'
+# Where the SYSTEM helper tasks' scripts and output go. Made only AFTER the install has created the
+# locked data folder, the same locked way (Initialize-CEDataFolder): making it before the install would
+# create the data folder unlocked, the install would then move it aside, and a standard user could
+# change the scripts this rehearsal runs as SYSTEM. It is in the module's data folder (imported with no
+# folder argument and elevated, so %ProgramData%\EngramicBaseline), the only place Initialize-CEDataFolder
+# makes a folder locked.
 $workDir = Join-Path $dataRoot 'deployment-test'
+$workDirReady = $false
 $ps64 = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
 $ps32 = Join-Path $env:WINDIR 'SysWOW64\WindowsPowerShell\v1.0\powershell.exe'
 $steps = New-Object System.Collections.ArrayList
@@ -100,7 +108,6 @@ function Invoke-AsSystem {
 Write-Host ''
 Write-Host "Engramic Baseline: Intune deployment rehearsal on $env:COMPUTERNAME" -ForegroundColor Cyan
 Write-Host ''
-New-Item -ItemType Directory -Path $workDir -Force | Out-Null
 $compliance = @()
 
 try {
@@ -110,6 +117,21 @@ try {
     $p = Start-Process -FilePath $installHost -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$(Join-Path $PSScriptRoot 'Install-CEChecker.ps1')`"") -Wait -PassThru -WindowStyle Hidden
     Add-Step 'Install (exit code 0)' ($p.ExitCode -eq 0) "exit $($p.ExitCode); log in $dataRoot\logs"
     if ($p.ExitCode -ne 0) { throw 'Install failed; stopping.' }
+    # The data folder now exists, locked; make the rehearsal's own folder in it the same locked way.
+    $workDir = Initialize-CEDataFolder -Path $workDir
+    $workDirReady = $true
+    # Config overrides staged in the package are copied into the locked config folder by the install,
+    # administrator-owned, or the SYSTEM audit would ignore them.
+    $staged = @(Get-ChildItem -LiteralPath (Join-Path $repo 'data\config') -Filter '*.json' -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension -eq '.json' })
+    if ($staged.Count) {
+        $notDeployed = @($staged | Where-Object {
+                $deployed = Join-Path $dataRoot "config\$($_.Name)"
+                -not (Test-Path -LiteralPath $deployed -PathType Leaf) -or
+                (Get-FileHash -LiteralPath $deployed).Hash -ne (Get-FileHash -LiteralPath $_.FullName).Hash -or
+                @('S-1-5-18', 'S-1-5-32-544') -notcontains (Get-Acl -LiteralPath $deployed).GetOwner([Security.Principal.SecurityIdentifier]).Value
+            } | ForEach-Object { $_.Name })
+        Add-Step 'Config overrides staged in the package deployed' ($notDeployed.Count -eq 0) $(if ($notDeployed.Count) { "missing, different or not administrator-owned: $($notDeployed -join ', ')" } else { "$($staged.Count) file(s)" })
+    }
 
     $reg = Get-ItemProperty -Path 'HKLM:\SOFTWARE\EngramicBaseline'
     Add-Step 'Detection key written (64-bit view)' ([bool]$reg.Version) "Version $($reg.Version) at $($reg.InstallPath)"
@@ -194,7 +216,13 @@ finally {
         $gone = -not (Test-Path 'HKLM:\SOFTWARE\EngramicBaseline') -and -not (Get-ScheduledTask -TaskPath '\EngramicBaseline\' -ErrorAction SilentlyContinue)
         Add-Step 'Uninstall removes app, task and detection key' ($u.ExitCode -eq 0 -and $gone) "exit $($u.ExitCode)"
     }
-    Remove-Item -LiteralPath $workDir -Recurse -Force -ErrorAction SilentlyContinue
+    # Remove the rehearsal's own folder without following a link (Remove-Item -Recurse follows
+    # junctions on Windows PowerShell 5.1) and only through folders no standard user can change:
+    # Remove-CEDataTree checks each folder just before listing it and leaves one it does not trust.
+    if ($workDirReady) {
+        try { if (-not (Remove-CEDataTree -Path $workDir)) { Write-Warning "Left $workDir in place (see the warning above); check it, then delete it." } }
+        catch { Write-Warning "Could not remove $workDir : $($_.Exception.Message)" }
+    }
 }
 
 Write-Host ''

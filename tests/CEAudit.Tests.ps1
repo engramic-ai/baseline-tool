@@ -56,7 +56,9 @@ BeforeAll {
         'Enable-LocalUser', 'Disable-LocalUser', 'Add-MpPreference', 'Remove-MpPreference', 'Set-MpPreference', 'Update-MpSignature',
         'Enable-WindowsOptionalFeature', 'Disable-WindowsOptionalFeature', 'Suspend-BitLocker', 'Start-ScheduledTask',
         'Start-Process', 'Invoke-Expression', 'New-EventLog', 'Write-EventLog',
-        'Set-CESecurityPolicyValue', 'Invoke-CENative'
+        'Set-CESecurityPolicyValue', 'Invoke-CENative',
+        # The one way the module reaches a service over the network.
+        'Invoke-CEHttpRequest'
     )
     function global:Set-TestTripwires {
         # Re-run after any Import-Module -Force: a fresh module instance has no mocks.
@@ -71,6 +73,9 @@ BeforeAll {
             if ("$Path$LiteralPath" -match '^(HK(LM|CU|CR|U|CC):|Registry::)') { throw 'Tripwire: a test reached New-Item on a registry path without mocking it' }
             Microsoft.PowerShell.Management\New-Item @PesterBoundParameters
         }
+        # No test writes to the real Application event log. A no-op rather than a tripwire: when the suite
+        # runs elevated (CI), Initialize-CEDataFolder may move a test folder aside, which records an event.
+        if (& (Get-Module CEAudit) { [bool](Get-Command Write-CEEventEntry -ErrorAction SilentlyContinue) }) { Mock -ModuleName CEAudit Write-CEEventEntry { } }
     }
     Set-TestTripwires
 
@@ -423,10 +428,41 @@ Describe 'Module structure' {
     }
 
     It 'source files are ASCII only (Windows PowerShell 5.1 safe)' {
-        $files = Get-ChildItem -Path $script:RepoRoot -Recurse -Include *.ps1, *.psm1, *.psd1 | Where-Object { $_.FullName -notmatch '[\\/]output[\\/]' }
+        # The files git tracks: git-ignored output is not source (a sandbox run leaves its step scripts,
+        # UTF-8 with a byte order mark, under build\; a signed release copy is there too).
+        $extensions = @('.ps1', '.psm1', '.psd1')
+        $files = $null
+        $git = @(Get-Command git -CommandType Application -ErrorAction SilentlyContinue)
+        if ($git.Count) {
+            $listed = & { $ErrorActionPreference = 'Continue'; & $git[0].Source -C $script:RepoRoot -c core.quotepath=off ls-files 2>$null }
+            if ($LASTEXITCODE -eq 0 -and @($listed).Count) {
+                $files = @($listed | Where-Object { $extensions -contains [IO.Path]::GetExtension($_).ToLowerInvariant() } |
+                    ForEach-Object { Join-Path $script:RepoRoot $_ } | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf })
+            }
+        }
+        if ($null -eq $files) {
+            # No usable git (the sandbox CI copies the tree without .git; Windows git cannot read a worktree
+            # made from WSL): walk the tree, leaving out what .gitignore names without wildcards - build\,
+            # output\ and a locally installed packs\ among them. 'name/' is a folder at any depth, '/name/'
+            # one at the top of the repository, and 'folder/file' one file.
+            $rules = @(Get-Content -LiteralPath (Join-Path $script:RepoRoot '.gitignore') | ForEach-Object { $_.Trim() } | Where-Object { $_ -and $_ -notmatch '^[#!]' -and $_ -notmatch '[*?\[]' })
+            $files = @(Get-ChildItem -LiteralPath $script:RepoRoot -Recurse -File | Where-Object { $extensions -contains $_.Extension.ToLowerInvariant() } | Where-Object {
+                    $relative = $_.FullName.Substring($script:RepoRoot.Length).TrimStart('\', '/') -replace '\\', '/'
+                    $folders = @($relative -split '/' | Select-Object -SkipLast 1)
+                    $keep = $folders -notcontains '.git'
+                    foreach ($rule in $rules) {
+                        $name = $rule.Trim('/')
+                        if (-not $rule.EndsWith('/')) { if ($relative -eq $name) { $keep = $false } }
+                        elseif ($rule.StartsWith('/')) { if ($folders.Count -and $folders[0] -eq $name) { $keep = $false } }
+                        elseif ($folders -contains $name) { $keep = $false }
+                    }
+                    $keep
+                } | ForEach-Object { $_.FullName })
+        }
+        $files.Count | Should -BeGreaterThan 50 -Because 'the scan must find the sources'
         foreach ($f in $files) {
-            $bytes = [IO.File]::ReadAllBytes($f.FullName)
-            @($bytes | Where-Object { $_ -gt 127 }).Count | Should -Be 0 -Because $f.Name
+            $bytes = [IO.File]::ReadAllBytes($f)
+            @($bytes | Where-Object { $_ -gt 127 }).Count | Should -Be 0 -Because $f
         }
     }
 }
@@ -506,6 +542,21 @@ Describe 'Static invariants' {
             }
         }
         @($problems) -join "`n" | Should -BeNullOrEmpty
+    }
+
+    It 'the installer and the module lock a data folder with the identical descriptor (no drift)' {
+        # The installer can't import the module, so it carries its own copy of the locked-descriptor
+        # builder, like Get-CEStatusTrustProblem. This keeps the two copies from drifting apart.
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path (Join-Path $script:RepoRoot 'intune') 'Install-CEChecker.ps1'), [ref]$null, [ref]$null)
+        $fn = $ast.Find({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq 'New-CEDataDirectorySecurity' }, $true)
+        $fn | Should -Not -BeNullOrEmpty
+        . ([scriptblock]::Create($fn.Extent.Text))
+        foreach ($usersRead in $false, $true) {
+            $installerSddl = (New-CEDataDirectorySecurity -UsersRead:$usersRead).GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::Access)
+            $moduleSddl = InModuleScope CEAudit -Parameters @{ U = $usersRead } { param($U) (New-CELockedDirectorySecurity -UsersRead:$U).GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::Access) }
+            $installerSddl | Should -Be $moduleSddl -Because "the two copies must lock a folder identically (UsersRead=$usersRead)"
+            $installerSddl | Should -Match '^D:P\(A;OICI;FA;;;SY\)\(A;OICI;FA;;;BA\)' -Because 'protected, SYSTEM and Administrators only'
+        }
     }
 }
 
@@ -903,6 +954,11 @@ Describe 'Remediation engine' {
         }
     }
 
+    It 'warns that script block logging writes to a log signed-in users can read' {
+        $notes = (Get-CERemediation -Id 'Hardening-CommandLineLogging').Notes
+        $notes | Should -Match 'script blocks go to Microsoft-Windows-PowerShell/Operational, which signed-in users can read'
+    }
+
     It 'quotes undo command literals safely' {
         InModuleScope CEAudit {
             ConvertTo-CEPSLiteral "it's; Remove-Item x" | Should -Be "'it''s; Remove-Item x'"
@@ -1169,6 +1225,23 @@ Describe 'Intune: status, discovery and compliance rules' {
         $script:softRules = Join-Path $script:intune 'compliance-rules-autofail-only.json'
         $script:fwRules = Join-Path $script:intune 'compliance-rules-frameworks.json'
 
+        function global:Get-TestInstallerCode {
+            <# The named functions (or variable assignments) from the install script, to dot-source into a test. #>
+            param([string]$Path, [string[]]$Name = @(), [string[]]$Variable = @())
+            $ast = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$null, [ref]$null)
+            $parts = foreach ($n in $Name) {
+                $fn = $ast.Find({ param($x) $x -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $x.Name -eq $n }.GetNewClosure(), $true)
+                if (-not $fn) { throw "No function $n in $Path" }
+                $fn.Extent.Text
+            }
+            $parts = @($parts) + @(foreach ($v in $Variable) {
+                $set = $ast.Find({ param($x) $x -is [System.Management.Automation.Language.AssignmentStatementAst] -and "$($x.Left)" -eq "`$$v" }.GetNewClosure(), $false)
+                if (-not $set) { throw "No variable $v in $Path" }
+                $set.Extent.Text
+            })
+            return [scriptblock]::Create(($parts -join "`n"))
+        }
+
         function global:New-TestStatus {
             param([string]$Kind, [string]$DataRoot, [switch]$AttestMfa)
             Set-TestDevice -Kind $Kind
@@ -1226,7 +1299,7 @@ Describe 'Intune: status, discovery and compliance rules' {
     It 'discovery output is one line of JSON with every rule setting and the right types' {
         $root = Join-Path $TestDrive 'insecure2'
         New-TestStatus -Kind Insecure -DataRoot $root | Out-Null
-        $json = Get-CEComplianceData -DataRoot $root -Installed $true -NoKick | ConvertTo-Json -Compress
+        $json = Get-CEComplianceData -DataRoot $root -Installed $true -Elevated $false -NoKick | ConvertTo-Json -Compress
         $json | Should -Not -Match "`n"
         foreach ($rules in @($script:strictRules, $script:softRules, $script:fwRules)) {
             $eval = Test-CEComplianceRules -DiscoveryOutput $json -RulesPath $rules
@@ -1238,7 +1311,7 @@ Describe 'Intune: status, discovery and compliance rules' {
     It 'framework rules gate on coverage: an insecure device is non-compliant, naming CEv33MetPct' {
         $root = Join-Path $TestDrive 'fw-insecure'
         New-TestStatus -Kind Insecure -DataRoot $root | Out-Null
-        $data = Get-CEComplianceData -DataRoot $root -Installed $true -NoKick
+        $data = Get-CEComplianceData -DataRoot $root -Installed $true -Elevated $false -NoKick
         $data.CEv33MetPct | Should -BeGreaterOrEqual 0
         $eval = Test-CEComplianceRules -DiscoveryOutput ($data | ConvertTo-Json -Compress) -RulesPath $script:fwRules
         $eval.Compliant | Should -BeFalse
@@ -1248,7 +1321,7 @@ Describe 'Intune: status, discovery and compliance rules' {
     It 'reports an insecure device as non-compliant, naming the failing rules' {
         $root = Join-Path $TestDrive 'insecure3'
         New-TestStatus -Kind Insecure -DataRoot $root | Out-Null
-        $data = Get-CEComplianceData -DataRoot $root -Installed $true -NoKick
+        $data = Get-CEComplianceData -DataRoot $root -Installed $true -Elevated $false -NoKick
         $data.CEAutoFailCount | Should -BeGreaterThan 0
         $data.CEPatchingOK | Should -BeFalse
         $data.CEFailing | Should -Match 'SU-03'
@@ -1264,7 +1337,7 @@ Describe 'Intune: status, discovery and compliance rules' {
         $root = Join-Path $TestDrive 'secure'
         $st = New-TestStatus -Kind Secure -DataRoot $root -AttestMfa
         $st.autoFailCount | Should -Be 0
-        $data = Get-CEComplianceData -DataRoot $root -Installed $true -NoKick
+        $data = Get-CEComplianceData -DataRoot $root -Installed $true -Elevated $false -NoKick
         $eval = Test-CEComplianceRules -DiscoveryOutput ($data | ConvertTo-Json -Compress) -RulesPath $script:strictRules
         ($eval.Rules | Where-Object State -ne 'Compliant' | ForEach-Object { "$($_.SettingName)=$($_.Actual)" }) -join ', ' | Should -BeNullOrEmpty
         $eval.Compliant | Should -BeTrue
@@ -1273,14 +1346,176 @@ Describe 'Intune: status, discovery and compliance rules' {
     It 'is non-compliant when the audit is stale' {
         $root = Join-Path $TestDrive 'stale'
         New-TestStatus -Kind Secure -DataRoot $root -AttestMfa | Out-Null
-        $data = Get-CEComplianceData -DataRoot $root -Installed $true -NoKick -Now ([datetime]::UtcNow.AddHours(100))
+        $data = Get-CEComplianceData -DataRoot $root -Installed $true -Elevated $false -NoKick -Now ([datetime]::UtcNow.AddHours(100))
         $data.CEAuditAgeHours | Should -BeGreaterOrEqual 100
         $eval = Test-CEComplianceRules -DiscoveryOutput ($data | ConvertTo-Json -Compress) -RulesPath $script:softRules
         @($eval.Rules | Where-Object State -eq 'NonCompliant').SettingName | Should -Be @('CEAuditAgeHours')
     }
 
+    It 'one failed audit stays compliant; three in a row, or two over 72 hours, do not; a success resets the count' {
+        # A single transient failure never flips compliance, a stale result does (CEAuditAgeHours), and
+        # so does an audit that keeps failing: 3 runs in a row, or 2 or more over 72 hours.
+        function global:Add-TestAuditFailure {
+            param([string]$Root, [datetime]$At)
+            InModuleScope CEAudit -Parameters @{ Root = $Root; At = $At } {
+                param($Root, $At)
+                Mock Test-CEIsAdmin { $false }
+                Write-CEAuditFailure -DataRoot $Root -Message 'The audit failed' -Now $At
+            }
+        }
+        function global:Get-TestFailureVerdict {
+            param([string]$Root, [datetime]$At, [string]$RulesPath)
+            $data = Get-CEComplianceData -DataRoot $Root -Installed $true -Elevated $false -NoKick -Now $At
+            $eval = Test-CEComplianceRules -DiscoveryOutput ($data | ConvertTo-Json -Compress) -RulesPath $RulesPath
+            [pscustomobject]@{ Data = $data; Compliant = $eval.Compliant; NonCompliant = @($eval.Rules | Where-Object State -eq 'NonCompliant' | ForEach-Object { $_.SettingName }) }
+        }
+        $root = Join-Path $TestDrive 'failed-runs'
+        New-TestStatus -Kind Secure -DataRoot $root -AttestMfa | Out-Null
+        $now = [datetime]::UtcNow
+        $errPath = Join-Path $root 'last-error.json'
+
+        $v = Get-TestFailureVerdict -Root $root -At $now -RulesPath $script:strictRules
+        $v.Data.CEAuditFailedRuns | Should -Be 0
+        $v.Data.CEAuditFailingHours | Should -Be 0
+        $v.Compliant | Should -BeTrue
+
+        # One failed run: reported (CEAuditError), but compliance does not change.
+        $r = Add-TestAuditFailure -Root $root -At $now.AddHours(-2)
+        $r.FailedRuns | Should -Be 1
+        $v = Get-TestFailureVerdict -Root $root -At $now -RulesPath $script:strictRules
+        $v.Data.CEAuditError | Should -BeTrue
+        $v.Data.CEAuditFailedRuns | Should -Be 1
+        $v.Data.CEAuditFailingHours | Should -Be 0 -Because 'the hours only count once at least 2 runs have failed'
+        $v.Compliant | Should -BeTrue -Because 'one failed run never flips compliance'
+
+        # Two in a row, 2 hours apart: still compliant.
+        Add-TestAuditFailure -Root $root -At $now.AddHours(-1) | Out-Null
+        $v = Get-TestFailureVerdict -Root $root -At $now -RulesPath $script:strictRules
+        $v.Data.CEAuditFailedRuns | Should -Be 2
+        $v.Data.CEAuditFailingHours | Should -Be 2
+        $v.Compliant | Should -BeTrue
+
+        # Three in a row: not compliant, under every rules file, before the result goes stale.
+        $r = Add-TestAuditFailure -Root $root -At $now
+        $r.FailedRuns | Should -Be 3
+        $saved = Get-Content -LiteralPath $errPath -Raw | ConvertFrom-Json
+        $saved.FailedRuns | Should -Be 3
+        $first = if ($saved.FirstFailure -is [datetime]) { $saved.FirstFailure.ToUniversalTime() } else { [datetime]::Parse($saved.FirstFailure, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime() }
+        $first | Should -Be $now.AddHours(-2) -Because 'the first failure since the last success is carried over'
+        $v = Get-TestFailureVerdict -Root $root -At $now -RulesPath $script:strictRules
+        $v.Data.CEAuditAgeHours | Should -BeLessThan 72
+        $v.NonCompliant | Should -Be @('CEAuditFailedRuns')
+        ($v.Data | ConvertTo-Json -Compress) | Should -Match '"CEAuditFailedRuns":3'
+        foreach ($rules in @($script:softRules, $script:fwRules)) {
+            (Get-TestFailureVerdict -Root $root -At $now -RulesPath $rules).NonCompliant | Should -Contain 'CEAuditFailedRuns'
+        }
+
+        # A successful audit removes last-error.json, so both counts start again.
+        InModuleScope CEAudit -Parameters @{ Root = $root } { param($Root) Mock Test-CEIsAdmin { $false }; Clear-CEAuditFailure -DataRoot $Root }
+        Test-Path -LiteralPath $errPath | Should -BeFalse
+        $v = Get-TestFailureVerdict -Root $root -At $now -RulesPath $script:strictRules
+        $v.Data.CEAuditFailedRuns | Should -Be 0
+        $v.Compliant | Should -BeTrue
+        (Add-TestAuditFailure -Root $root -At $now).FailedRuns | Should -Be 1 -Because 'the count starts again after a success'
+        InModuleScope CEAudit -Parameters @{ Root = $root } { param($Root) Mock Test-CEIsAdmin { $false }; Clear-CEAuditFailure -DataRoot $Root }
+
+        # Two failed runs over 72 hours with no success between: not compliant. (status.json is kept fresh
+        # here so only this rule is tested; on a real device the audit age has usually passed 72 too, but
+        # this rule still holds when an administrator relaxes the audit-age limit.)
+        Add-TestAuditFailure -Root $root -At $now.AddHours(-80) | Out-Null
+        $v = Get-TestFailureVerdict -Root $root -At $now -RulesPath $script:strictRules
+        $v.Data.CEAuditFailingHours | Should -Be 0 -Because 'one failed run, however long ago, is not a run of failures'
+        $v.Compliant | Should -BeTrue
+        Add-TestAuditFailure -Root $root -At $now.AddHours(-1) | Out-Null
+        $v = Get-TestFailureVerdict -Root $root -At $now -RulesPath $script:strictRules
+        $v.Data.CEAuditFailedRuns | Should -Be 2
+        $v.Data.CEAuditFailingHours | Should -Be 80
+        $v.NonCompliant | Should -Be @('CEAuditFailingHours')
+        foreach ($rules in @($script:softRules, $script:fwRules)) {
+            (Get-TestFailureVerdict -Root $root -At $now -RulesPath $rules).NonCompliant | Should -Contain 'CEAuditFailingHours'
+        }
+        # Just under 72 hours is still compliant.
+        $v = Get-TestFailureVerdict -Root $root -At $now.AddHours(-9) -RulesPath $script:softRules
+        $v.Data.CEAuditFailingHours | Should -Be 71
+        $v.NonCompliant | Should -Not -Contain 'CEAuditFailingHours'
+
+        # A last-error.json from before failures were counted (or the user probe's shape) is one failed run.
+        Set-Content -LiteralPath $errPath -Value ('{ "Time": "' + $now.AddHours(-5).ToString('o') + '", "Message": "Access to the path is denied." }')
+        $v = Get-TestFailureVerdict -Root $root -At $now -RulesPath $script:strictRules
+        $v.Data.CEAuditFailedRuns | Should -Be 1
+        $v.Compliant | Should -BeTrue
+        $r = Add-TestAuditFailure -Root $root -At $now
+        $r.FailedRuns | Should -Be 2
+        $r.FirstFailure | Should -Be $now.AddHours(-5).ToString('o') -Because 'its Time is the first failure'
+        # Unreadable counts as one failed run too, never as a pass or a crash.
+        Set-Content -LiteralPath $errPath -Value 'not json'
+        (Get-CEComplianceData -DataRoot $root -Installed $true -Elevated $false -NoKick -Now $now).CEAuditFailedRuns | Should -Be 1
+        Remove-Item -LiteralPath $errPath
+    }
+
+    It 'every rules file flags repeated audit failures and leaves CEAuditError for reporting' {
+        foreach ($f in @($script:strictRules, $script:softRules, $script:fwRules)) {
+            $rules = @((Get-Content -LiteralPath $f -Raw | ConvertFrom-Json).Rules)
+            $runs = @($rules | Where-Object SettingName -eq 'CEAuditFailedRuns')
+            $runs.Count | Should -Be 1 -Because $f
+            $runs[0].Operator | Should -Be 'LessThan'
+            $runs[0].DataType | Should -Be 'Int64'
+            $runs[0].Operand | Should -Be 3
+            $runs[0].RemediationStrings[0].Title | Should -Match '\{ActualValue\} times in a row'
+            $hours = @($rules | Where-Object SettingName -eq 'CEAuditFailingHours')
+            $hours.Count | Should -Be 1 -Because $f
+            $hours[0].Operator | Should -Be 'LessThan'
+            $hours[0].DataType | Should -Be 'Int64'
+            $hours[0].Operand | Should -Be 72
+            $hours[0].RemediationStrings[0].Title | Should -Match '\{ActualValue\} hours'
+            @($rules | Where-Object SettingName -eq 'CEAuditAgeHours').Count | Should -Be 1 -Because 'a stale result still flips compliance'
+            @($rules | Where-Object SettingName -eq 'CEAuditError').Count | Should -Be 0 -Because 'one failed run must not flip compliance'
+        }
+    }
+
+    It 'compliance scripts treat a last-error.json a standard user could have written like an untrusted status.json' {
+        # A user who could change last-error.json could reset the count of failed audits, so as SYSTEM it
+        # gets the same trust check as status.json, and failing it reports no trustworthy data at all.
+        $root = Join-Path $TestDrive 'trust-last-error'
+        New-TestStatus -Kind Secure -DataRoot $root -AttestMfa | Out-Null
+        $errPath = Join-Path $root 'last-error.json'
+        [ordered]@{ Time = [datetime]::UtcNow.ToString('o'); Message = 'x'; Where = ''; FailedRuns = 1; FirstFailure = [datetime]::UtcNow.ToString('o') } |
+            ConvertTo-Json | Set-Content -LiteralPath $errPath -Encoding UTF8
+        $locked = @(
+            [pscustomobject]@{ IdentityReference = [Security.Principal.SecurityIdentifier]::new('S-1-5-18'); FileSystemRights = [Security.AccessControl.FileSystemRights]::FullControl; AccessControlType = [Security.AccessControl.AccessControlType]::Allow }
+            [pscustomobject]@{ IdentityReference = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'); FileSystemRights = [Security.AccessControl.FileSystemRights]::FullControl; AccessControlType = [Security.AccessControl.AccessControlType]::Allow }
+        )
+        $global:TestLastErrorOwner = 'S-1-5-18'
+        $global:TestLockedRules = $locked
+        Mock Get-Acl {
+            $owner = if ($LiteralPath -like '*last-error.json') { $global:TestLastErrorOwner } else { 'S-1-5-18' }
+            $acl = New-Object psobject
+            $acl | Add-Member -MemberType ScriptMethod -Name GetOwner -Value ([scriptblock]::Create("param(`$type) [Security.Principal.SecurityIdentifier]::new('$owner')"))
+            $acl | Add-Member -MemberType ScriptMethod -Name GetAccessRules -Value { param($explicit, $inherited, $type) $global:TestLockedRules }
+            return $acl
+        }
+        Get-CEStatusTrustProblem -DataRoot $root | Should -BeNullOrEmpty
+        $data = Get-CEComplianceData -DataRoot $root -Installed $true -Elevated $true -NoKick
+        $data.CEAuditFailedRuns | Should -Be 1
+        (Test-CEComplianceRules -DiscoveryOutput ($data | ConvertTo-Json -Compress) -RulesPath $script:strictRules).Compliant | Should -BeTrue
+
+        $global:TestLastErrorOwner = 'S-1-5-21-1-2-3-1001'
+        Get-CEStatusTrustProblem -DataRoot $root | Should -Match 'last-error\.json is owned by S-1-5-21-1-2-3-1001'
+        $data = Get-CEComplianceData -DataRoot $root -Installed $true -Elevated $true -NoKick
+        $data.CEAuditFailedRuns | Should -Be 99999
+        $data.CEAuditFailingHours | Should -Be 99999
+        $data.CEAutoFailCount | Should -Be -1 -Because 'an untrusted data folder counts as no data, as for status.json'
+        $eval = Test-CEComplianceRules -DiscoveryOutput ($data | ConvertTo-Json -Compress) -RulesPath $script:softRules
+        $eval.Compliant | Should -BeFalse
+        $bad = @($eval.Rules | Where-Object State -eq 'NonCompliant' | ForEach-Object { $_.SettingName })
+        $bad | Should -Contain 'CEAuditFailedRuns'
+        $bad | Should -Contain 'CEAuditFailingHours'
+        # A standard user running it can only mislead themselves, so it is read as it is.
+        (Get-CEComplianceData -DataRoot $root -Installed $true -Elevated $false -NoKick).CEAuditFailedRuns | Should -Be 1
+    }
+
     It 'never reports compliant when nothing is installed or no audit has run' {
-        $data = Get-CEComplianceData -DataRoot (Join-Path $TestDrive 'empty') -Installed $false -NoKick
+        $data = Get-CEComplianceData -DataRoot (Join-Path $TestDrive 'empty') -Installed $false -Elevated $false -NoKick
         $data.CEAutoFailCount | Should -Be -1
         foreach ($rules in @($script:strictRules, $script:softRules)) {
             (Test-CEComplianceRules -DiscoveryOutput ($data | ConvertTo-Json -Compress) -RulesPath $rules).Compliant | Should -BeFalse
@@ -1311,6 +1546,853 @@ Describe 'Intune: status, discovery and compliance rules' {
         (Get-Content (Join-Path $script:intune 'Detect-CEChecker.ps1') -Raw) | Should -Match ([regex]::Escape("[version]'$v'"))
     }
 
+    It 'the install makes the data folder and its subfolders locked at birth, before logging or copying, and never takes an existing one back in place' {
+        # %ProgramData% lets standard users create folders, and the SYSTEM audit and Intune trust a
+        # status.json and config overrides there, so every folder the tool keeps must be born locked.
+        $text = (Get-Content (Join-Path $script:intune 'Install-CEChecker.ps1') -Raw) -replace '\r\n', "`n"
+        $firstCopy = $text.IndexOf('Copy-Item')
+        $firstCopy | Should -BeGreaterThan 0
+        $init = $text.IndexOf("`n    Initialize-CEDataRoot -Path `$dataRoot")
+        $init | Should -BeGreaterThan 0
+        $init | Should -BeLessThan $text.IndexOf('Start-Transcript')
+        $init | Should -BeLessThan $firstCopy
+        # The root and every kept subfolder are made with New-CELockedDirectory (locked at birth).
+        $text | Should -Match "foreach \(\`$name in @\('logs', 'reports', 'cache', 'packs'\)\) \{ New-CELockedDirectory -Path \(Join-Path \`$dataRoot \`$name\) -DataRoot \`$dataRoot "
+        $text | Should -Match "New-CELockedDirectory -Path \(Join-Path \`$dataRoot 'config'\) -DataRoot \`$dataRoot -UsersRead"
+        # Locked in the one call that creates it: CreateDirectory with a descriptor on 5.1, FileSystemAclExtensions.Create on 7.
+        $text | Should -Match '\[IO\.Directory\]::CreateDirectory\(\$Path, \$security\)'
+        $text | Should -Match '\[IO\.FileSystemAclExtensions\]::Create\(\[IO\.DirectoryInfo\]::new\(\$Path\), \$security\)'
+        # The in-place take-back is gone: no takeown, no ownership reset, no repair of a user folder in place.
+        $text | Should -Not -Match '\$takeown'
+        $text | Should -Not -Match 'Reset-CEFolderOwner'
+        $text | Should -Not -Match 'Repair-CEDataFolder'
+        # The owner is set at birth in the descriptor, never forced afterwards onto a folder that might
+        # be a racer's: no post-create ownership step, and nothing re-ACLs a data folder in place.
+        $text | Should -Not -Match 'Set-CEOwnerAdministrators'
+        $text | Should -Not -Match 'SetOwner'
+        $text | Should -Not -Match 'Set-Acl'
+        $text | Should -Match 'O:BAD:P\(A;OICI;FA;;;SY\)\(A;OICI;FA;;;BA\)' -Because 'owner Administrators is in the birth descriptor'
+        # Anything already there is moved aside, never reused.
+        $text | Should -Match 'Move-CEItemAside -Path \$Path'
+        # The root is set up only AFTER the downgrade check and only once the audit mutex is held,
+        # so an older package never moves the folder aside and no upgrade runs underneath an audit.
+        $downgrade = [regex]::Match($text, 'if \(-not \$AllowDowngrade -and \(Test-CENewerInstalled').Index
+        $mutex = $text.IndexOf("New-Object System.Threading.Mutex(`$false, 'Global\EngramicBaselineAudit')")
+        $downgrade | Should -BeGreaterThan 0
+        $mutex | Should -BeGreaterThan $downgrade
+        $init | Should -BeGreaterThan $mutex -Because 'the mutex is taken before the data root is touched'
+        # The audit task's working directory is the install folder, not the data folder, so an audit's
+        # open working directory never blocks an upgrade from renaming the data root.
+        $text | Should -Match '-WorkingDirectory \$InstallPath'
+        $text | Should -Not -Match '-WorkingDirectory \$dataRoot'
+        # Native tools by full path; icacls still locks Program Files (Set-CELockedAcl).
+        $text | Should -Match "(?m)^\`$icacls = Join-Path \`$system32 'icacls\.exe'$"
+        $text | Should -Not -Match '&\s*(icacls|takeown)(\.exe)?\b' -Because 'native tools run by full path, not through PATH'
+        $text | Should -Match 'if \(\$transcribing\) \{ Stop-Transcript' -Because 'a failure before logging starts must not hide the real error'
+    }
+
+    It 'the locked descriptor a data folder is born with grants only SYSTEM and Administrators (and optionally Users read)' {
+        # Test A checks this descriptor is what CreateDirectory / FileSystemAclExtensions.Create is
+        # given, so the folder is locked in the one call that makes it. The elevated on-disk result
+        # (owner and DACL) is checked by 'Locked-at-birth data folders' when the suite runs elevated.
+        . (Get-TestInstallerCode -Path (Join-Path $script:intune 'Install-CEChecker.ps1') -Name @('New-CEDataDirectorySecurity'))
+        $adminOnly = (New-CEDataDirectorySecurity).GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::Access)
+        $adminOnly | Should -Match '^D:P'                     # protected: no inheritance from %ProgramData%
+        $adminOnly | Should -Match '\(A;OICI;FA;;;SY\)'       # SYSTEM full control, inherited by children
+        $adminOnly | Should -Match '\(A;OICI;FA;;;BA\)'       # Administrators full control
+        $adminOnly | Should -Not -Match ';;;(BU|WD|AU|IU)\)'  # nobody else, not even read
+        $withRead = (New-CEDataDirectorySecurity -UsersRead).GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::Access)
+        $withRead | Should -Match '(?i)\(A;OICI;0x1200a9;;;BU\)' -Because 'the config folder lets Users read, never write'
+        $withRead | Should -Not -Match '\(A;OICI;FA;;;BU\)'
+        # A config file the install deploys is born administrator-owned too: otherwise it takes its creator's
+        # default owner, which in an administrator's elevated session on a Windows client is their account,
+        # and the SYSTEM audit ignores a config file SYSTEM or Administrators do not own.
+        . (Get-TestInstallerCode -Path (Join-Path $script:intune 'Install-CEChecker.ps1') -Name @('New-CEDataFileSecurity'))
+        (New-CEDataFileSecurity).GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::Owner) | Should -Be 'O:BA'
+        $fileDacl = (New-CEDataFileSecurity).GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::Access)
+        $fileDacl | Should -Match '(?i)^D:P\(A;;FA;;;SY\)\(A;;FA;;;BA\)\(A;;0x1200a9;;;BU\)$'
+        $copy = [regex]::Match(((Get-Content -LiteralPath (Join-Path $script:intune 'Install-CEChecker.ps1') -Raw) -replace '\r\n', "`n"), '(?ms)^function Copy-CEStagedConfig \{.*?\n\}').Value
+        $copy | Should -Match '\[IO\.File\]::Create\(\$tmp, 4096, \[IO\.FileOptions\]::None, \$security\)'
+        $copy | Should -Match '\[IO\.FileSystemAclExtensions\]::Create\(\[IO\.FileInfo\]::new\(\$tmp\)'
+        $copy | Should -Match '\$security = New-CEDataFileSecurity'
+        $copy | Should -Not -Match '\[IO\.File\]::Copy|Copy-Item' -Because 'a copy takes its creator''s owner and the source''s attributes'
+    }
+
+    It 'the install disables the audit task before stopping it, and re-enables it afterwards' {
+        # Finding 5: Stop-ScheduledTask does not stop a NEW instance starting while the installer waits
+        # on the mutex; an old-version audit that starts then takes its working directory in the data root
+        # and blocks the rename. Disabling first prevents that; the task is re-registered (enabled) at the
+        # end, and re-enabled in the finally if the install fails first.
+        $text = (Get-Content -LiteralPath (Join-Path $script:intune 'Install-CEChecker.ps1') -Raw) -replace '\r\n', "`n"
+        $disable = $text.IndexOf('Disable-ScheduledTask')
+        $stop = $text.IndexOf('Stop-ScheduledTask')
+        $disable | Should -BeGreaterThan 0 -Because 'the task is disabled before the installer waits'
+        $stop | Should -BeGreaterThan 0
+        $disable | Should -BeLessThan $stop -Because 'disabling first stops a new instance starting during the wait'
+        $text | Should -Match '\$disabledAudit = \$false' -Because 'it tracks whether it disabled the task'
+        $reenable = [regex]::Match($text, '(?ms)^finally \{.*')
+        $reenable.Value | Should -Match 'Enable-ScheduledTask' -Because 'the finally re-enables it if it was disabled and not re-registered'
+    }
+
+    It 'Move-CEItemAside retries a busy folder with a back-off, then throws a clear reason' {
+        # Finding 5: the one-time move-aside fails if any process holds a handle under the data folder
+        # (an old audit, an admin with a report open). It must retry with a back-off and, on final
+        # failure, say why so the Intune install error is actionable - not a bare sharing violation.
+        $installer = Join-Path $script:intune 'Install-CEChecker.ps1'
+        $text = (Get-Content -LiteralPath $installer -Raw) -replace '\r\n', "`n"
+        $fn = [regex]::Match($text, '(?ms)^function Move-CEItemAside \{.*?\n\}')
+        $fn.Success | Should -BeTrue
+        $fn.Value | Should -Match 'for \(\$attempt = 0; \$attempt -lt \d+' -Because 'it retries'
+        $fn.Value | Should -Match 'Start-Sleep' -Because 'with a back-off between tries'
+        $fn.Value | Should -Match 'open under the data folder' -Because 'the final error says why'
+        # It still moves a folder aside normally, without following a link inside it.
+        . (Get-TestInstallerCode -Path $installer -Name @('Assert-CEInDataRoot', 'Get-CEAsidePath', 'Move-CEItemAside'))
+        $src = Join-Path $TestDrive 'mv-src'
+        $outside = Join-Path $TestDrive 'mv-outside'
+        New-Item -ItemType Directory -Force -Path (Join-Path $src 'a'), $outside | Out-Null
+        Set-Content -LiteralPath (Join-Path $src 'a\f.txt') -Value 'x'
+        Set-Content -LiteralPath (Join-Path $outside 'keep.txt') -Value 'keep'
+        $link = Join-Path $src 'to-outside'
+        New-Item -ItemType Junction -Path $link -Target $outside | Out-Null
+        try {
+            $aside = Move-CEItemAside -Path $src -DataRoot $src
+            $aside | Should -Match 'mv-src\.untrusted-'
+            Test-Path -LiteralPath $src | Should -BeFalse
+            Test-Path -LiteralPath (Join-Path $aside 'a\f.txt') | Should -BeTrue -Because 'the item moved with its contents'
+            Get-Content -LiteralPath (Join-Path $outside 'keep.txt') | Should -Be 'keep' -Because 'a rename never follows a link inside the item'
+        }
+        finally {
+            $moved = Join-Path $aside 'to-outside'
+            foreach ($j in @($link, $moved)) { if ((Test-Path -LiteralPath $j) -and ([IO.File]::GetAttributes($j) -band [IO.FileAttributes]::ReparsePoint)) { [IO.Directory]::Delete($j, $false) } }
+        }
+    }
+
+    It 'the install verifies a data folder and moves aside, never re-owns, one that is not the locked form' {
+        # The create call is a silent no-op when a folder already exists, leaving its descriptor
+        # untouched, so a folder a standard user raced in must be moved aside on the strength of the
+        # post-create VERIFY - never re-owned or re-ACLed in place, because its creator may hold a
+        # handle. This shims the elevated-only bits (a non-admin can't make a folder owned by
+        # Administrators) but exercises the real move-aside-and-retry loop.
+        $installer = Join-Path $script:intune 'Install-CEChecker.ps1'
+        . (Get-TestInstallerCode -Path $installer -Name @('Test-CEReparsePoint', 'Remove-CELink', 'Assert-CEInDataRoot', 'Get-CEAsidePath', 'Move-CEItemAside', 'New-CELockedDirectory', 'Get-CERegistryString', 'Initialize-CEDataRoot'))
+        # A birth descriptor without an owner (so the create succeeds unelevated) and a stand-in
+        # verifier that treats a folder holding 'planted.txt' as a racer's and anything else as locked.
+        function New-CEDataDirectorySecurity { param([switch]$UsersRead) $s = New-Object Security.AccessControl.DirectorySecurity; $s.SetSecurityDescriptorSddlForm('D:(A;OICI;FA;;;WD)'); return $s }
+        function Test-CELockedFolder { param([string]$Path, [switch]$UsersRead) if (Test-CEReparsePoint -Path $Path) { return "$Path is a link" } if (Test-Path -LiteralPath (Join-Path $Path 'planted.txt')) { return "$Path is controlled by a standard user" } return '' }
+        # The install never re-owns or re-ACLs a data folder: fail loudly if it tries.
+        Mock Set-Acl { throw 'Set-Acl must never run on a data folder' }
+
+        $pd = Join-Path $TestDrive 'pd-verify'
+        $root = Join-Path $pd 'EngramicBaseline'
+        $victim = Join-Path $TestDrive 'victim-verify'
+        New-Item -ItemType Directory -Force -Path $root, (Join-Path $victim 'sub') | Out-Null
+        Set-Content -LiteralPath (Join-Path $victim 'keep.txt') -Value 'keep'
+        Set-Content -LiteralPath (Join-Path $root 'planted.txt') -Value 'racer'
+        Set-Content -LiteralPath (Join-Path $root 'status.json') -Value '{ "autoFailCount": 0 }'
+        $links = New-Object System.Collections.ArrayList
+        [void]$links.Add((Join-Path $root 'logs'))
+        New-Item -ItemType Junction -Path (Join-Path $root 'logs') -Target $victim | Out-Null
+        try {
+            # 1) A racer's root (no sealed marker) is moved aside whole; a fresh folder takes its place.
+            Initialize-CEDataRoot -Path $root -RegPath 'HKLM:\SOFTWARE\EngramicBaselineNoSuchKey' 3>$null
+            Test-Path -LiteralPath $root -PathType Container | Should -BeTrue
+            Test-Path -LiteralPath (Join-Path $root 'planted.txt') | Should -BeFalse -Because 'the folder is fresh, not the racer''s taken back'
+            Test-Path -LiteralPath (Join-Path $root 'status.json') | Should -BeFalse -Because 'a racer''s status.json is not carried over'
+            $aside = @(Get-ChildItem -LiteralPath $pd -Directory -Filter 'EngramicBaseline.untrusted-*')
+            $aside.Count | Should -Be 1
+            [void]$links.Add((Join-Path $aside[0].FullName 'logs'))
+            (Get-Content -LiteralPath (Join-Path $aside[0].FullName 'planted.txt')) | Should -Be 'racer' -Because 'the racer''s folder is moved aside intact, never opened'
+            Test-CEReparsePoint -Path (Join-Path $aside[0].FullName 'logs') | Should -BeTrue -Because 'a link inside it is neither followed nor removed, only carried along'
+            Get-Content -LiteralPath (Join-Path $victim 'keep.txt') | Should -Be 'keep' -Because 'nothing the link points at is touched'
+            Should -Invoke Set-Acl -Times 0 -Because 'a folder that might be a racer''s is never re-owned or re-ACLed'
+
+            # 2) A junction left in place of the root is removed as a link, never followed.
+            Remove-Item -LiteralPath $root -Recurse -Force
+            New-Item -ItemType Junction -Path $root -Target $victim | Out-Null
+            [void]$links.Add($root)
+            Initialize-CEDataRoot -Path $root -RegPath 'HKLM:\SOFTWARE\EngramicBaselineNoSuchKey' 3>$null
+            Test-CEReparsePoint -Path $root | Should -BeFalse -Because 'the link was removed and a real folder made'
+            Get-Content -LiteralPath (Join-Path $victim 'keep.txt') | Should -Be 'keep'
+
+            # 3) A subfolder that appears (a no-op create over a racer) is moved aside, then a fresh one
+            # made. The quarantine goes OUT of the data folder, beside it, never to a name inside it: a
+            # user-owned tree left inside would be walked by a later SYSTEM delete of the data folder.
+            $sub = Join-Path $root 'packs'
+            New-Item -ItemType Directory -Path $sub -Force | Out-Null
+            Set-Content -LiteralPath (Join-Path $sub 'planted.txt') -Value 'x'
+            New-CELockedDirectory -Path $sub -DataRoot $root -WarningVariable subNotices 3>$null
+            Test-Path -LiteralPath (Join-Path $sub 'planted.txt') | Should -BeFalse -Because 'the racer folder was moved aside, not taken back'
+            @(Get-ChildItem -LiteralPath $root -Force -Filter '*.untrusted-*').Count | Should -Be 0 -Because 'nothing is quarantined inside the data folder'
+            $subAside = @(Get-ChildItem -LiteralPath $pd -Directory -Filter 'EngramicBaseline.untrusted-*-packs')
+            $subAside.Count | Should -Be 1 -Because 'the quarantine is a sibling of the data folder, named for the folder it held'
+            $subAside[0].Name | Should -Match '^EngramicBaseline\.untrusted-[0-9a-f]{32}-packs$'
+            (Get-Content -LiteralPath (Join-Path $subAside[0].FullName 'planted.txt')) | Should -Be 'x'
+            "$subNotices" | Should -Match ([regex]::Escape($subAside[0].FullName)) -Because 'the warning names where it went, for the log and the event log'
+            Should -Invoke Set-Acl -Times 0
+        }
+        finally {
+            foreach ($j in $links) { if ((Test-Path -LiteralPath $j) -and (Test-CEReparsePoint -Path $j)) { [IO.Directory]::Delete($j, $false) } }
+        }
+    }
+
+    It 'Test-CELockedFolder keeps an admin-only folder (even with a benign read ACE) and rejects a user-writable, wrong-owner, deny or link one' {
+        # A folder is judged by trust (design rule 1), not by SDDL equality. An admin-owned folder with
+        # no non-admin write/DAC/owner right is kept even when an administrator has added a read-only
+        # ACE (browsing it, or granting a helpdesk group read) - the old exact-SDDL match wrongly moved
+        # that aside and lost config, packs and reports (Finding 4). A folder a standard user made or
+        # could write is still rejected. Get-Acl is mocked so owner and rules can be chosen without
+        # elevation (a standard user cannot really set an admin owner).
+        $installer = Join-Path $script:intune 'Install-CEChecker.ps1'
+        . (Get-TestInstallerCode -Path $installer -Name @('Test-CEReparsePoint', 'Test-CELockedFolder'))
+        function global:New-CETestFolderAcl {
+            param([string]$OwnerSid, [object[]]$Rules = @())
+            $o = New-Object psobject
+            $o | Add-Member -MemberType ScriptMethod -Name GetOwner -Value ([scriptblock]::Create("param(`$t) [Security.Principal.SecurityIdentifier]::new('$OwnerSid')"))
+            $o | Add-Member -MemberType NoteProperty -Name TestRules -Value @($Rules)
+            $o | Add-Member -MemberType ScriptMethod -Name GetAccessRules -Value { param($explicit, $inherited, $type) $this.TestRules }
+            return $o
+        }
+        function global:New-CETestFolderRule {
+            param([string]$Sid, [Security.AccessControl.FileSystemRights]$Rights, [string]$Type = 'Allow')
+            [pscustomobject]@{ IdentityReference = [Security.Principal.SecurityIdentifier]::new($Sid); FileSystemRights = $Rights; AccessControlType = [Security.AccessControl.AccessControlType]$Type }
+        }
+        try {
+            Mock Test-CEReparsePoint { $false }
+            $adminOnly = @((New-CETestFolderRule 'S-1-5-18' FullControl), (New-CETestFolderRule 'S-1-5-32-544' FullControl))
+            Mock Get-Acl { New-CETestFolderAcl -OwnerSid 'S-1-5-32-544' -Rules $adminOnly }.GetNewClosure()
+            Test-CELockedFolder -Path 'X:\seal' | Should -BeNullOrEmpty -Because 'admin-owned, admin-only'
+            Mock Get-Acl { New-CETestFolderAcl -OwnerSid 'S-1-5-18' -Rules $adminOnly }.GetNewClosure()
+            Test-CELockedFolder -Path 'X:\seal' | Should -BeNullOrEmpty -Because 'SYSTEM owner is accepted'
+            Mock Get-Acl { New-CETestFolderAcl -OwnerSid 'S-1-5-32-544' -Rules ($adminOnly + @(New-CETestFolderRule 'S-1-5-32-545' ReadAndExecute)) }.GetNewClosure()
+            Test-CELockedFolder -Path 'X:\seal' | Should -BeNullOrEmpty -Because 'a read-only ACE grants no write, DAC or owner right, so it is kept (Finding 4)'
+            Mock Get-Acl { New-CETestFolderAcl -OwnerSid 'S-1-5-32-544' -Rules ($adminOnly + @(New-CETestFolderRule 'S-1-3-0' FullControl)) }.GetNewClosure()
+            Test-CELockedFolder -Path 'X:\seal' | Should -BeNullOrEmpty -Because 'CREATOR OWNER applies only to new items'
+            Mock Get-Acl { New-CETestFolderAcl -OwnerSid 'S-1-5-21-1-2-3-1001' -Rules $adminOnly }.GetNewClosure()
+            Test-CELockedFolder -Path 'X:\seal' | Should -Match 'not SYSTEM or Administrators' -Because 'a standard user cannot set an admin owner'
+            Mock Get-Acl { New-CETestFolderAcl -OwnerSid 'S-1-5-32-544' -Rules ($adminOnly + @(New-CETestFolderRule 'S-1-5-21-1-2-3-1001' Modify)) }.GetNewClosure()
+            Test-CELockedFolder -Path 'X:\seal' | Should -Match 'can be changed by S-1-5-21-1-2-3-1001' -Because 'a non-admin write ACE means a user could hold an add-file/WRITE_DAC handle'
+            Mock Get-Acl { New-CETestFolderAcl -OwnerSid 'S-1-5-32-544' -Rules ($adminOnly + @(New-CETestFolderRule 'S-1-5-18' CreateFiles 'Deny')) }.GetNewClosure()
+            Test-CELockedFolder -Path 'X:\seal' | Should -Match 'denies S-1-5-18' -Because 'a deny against a trusted SID could freeze a forged file'
+            Mock Test-CEReparsePoint { $true }
+            Test-CELockedFolder -Path 'X:\seal' | Should -Match 'is a link' -Because 'a link is rejected whatever its ACL'
+        }
+        finally { Remove-Item -Path 'function:New-CETestFolderAcl', 'function:New-CETestFolderRule' -ErrorAction SilentlyContinue }
+    }
+
+    It 'the install keeps a data folder it sealed at birth, preserving config overrides, packs and reports' {
+        # An upgrade must not throw away admin config, installed packs or report history. A root this
+        # version sealed (marker in HKLM, still the locked form) is kept in place, and every locked
+        # subfolder is kept too, so a second install over the first loses nothing and makes no
+        # quarantine folder.
+        $installer = Join-Path $script:intune 'Install-CEChecker.ps1'
+        . (Get-TestInstallerCode -Path $installer -Name @('Test-CEReparsePoint', 'Remove-CELink', 'Assert-CEInDataRoot', 'Get-CEAsidePath', 'Move-CEItemAside', 'New-CELockedDirectory', 'Get-CERegistryString', 'Initialize-CEDataRoot'))
+        function New-CEDataDirectorySecurity { param([switch]$UsersRead) $s = New-Object Security.AccessControl.DirectorySecurity; $s.SetSecurityDescriptorSddlForm('D:(A;OICI;FA;;;WD)'); return $s }
+        # Everything the test makes counts as the locked form; the marker is present (a previous install wrote it).
+        function Test-CELockedFolder { param([string]$Path, [switch]$UsersRead) if (Test-CEReparsePoint -Path $Path) { return "$Path is a link" } return '' }
+        function Get-CERegistryString { param([string]$Path, [string]$Name) if ($Name -eq 'DataRootSealed') { return '0.3.2' } return '' }
+
+        $pd = Join-Path $TestDrive 'pd-keep'
+        $root = Join-Path $pd 'EngramicBaseline'
+        New-Item -ItemType Directory -Force -Path $root | Out-Null
+        # First install sets the folders up.
+        Initialize-CEDataRoot -Path $root -RegPath 'HKLM:\SOFTWARE\EngramicBaseline' 3>$null
+        foreach ($name in @('logs', 'reports', 'cache', 'packs')) { New-CELockedDirectory -Path (Join-Path $root $name) -DataRoot $root 3>$null }
+        New-CELockedDirectory -Path (Join-Path $root 'config') -DataRoot $root -UsersRead 3>$null
+        # Admin config override, an installed pack and a report land in the sealed folder.
+        Set-Content -LiteralPath (Join-Path $root 'config\firmware-catalog.json') -Value '{ "baseUrl": "" }'
+        New-Item -ItemType Directory -Force -Path (Join-Path $root 'packs\p') | Out-Null
+        Set-Content -LiteralPath (Join-Path $root 'packs\p\pack.json') -Value '{ "id": "p" }'
+        New-Item -ItemType Directory -Force -Path (Join-Path $root 'reports\r1') | Out-Null
+        Set-Content -LiteralPath (Join-Path $root 'reports\r1\report.html') -Value '<html/>'
+
+        # Second install (upgrade) over the same, sealed root.
+        Initialize-CEDataRoot -Path $root -RegPath 'HKLM:\SOFTWARE\EngramicBaseline' 3>$null
+        foreach ($name in @('logs', 'reports', 'cache', 'packs')) { New-CELockedDirectory -Path (Join-Path $root $name) -DataRoot $root 3>$null }
+        New-CELockedDirectory -Path (Join-Path $root 'config') -DataRoot $root -UsersRead 3>$null
+
+        Get-Content -LiteralPath (Join-Path $root 'config\firmware-catalog.json') | Should -Match 'baseUrl' -Because 'config overrides survive the upgrade'
+        Test-Path -LiteralPath (Join-Path $root 'packs\p\pack.json') | Should -BeTrue -Because 'installed packs survive the upgrade'
+        Test-Path -LiteralPath (Join-Path $root 'reports\r1\report.html') | Should -BeTrue -Because 'report history survives the upgrade'
+        @(Get-ChildItem -LiteralPath $pd -Directory -Filter 'EngramicBaseline.untrusted-*').Count | Should -Be 0 -Because 'a sealed root is kept, not moved aside'
+    }
+
+    It 'Get-CEAsidePath always names a sibling of the data folder, never a path inside it' {
+        # Rule: a moved-aside item may be a tree a standard user controls, so it must leave the data
+        # folder; a quarantine inside it would be walked by a later SYSTEM delete of the data folder.
+        . (Get-TestInstallerCode -Path (Join-Path $script:intune 'Install-CEChecker.ps1') -Name @('Assert-CEInDataRoot', 'Get-CEAsidePath'))
+        $root = 'C:\ProgramData\EngramicBaseline'
+        Get-CEAsidePath -Path $root -DataRoot $root | Should -Match '^C:\\ProgramData\\EngramicBaseline\.untrusted-[0-9a-f]{32}$'
+        Get-CEAsidePath -Path "$root\packs" -DataRoot $root | Should -Match '^C:\\ProgramData\\EngramicBaseline\.untrusted-[0-9a-f]{32}-packs$'
+        Get-CEAsidePath -Path "$root\config\network.json" -DataRoot "$root\" | Should -Match '^C:\\ProgramData\\EngramicBaseline\.untrusted-[0-9a-f]{32}-config-network\.json$'
+        Get-CEAsidePath -Path 'C:\PROGRAMDATA\ENGRAMICBASELINE\Logs' -DataRoot $root | Should -Match '^C:\\ProgramData\\EngramicBaseline\.untrusted-[0-9a-f]{32}-Logs$' -Because 'Windows paths are case-insensitive'
+        { Get-CEAsidePath -Path 'C:\ProgramData\EngramicBaselineX\logs' -DataRoot $root } | Should -Throw '*not in the data folder*' -Because 'a look-alike name is not inside the data folder'
+        { Get-CEAsidePath -Path 'C:\ProgramData\EngramicBaseline.untrusted-0123' -DataRoot $root } | Should -Throw '*not in the data folder*'
+        { Get-CEAsidePath -Path "$root\..\Other" -DataRoot $root } | Should -Throw '*not in the data folder*' -Because '.. would climb out of the data folder while the start still matched'
+        { Get-CEAsidePath -Path "$root\packs\..\..\Other" -DataRoot $root } | Should -Throw '*not in the data folder*'
+        { Get-CEAsidePath -Path "$root\.\packs" -DataRoot $root } | Should -Throw '*not in the data folder*' -Because 'nothing in the install builds a . or .. name, so one is refused, not resolved'
+        { Get-CEAsidePath -Path 'C:\ProgramData\Other' -DataRoot 'C:\ProgramData\EngramicBaseline\..\Other' } | Should -Throw '*not in the data folder*'
+    }
+
+    It 'the install makes nothing locked, and moves nothing aside, outside the data folder' {
+        # New-CELockedDirectory is only ever given the data folder and folders in it; a path anywhere else
+        # is refused before anything is created, judged, or moved.
+        $installer = Join-Path $script:intune 'Install-CEChecker.ps1'
+        . (Get-TestInstallerCode -Path $installer -Name @('Test-CEReparsePoint', 'Remove-CELink', 'Assert-CEInDataRoot', 'Get-CEAsidePath', 'Move-CEItemAside', 'New-CELockedDirectory'))
+        function New-CEDataDirectorySecurity { param([switch]$UsersRead) $s = New-Object Security.AccessControl.DirectorySecurity; $s.SetSecurityDescriptorSddlForm('D:(A;OICI;FA;;;WD)'); return $s }
+        # Every folder looks a standard user's, so one judged would be moved aside.
+        function Test-CELockedFolder { param([string]$Path) return "$Path is owned by S-1-5-21-1-2-3-1001" }
+        $pd = Join-Path $TestDrive 'pd-install-scope'
+        $root = Join-Path $pd 'EngramicBaseline'
+        $beside = Join-Path $pd 'EngramicBaselineX'
+        New-Item -ItemType Directory -Force -Path $root, $beside | Out-Null
+        Set-Content -LiteralPath (Join-Path $beside 'mine.txt') -Value 'mine'
+        foreach ($p in @($beside, "$root\..\EngramicBaselineX", (Join-Path $pd 'new-elsewhere'), $pd)) {
+            { New-CELockedDirectory -Path $p -DataRoot $root 3>$null } | Should -Throw '*not in the data folder*' -Because "$p is not in the data folder"
+        }
+        Get-Content -LiteralPath (Join-Path $beside 'mine.txt') | Should -Be 'mine'
+        Test-Path -LiteralPath (Join-Path $pd 'new-elsewhere') | Should -BeFalse -Because 'nothing is created outside the data folder'
+        @(Get-ChildItem -LiteralPath $pd -Filter '*.untrusted-*').Count | Should -Be 0
+    }
+
+    It 'the install writes every data-folder notice, naming where anything went, to its log and the Application event log' {
+        # The move-aside warnings were raised before the install log started, and Intune shows none of an
+        # install's console output, so a moved-aside folder (and the config it held) left no record. They
+        # are collected with -WarningVariable, written once logging starts and to the event log (ID 1003).
+        $installer = Join-Path $script:intune 'Install-CEChecker.ps1'
+        $text = (Get-Content -LiteralPath $installer -Raw) -replace '\r\n', "`n"
+        $main = $text.Substring($text.IndexOf("`ntry {"))
+        $transcript = $main.IndexOf('Start-Transcript -LiteralPath $log')
+        $firstNotice = $main.IndexOf('Write-CESetupNotice -Notice $setupNotices')
+        $transcript | Should -BeGreaterThan 0
+        $firstNotice | Should -BeGreaterThan $transcript -Because 'the notices are written once the log has started'
+        $firstNotice | Should -BeLessThan $main.IndexOf('Copy-Item') -Because 'before anything else is done'
+        foreach ($call in @('Initialize-CEDataRoot -Path $dataRoot', 'New-CELockedDirectory -Path (Join-Path $dataRoot $name)', "New-CELockedDirectory -Path (Join-Path `$dataRoot 'config')")) {
+            $line = @($main -split "`n" | Where-Object { $_.Contains($call) })
+            $line.Count | Should -Be 1 -Because $call
+            $line[0] | Should -Match '-WarningVariable \+setupNotices' -Because "$call collects its warnings for the log"
+        }
+        $main.IndexOf('New-Item -Path $sourceKey') | Should -BeLessThan $main.IndexOf('Initialize-CEDataRoot -Path $dataRoot') -Because 'the event source exists before anything can be moved aside'
+        [regex]::Match($text, '(?ms)^catch \{.*?\n\}').Value | Should -Match 'if \(-not \$noticesWritten\) \{ Write-CESetupNotice -Notice \$setupNotices \}' -Because 'a failure before logging starts still records them'
+
+        # What they record: the warning names the quarantine, and Write-CESetupNotice puts it in the log and the event log.
+        . (Get-TestInstallerCode -Path $installer -Name @('Test-CEReparsePoint', 'Remove-CELink', 'Assert-CEInDataRoot', 'Get-CEAsidePath', 'Move-CEItemAside', 'New-CELockedDirectory', 'Initialize-CEDataRoot', 'Write-CEInstallEvent', 'Write-CESetupNotice'))
+        function New-CEDataDirectorySecurity { param([switch]$UsersRead) $s = New-Object Security.AccessControl.DirectorySecurity; $s.SetSecurityDescriptorSddlForm('D:(A;OICI;FA;;;WD)'); return $s }
+        function Test-CELockedFolder { param([string]$Path) if (Test-Path -LiteralPath (Join-Path $Path 'planted.txt')) { return "$Path is owned by S-1-5-21-1-2-3-1001, not SYSTEM or Administrators" } return '' }
+        function Get-CERegistryString { param([string]$Path, [string]$Name) return '' }
+        Mock Write-CEInstallEvent { }
+        $pd = Join-Path $TestDrive 'pd-notice'
+        $root = Join-Path $pd 'EngramicBaseline'
+        New-Item -ItemType Directory -Force -Path (Join-Path $root 'config') | Out-Null
+        Set-Content -LiteralPath (Join-Path $root 'planted.txt') -Value 'racer'
+        $notices = @()
+        Initialize-CEDataRoot -Path $root -RegPath 'unsealed' -WarningVariable +notices -WarningAction SilentlyContinue
+        $aside = @(Get-ChildItem -LiteralPath $pd -Directory -Filter 'EngramicBaseline.untrusted-*')
+        $aside.Count | Should -Be 1
+        $asidePath = $aside[0].FullName
+        "$notices" | Should -Match ([regex]::Escape($asidePath))
+        $log = Join-Path $TestDrive 'install-notice.log'
+        Start-Transcript -LiteralPath $log | Out-Null
+        try { Write-CESetupNotice -Notice $notices }
+        finally { Stop-Transcript | Out-Null }
+        # The console host word-wraps a warning and the transcript records it wrapped, so compare without whitespace.
+        ((Get-Content -LiteralPath $log -Raw) -replace '\s', '') | Should -Match ([regex]::Escape(($asidePath -replace '\s', ''))) -Because 'the install log names the quarantine'
+        Should -Invoke Write-CEInstallEvent -Times 1 -Exactly -ParameterFilter { $Id -eq 1003 -and $Message -like "*$asidePath*" } -Because 'so does the Application event log'
+    }
+
+    It 'the install carries nothing over from a folder it moves aside, and deploys the config overrides staged in the package' {
+        # A config override put down before the app installed (a platform script that ran first) is in a
+        # folder the install cannot trust, even where the file looks admin-owned and locked: while a
+        # standard user controlled the folder, they could have made the file theirs to change, changed it
+        # and locked it again. So nothing is copied out of it. Config staged in the package's data\config
+        # folder, the supported path, reaches the fresh folder instead.
+        $installer = Join-Path $script:intune 'Install-CEChecker.ps1'
+        . (Get-TestInstallerCode -Path $installer -Name @('Test-CEReparsePoint', 'Remove-CELink', 'Assert-CEInDataRoot', 'Get-CEAsidePath', 'Move-CEItemAside', 'New-CELockedDirectory', 'Initialize-CEDataRoot', 'Copy-CEStagedConfig'))
+        function New-CEDataDirectorySecurity { param([switch]$UsersRead) $s = New-Object Security.AccessControl.DirectorySecurity; $s.SetSecurityDescriptorSddlForm('D:(A;OICI;FA;;;WD)'); return $s }
+        # Owner-less descriptors a standard user can apply (the real ones name Administrators as owner).
+        function New-CEDataFileSecurity { $s = New-Object Security.AccessControl.FileSecurity; $s.SetSecurityDescriptorSddlForm('D:P(A;;FA;;;WD)'); return $s }
+        # Every folder and file reads as admin-owned and locked, as a script run as SYSTEM leaves them.
+        function Test-CELockedFolder { param([string]$Path) if (Test-CEReparsePoint -Path $Path) { return "$Path is a link" } return '' }
+        function Get-CERegistryString { param([string]$Path, [string]$Name) return '' }
+        $pd = Join-Path $TestDrive 'pd-staged'
+        $root = Join-Path $pd 'EngramicBaseline'
+        $pkg = Join-Path $TestDrive 'pkg-staged'
+        New-Item -ItemType Directory -Force -Path (Join-Path $root 'config'), (Join-Path $pkg 'data\config') | Out-Null
+        Set-Content -LiteralPath (Join-Path $root 'config\cloud-services.json') -Value '{ "from": "before the app" }'
+        Set-Content -LiteralPath (Join-Path $root 'config\network.json') -Value '{ "proxyUrl": "http://planted.example:3128" }'
+        Set-Content -LiteralPath (Join-Path $pkg 'data\config\cloud-services.json') -Value '{ "from": "the package" }'
+        # No sealed marker: a folder this version's install did not create.
+        Initialize-CEDataRoot -Path $root -RegPath 'unsealed' 3>$null 6>$null
+        foreach ($name in @('logs', 'reports', 'cache', 'packs')) { New-CELockedDirectory -Path (Join-Path $root $name) -DataRoot $root 3>$null }
+        New-CELockedDirectory -Path (Join-Path $root 'config') -DataRoot $root -UsersRead 3>$null
+        Copy-CEStagedConfig -Source (Join-Path $pkg 'data\config') -ConfigDir (Join-Path $root 'config') -DataRoot $root 3>$null 6>$null
+        Test-Path -LiteralPath (Join-Path $root 'config\network.json') | Should -BeFalse -Because 'nothing is carried over from a folder the install cannot trust'
+        Get-Content -LiteralPath (Join-Path $root 'config\cloud-services.json') | Should -Be '{ "from": "the package" }' -Because 'the override staged in the package is deployed'
+        $aside = @(Get-ChildItem -LiteralPath $pd -Directory -Filter 'EngramicBaseline.untrusted-*')
+        $aside.Count | Should -Be 1
+        Get-Content -LiteralPath (Join-Path $aside[0].FullName 'config\network.json') | Should -Match 'planted' -Because 'the old folder is kept whole for an administrator'
+    }
+
+    It 'Copy-CEStagedConfig replaces a trusted file, moves anything else aside, removes a link as a link, and copies only .json files' {
+        $installer = Join-Path $script:intune 'Install-CEChecker.ps1'
+        . (Get-TestInstallerCode -Path $installer -Name @('Test-CEReparsePoint', 'Remove-CELink', 'Assert-CEInDataRoot', 'Get-CEAsidePath', 'Move-CEItemAside', 'Copy-CEStagedConfig'))
+        # An owner-less descriptor a standard user can apply (the real one names Administrators as owner).
+        function New-CEDataFileSecurity { $s = New-Object Security.AccessControl.FileSecurity; $s.SetSecurityDescriptorSddlForm('D:P(A;;FA;;;WD)'); return $s }
+        # A stand-in trust check: a file holding 'user-owned' is one a standard user owns.
+        function Test-CELockedFolder { param([string]$Path) if ((Test-Path -LiteralPath $Path -PathType Leaf) -and ((Get-Content -LiteralPath $Path -Raw) -match 'user-owned')) { return "$Path is owned by S-1-5-21-1-2-3-1001, not SYSTEM or Administrators" } return '' }
+        $pd = Join-Path $TestDrive 'pd-copy'
+        $root = Join-Path $pd 'EngramicBaseline'
+        $cfg = Join-Path $root 'config'
+        $src = Join-Path $TestDrive 'pkg-copy\data\config'
+        $outside = Join-Path $TestDrive 'copy-outside'
+        New-Item -ItemType Directory -Force -Path $src, $outside, (Join-Path $cfg 'odd.json') | Out-Null
+        foreach ($n in @('network', 'firmware-catalog', 'odd', 'linked')) { Set-Content -LiteralPath (Join-Path $src "$n.json") -Value "{ `"staged`": `"$n`" }" }
+        Set-Content -LiteralPath (Join-Path $src 'notes.txt') -Value 'not config'
+        Set-Content -LiteralPath (Join-Path $cfg 'network.json') -Value '{ "old": "admin" }'
+        # An override an administrator left read-only is still replaced, not a failed install.
+        [IO.File]::SetAttributes((Join-Path $cfg 'network.json'), [IO.FileAttributes]::ReadOnly)
+        Set-Content -LiteralPath (Join-Path $cfg 'firmware-catalog.json') -Value '{ "old": "user-owned" }'
+        Set-Content -LiteralPath (Join-Path $cfg 'thresholds.json') -Value '{ "untouched": true }'
+        Set-Content -LiteralPath (Join-Path $outside 'keep.json') -Value 'keep'
+        # A file symbolic link needs a privilege; a junction with a file's name stands in for a planted link.
+        $link = Join-Path $cfg 'linked.json'
+        New-Item -ItemType Junction -Path $link -Target $outside | Out-Null
+        try {
+            Copy-CEStagedConfig -Source $src -ConfigDir $cfg -DataRoot $root -WarningVariable copyNotices -WarningAction SilentlyContinue 6>$null
+            Get-Content -LiteralPath (Join-Path $cfg 'network.json') | Should -Be '{ "staged": "network" }' -Because 'a trusted file is replaced'
+            Get-Content -LiteralPath (Join-Path $cfg 'firmware-catalog.json') | Should -Be '{ "staged": "firmware-catalog" }'
+            Get-Content -LiteralPath (Join-Path $cfg 'odd.json') | Should -Be '{ "staged": "odd" }' -Because 'a folder in the way is moved aside, never written into'
+            Get-Content -LiteralPath (Join-Path $cfg 'linked.json') | Should -Be '{ "staged": "linked" }'
+            Test-CEReparsePoint -Path (Join-Path $cfg 'linked.json') | Should -BeFalse -Because 'the link was removed as a link and a real file put in its place'
+            Get-Content -LiteralPath (Join-Path $outside 'keep.json') | Should -Be 'keep' -Because 'nothing a link pointed at is touched'
+            Get-Content -LiteralPath (Join-Path $cfg 'thresholds.json') | Should -Match 'untouched' -Because 'a file the package does not carry is left alone'
+            Test-Path -LiteralPath (Join-Path $cfg 'notes.txt') | Should -BeFalse -Because 'only .json files are config'
+            @(Get-ChildItem -LiteralPath $cfg -Filter '*.tmp' -Force).Count | Should -Be 0
+            # The user-owned file and the folder went beside the data folder, never inside it, and the warnings say where.
+            @(Get-ChildItem -LiteralPath $root -Recurse -Force -Filter '*.untrusted-*').Count | Should -Be 0
+            $fwAside = @(Get-ChildItem -LiteralPath $pd -File -Filter 'EngramicBaseline.untrusted-*-config-firmware-catalog.json')
+            $fwAside.Count | Should -Be 1
+            Get-Content -LiteralPath $fwAside[0].FullName | Should -Match 'user-owned'
+            @(Get-ChildItem -LiteralPath $pd -Directory -Filter 'EngramicBaseline.untrusted-*-config-odd.json').Count | Should -Be 1
+            "$copyNotices" | Should -Match ([regex]::Escape($fwAside[0].FullName))
+            # A read-only file in the package (say, from a read-only share) must not make the next upgrade fail.
+            [IO.File]::SetAttributes((Join-Path $src 'network.json'), [IO.FileAttributes]::ReadOnly)
+            Copy-CEStagedConfig -Source $src -ConfigDir $cfg -DataRoot $root 3>$null 6>$null
+            { Copy-CEStagedConfig -Source $src -ConfigDir $cfg -DataRoot $root 3>$null 6>$null } | Should -Not -Throw -Because 'the upgrade replaces the copy it made last time'
+            ([IO.File]::GetAttributes((Join-Path $cfg 'network.json')) -band [IO.FileAttributes]::ReadOnly) | Should -Be 0
+        }
+        finally {
+            if ((Test-Path -LiteralPath $link) -and (Test-CEReparsePoint -Path $link)) { [IO.Directory]::Delete($link, $false) }
+            if (Test-Path -LiteralPath (Join-Path $src 'network.json')) { [IO.File]::SetAttributes((Join-Path $src 'network.json'), [IO.FileAttributes]::Normal) }
+        }
+    }
+
+    It 'when elevated, a config file the install deploys is born administrator-owned and locked' {
+        # Runs only where the suite runs elevated (CI). A standard user cannot name Administrators as owner.
+        if (-not (([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))) {
+            Set-ItResult -Skipped -Because 'needs an elevated session'
+            return
+        }
+        . (Get-TestInstallerCode -Path (Join-Path $script:intune 'Install-CEChecker.ps1') -Name @('Test-CEReparsePoint', 'Remove-CELink', 'Assert-CEInDataRoot', 'Get-CEAsidePath', 'Move-CEItemAside', 'Test-CELockedFolder', 'New-CEDataFileSecurity', 'Copy-CEStagedConfig'))
+        $root = Join-Path $TestDrive 'pd-elevated-copy\EngramicBaseline'
+        $src = Join-Path $TestDrive 'pkg-elevated-copy\data\config'
+        New-Item -ItemType Directory -Force -Path (Join-Path $root 'config'), $src | Out-Null
+        Set-Content -LiteralPath (Join-Path $src 'network.json') -Value '{ "proxyUrl": "" }'
+        Copy-CEStagedConfig -Source $src -ConfigDir (Join-Path $root 'config') -DataRoot $root 3>$null 6>$null
+        $acl = Get-Acl -LiteralPath (Join-Path $root 'config\network.json')
+        "$($acl.GetOwner([Security.Principal.SecurityIdentifier]))" | Should -Be 'S-1-5-32-544'
+        $acl.AreAccessRulesProtected | Should -BeTrue
+        $writers = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | Where-Object { @('S-1-5-18', 'S-1-5-32-544') -notcontains "$($_.IdentityReference)" -and ([long]$_.FileSystemRights -band 0x000D0156) })
+        $writers.Count | Should -Be 0 -Because 'only SYSTEM and Administrators can change it'
+    }
+
+    It 'the install deploys config staged in the package once logging has started, and the build and release handle data\config' {
+        $text = (Get-Content -LiteralPath (Join-Path $script:intune 'Install-CEChecker.ps1') -Raw) -replace '\r\n', "`n"
+        $main = $text.Substring($text.IndexOf("`ntry {"))
+        $copy = $main.IndexOf("Copy-CEStagedConfig -Source (Join-Path `$packageRoot 'data\config') -ConfigDir (Join-Path `$dataRoot 'config') -DataRoot `$dataRoot")
+        $copy | Should -BeGreaterThan $main.IndexOf('Start-Transcript -LiteralPath $log') -Because 'the copy is logged'
+        $copy | Should -BeLessThan $main.IndexOf('Register-ScheduledTask') -Because 'the first audit sees the overrides'
+        $copy | Should -BeLessThan $main.IndexOf('Start-ScheduledTask')
+        $main | Should -Match 'Write-CESetupNotice -Notice \$stagedNotices' -Because 'anything it moves aside is logged and recorded as an event'
+        # The build packs the .json files in data\config; a release refuses to ship any.
+        $build = Get-Content -LiteralPath (Join-Path $script:intune 'Build-IntunePackage.ps1') -Raw
+        $build | Should -Match "Get-ChildItem -LiteralPath \(Join-Path \`$repo 'data\\config'\) -Filter '\*\.json' -File"
+        $build | Should -Match "Join-Path \`$payload 'data\\config'"
+        $release = Get-Content -LiteralPath (Join-Path (Join-Path $script:RepoRoot 'tools') 'New-SignedRelease.ps1') -Raw
+        $guard = $release.IndexOf("Get-ChildItem -LiteralPath (Join-Path `$repo 'data') -Recurse -File")
+        $guard | Should -BeGreaterThan 0
+        $guard | Should -BeLessThan $release.IndexOf('Build-IntunePackage.ps1') -Because 'checked before anything is built'
+    }
+
+    It 'uninstall -RemoveData deletes only a trusted data root and leaves quarantine folders for an admin, walking no user tree' {
+        # A quarantine folder (EngramicBaseline.untrusted-*) is by design a tree a standard user owns and
+        # may still hold handles to. SYSTEM must never recurse into it (a junction swapped in mid-walk
+        # would redirect the delete), so it is left for an administrator; only a trusted, admin-owned
+        # data root is deleted, and even then no junction inside it is followed.
+        $installer = Join-Path $script:intune 'Uninstall-CEChecker.ps1'
+        . (Get-TestInstallerCode -Path $installer -Name @('Remove-CETreeNoFollow', 'Get-CEFolderTrustProblem', 'Get-CERegistryString', 'Remove-CEDataFolders'))
+        $pd = Join-Path $TestDrive 'pd-uninstall'
+        $dataRoot = Join-Path $pd 'EngramicBaseline'
+        $outside = Join-Path $TestDrive 'uninstall-outside'
+        $aside = "$dataRoot.untrusted-aaaa"
+        New-Item -ItemType Directory -Force -Path (Join-Path $dataRoot 'reports\r1'), (Join-Path $aside 'sub'), $outside | Out-Null
+        Set-Content -LiteralPath (Join-Path $outside 'keep.txt') -Value 'keep'
+        Set-Content -LiteralPath (Join-Path $aside 'planted.txt') -Value 'mine'
+        # A junction inside the (trusted) data root: the recursive delete must remove it as a link, not follow it.
+        $rootLink = Join-Path $dataRoot 'reports\to-outside'
+        New-Item -ItemType Junction -Path $rootLink -Target $outside | Out-Null
+        # A junction inside the quarantine folder: it must never be reached, because the folder is not walked.
+        $asideLink = Join-Path $aside 'to-outside'
+        New-Item -ItemType Junction -Path $asideLink -Target $outside | Out-Null
+        # The install sealed the root, and it reads as the locked, admin-owned folder (a non-admin test
+        # user cannot really set that).
+        Mock Get-CERegistryString { '0.3.2' }
+        Mock Get-CEFolderTrustProblem { '' }
+        try {
+            Remove-CEDataFolders -DataRoot $dataRoot -ProgramData $pd -SealRegPath 'sealed' 3>$null 6>$null
+            Test-Path -LiteralPath $dataRoot | Should -BeFalse -Because 'a trusted data root is removed'
+            Test-Path -LiteralPath $aside | Should -BeTrue -Because 'a quarantine folder is left for an administrator'
+            Get-Content -LiteralPath (Join-Path $aside 'planted.txt') | Should -Be 'mine' -Because 'its contents are never touched'
+            Should -Invoke Get-CEFolderTrustProblem -Times 0 -ParameterFilter { $Path -like '*untrusted-*' } -Because 'a quarantine tree is never trust-checked or walked'
+            Get-Content -LiteralPath (Join-Path $outside 'keep.txt') | Should -Be 'keep' -Because 'no junction was followed'
+        }
+        finally { foreach ($j in @($rootLink, $asideLink)) { if ((Test-Path -LiteralPath $j) -and ([IO.File]::GetAttributes($j) -band [IO.FileAttributes]::ReparsePoint)) { [IO.Directory]::Delete($j, $false) } } }
+    }
+
+    It 'uninstall -RemoveData checks each folder just before listing it and leaves one a standard user controls unwalked' {
+        # The root was checked, then the whole tree walked, so a subtree a non-administrator controlled
+        # (say, a folder a helpdesk group made after being granted write) could have a junction swapped in
+        # mid-walk and SYSTEM would delete through it. Every folder is now checked immediately before it is
+        # listed, and one that fails is never listed or walked.
+        . (Get-TestInstallerCode -Path (Join-Path $script:intune 'Uninstall-CEChecker.ps1') -Name @('Remove-CETreeNoFollow', 'Get-CEFolderTrustProblem', 'Get-CERegistryString', 'Remove-CEDataFolders'))
+        $pd = Join-Path $TestDrive 'pd-uninstall-walk'
+        $dataRoot = Join-Path $pd 'EngramicBaseline'
+        $userDir = Join-Path $dataRoot 'reports\A'
+        $outside = Join-Path $TestDrive 'uninstall-walk-outside'
+        New-Item -ItemType Directory -Force -Path $userDir, (Join-Path $dataRoot 'logs'), $outside | Out-Null
+        Set-Content -LiteralPath (Join-Path $dataRoot 'logs\audit-1.log') -Value 'log'
+        Set-Content -LiteralPath (Join-Path $dataRoot 'status.json') -Value '{}'
+        Set-Content -LiteralPath (Join-Path $userDir 'zz-sentinel.txt') -Value 'mine'
+        Set-Content -LiteralPath (Join-Path $outside 'zz-sentinel.txt') -Value 'target'
+        # A junction the user made earlier, ready to swap in mid-walk. A is never listed, so it never gets the chance.
+        $userLink = Join-Path $userDir 'to-outside'
+        New-Item -ItemType Junction -Path $userLink -Target $outside | Out-Null
+        Mock Get-CERegistryString { '0.3.2' }
+        Mock Get-CEFolderTrustProblem { if ($Path -eq $userDir) { "$Path is owned by S-1-5-21-1-2-3-1001, not an administrator" } else { '' } }
+        try {
+            Remove-CEDataFolders -DataRoot $dataRoot -ProgramData $pd -SealRegPath 'sealed' -WarningVariable walkNotices 3>$null 6>$null
+            Should -Invoke Get-CEFolderTrustProblem -Times 1 -Exactly -ParameterFilter { $Path -eq $userDir } -Because 'each folder is checked just before it would be listed'
+            Get-Content -LiteralPath (Join-Path $userDir 'zz-sentinel.txt') | Should -Be 'mine' -Because 'a folder that fails the check is never listed or walked'
+            Test-Path -LiteralPath $userLink | Should -BeTrue -Because 'nothing inside it is touched, not even a link'
+            Get-Content -LiteralPath (Join-Path $outside 'zz-sentinel.txt') | Should -Be 'target'
+            Test-Path -LiteralPath (Join-Path $dataRoot 'logs') | Should -BeFalse -Because 'trusted folders are still removed'
+            Test-Path -LiteralPath (Join-Path $dataRoot 'status.json') | Should -BeFalse
+            Test-Path -LiteralPath $dataRoot | Should -BeTrue -Because 'a folder that still holds what was left is not removed'
+            "$walkNotices" | Should -Match ([regex]::Escape($userDir)) -Because 'what was left is reported'
+        }
+        finally { if ((Test-Path -LiteralPath $userLink) -and ([IO.File]::GetAttributes($userLink) -band [IO.FileAttributes]::ReparsePoint)) { [IO.Directory]::Delete($userLink, $false) } }
+    }
+
+    It 'uninstall -RemoveData leaves a quarantine it finds inside the data folder, unwalked' {
+        # Earlier builds of this change quarantined a folder inside the data folder as <name>.untrusted-<id>.
+        # Such a tree may be a standard user's, so, like any quarantine, it is left for an administrator.
+        . (Get-TestInstallerCode -Path (Join-Path $script:intune 'Uninstall-CEChecker.ps1') -Name @('Remove-CETreeNoFollow', 'Get-CEFolderTrustProblem', 'Get-CERegistryString', 'Remove-CEDataFolders'))
+        $pd = Join-Path $TestDrive 'pd-uninstall-nested'
+        $dataRoot = Join-Path $pd 'EngramicBaseline'
+        $nested = Join-Path $dataRoot 'packs.untrusted-0123'
+        New-Item -ItemType Directory -Force -Path (Join-Path $nested 'A'), (Join-Path $dataRoot 'logs') | Out-Null
+        Set-Content -LiteralPath (Join-Path $nested 'A\keep.txt') -Value 'mine'
+        Mock Get-CERegistryString { '0.3.2' }
+        Mock Get-CEFolderTrustProblem { '' }
+        Remove-CEDataFolders -DataRoot $dataRoot -ProgramData $pd -SealRegPath 'sealed' 3>$null 6>$null
+        Get-Content -LiteralPath (Join-Path $nested 'A\keep.txt') | Should -Be 'mine' -Because 'a quarantine is never walked'
+        Should -Invoke Get-CEFolderTrustProblem -Times 0 -ParameterFilter { $Path -like '*.untrusted-*' }
+        Test-Path -LiteralPath (Join-Path $dataRoot 'logs') | Should -BeFalse
+        Test-Path -LiteralPath $dataRoot | Should -BeTrue
+    }
+
+    It 'uninstall -RemoveData does not walk a data root the install did not seal' {
+        # A root without the DataRootSealed marker may be one an older version locked after a standard user
+        # made it, and its creator may still hold a handle that lets them change it, however locked it looks.
+        . (Get-TestInstallerCode -Path (Join-Path $script:intune 'Uninstall-CEChecker.ps1') -Name @('Remove-CETreeNoFollow', 'Get-CEFolderTrustProblem', 'Get-CERegistryString', 'Remove-CEDataFolders'))
+        $pd = Join-Path $TestDrive 'pd-uninstall-unsealed'
+        $dataRoot = Join-Path $pd 'EngramicBaseline'
+        New-Item -ItemType Directory -Force -Path (Join-Path $dataRoot 'reports\r1') | Out-Null
+        Set-Content -LiteralPath (Join-Path $dataRoot 'reports\r1\report.html') -Value '<html/>'
+        Mock Get-CERegistryString { '' }
+        Mock Get-CEFolderTrustProblem { '' }
+        Remove-CEDataFolders -DataRoot $dataRoot -ProgramData $pd -SealRegPath 'unsealed' -WarningVariable unsealedNotices 3>$null 6>$null
+        Test-Path -LiteralPath (Join-Path $dataRoot 'reports\r1\report.html') | Should -BeTrue -Because 'an unsealed root is left for an administrator'
+        Should -Invoke Get-CEFolderTrustProblem -Times 0 -Because 'it is not even read'
+        "$unsealedNotices" | Should -Match 'DataRootSealed'
+    }
+
+    It 'uninstall -RemoveData does not delete an untrusted data root as SYSTEM' {
+        # An untrusted root left by a failed upgrade, or one a standard user controls, must not be walked.
+        . (Get-TestInstallerCode -Path (Join-Path $script:intune 'Uninstall-CEChecker.ps1') -Name @('Remove-CETreeNoFollow', 'Get-CEFolderTrustProblem', 'Get-CERegistryString', 'Remove-CEDataFolders'))
+        $pd = Join-Path $TestDrive 'pd-uninstall2'
+        $dataRoot = Join-Path $pd 'EngramicBaseline'
+        New-Item -ItemType Directory -Force -Path (Join-Path $dataRoot 'sub') | Out-Null
+        Set-Content -LiteralPath (Join-Path $dataRoot 'sub\x.txt') -Value 'x'
+        Mock Get-CERegistryString { '0.3.2' }
+        Mock Get-CEFolderTrustProblem { "$Path is owned by S-1-5-21-1-2-3-1001, not an administrator" }
+        Remove-CEDataFolders -DataRoot $dataRoot -ProgramData $pd -SealRegPath 'sealed' 3>$null
+        Test-Path -LiteralPath $dataRoot | Should -BeTrue -Because 'an untrusted root is left for an admin, not deleted as SYSTEM'
+        Test-Path -LiteralPath (Join-Path $dataRoot 'sub\x.txt') | Should -BeTrue
+    }
+
+    It 'uninstall -RemoveData removes a data root that is a link without following it or trust-checking it' {
+        . (Get-TestInstallerCode -Path (Join-Path $script:intune 'Uninstall-CEChecker.ps1') -Name @('Remove-CETreeNoFollow', 'Get-CEFolderTrustProblem', 'Get-CERegistryString', 'Remove-CEDataFolders'))
+        $pd = Join-Path $TestDrive 'pd-uninstall3'
+        $target = Join-Path $TestDrive 'link-target'
+        New-Item -ItemType Directory -Force -Path $pd, $target | Out-Null
+        Set-Content -LiteralPath (Join-Path $target 'keep.txt') -Value 'keep'
+        $dataRoot = Join-Path $pd 'EngramicBaseline'
+        New-Item -ItemType Junction -Path $dataRoot -Target $target | Out-Null
+        Mock Get-CERegistryString { '' }
+        Mock Get-CEFolderTrustProblem { throw 'a link is removed as a link, so its ACL is never read' }
+        try {
+            Remove-CEDataFolders -DataRoot $dataRoot -ProgramData $pd -SealRegPath 'unsealed' 3>$null 6>$null
+            Test-Path -LiteralPath $dataRoot | Should -BeFalse -Because 'the link is removed'
+            Get-Content -LiteralPath (Join-Path $target 'keep.txt') | Should -Be 'keep' -Because 'what the link pointed at is left alone'
+        }
+        finally { if ((Test-Path -LiteralPath $dataRoot) -and ([IO.File]::GetAttributes($dataRoot) -band [IO.FileAttributes]::ReparsePoint)) { [IO.Directory]::Delete($dataRoot, $false) } }
+    }
+
+    It 'Get-CEFolderTrustProblem in the uninstaller rejects a deny against administrators, as the installer does' {
+        . (Get-TestInstallerCode -Path (Join-Path $script:intune 'Uninstall-CEChecker.ps1') -Name @('Get-CEFolderTrustProblem'))
+        $dir = Join-Path $TestDrive 'uninstall-deny'
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+        $rule = { param([string]$Sid, [Security.AccessControl.FileSystemRights]$R, [string]$T = 'Allow') [pscustomobject]@{ IdentityReference = [Security.Principal.SecurityIdentifier]::new($Sid); FileSystemRights = $R; AccessControlType = [Security.AccessControl.AccessControlType]$T } }
+        $adminOnly = @((& $rule 'S-1-5-18' 'FullControl'), (& $rule 'S-1-5-32-544' 'FullControl'))
+        $newAcl = {
+            param([object[]]$Rules)
+            $o = New-Object psobject
+            $o | Add-Member -MemberType ScriptMethod -Name GetOwner -Value { param($t) [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544') }
+            $o | Add-Member -MemberType NoteProperty -Name TestRules -Value @($Rules)
+            $o | Add-Member -MemberType ScriptMethod -Name GetAccessRules -Value { param($e, $i, $t) $this.TestRules }
+            return $o
+        }
+        Mock Get-Acl { & $newAcl $adminOnly }.GetNewClosure()
+        Get-CEFolderTrustProblem -Path $dir | Should -BeNullOrEmpty
+        Mock Get-Acl { & $newAcl ($adminOnly + @(& $rule 'S-1-5-18' 'Delete' 'Deny')) }.GetNewClosure()
+        Get-CEFolderTrustProblem -Path $dir | Should -Match 'denies S-1-5-18' -Because 'a deny against SYSTEM could stop the delete part-way'
+        Mock Get-Acl { & $newAcl ($adminOnly + @(& $rule 'S-1-5-32-545' 'Write' 'Deny')) }.GetNewClosure()
+        Get-CEFolderTrustProblem -Path $dir | Should -BeNullOrEmpty -Because 'denying a standard user is not a problem'
+    }
+
+    It 'the sealed-at-birth marker is a separate key the installer writes and uninstall keeps unless -RemoveData' {
+        # Finding 3: uninstall used to delete the marker along with the detection key, so every reinstall
+        # or supersede-with-uninstall moved the sealed root aside and lost config, packs and reports. The
+        # marker now lives in a separate key that uninstall leaves in place unless -RemoveData is given.
+        $install = (Get-Content (Join-Path $script:intune 'Install-CEChecker.ps1') -Raw) -replace '\r\n', "`n"
+        $uninstall = (Get-Content (Join-Path $script:intune 'Uninstall-CEChecker.ps1') -Raw) -replace '\r\n', "`n"
+        $install | Should -Match "\`$sealRegPath = 'HKLM:\\SOFTWARE\\EngramicBaseline\.DataRoot'" -Because 'the marker is a key separate from the detection key'
+        $install | Should -Match "New-ItemProperty -Path \`$sealRegPath -Name 'DataRootSealed'"
+        $install | Should -Match "Initialize-CEDataRoot -Path \`$dataRoot -RegPath \`$sealRegPath"
+        $install | Should -Not -Match "New-ItemProperty -Path \`$regPath -Name 'DataRootSealed'" -Because 'the marker is written to the separate key, not the detection key that uninstall deletes'
+        # Uninstall deletes the seal key ONLY inside the -RemoveData data-removal branch (the one that
+        # calls Remove-CEDataFolders, not the 64-bit relaunch's one-line -RemoveData pass-through).
+        $rd = [regex]::Match($uninstall, '(?s)if \(\$RemoveData\) \{\s*Remove-CEDataFolders.*?\n    \}')
+        $rd.Success | Should -BeTrue
+        $rd.Value | Should -Match "Remove-Item -Path \`$sealRegPath"
+        $outside = ($uninstall -replace [regex]::Escape($rd.Value), '')
+        $outside | Should -Not -Match "Remove-Item -Path \`$sealRegPath" -Because 'a plain uninstall must keep the marker so a reinstall keeps the data folder'
+        $uninstall | Should -Match "Remove-Item -Path \`$regPath -Recurse -Force -ErrorAction SilentlyContinue" -Because 'the detection key is still removed on a plain uninstall'
+    }
+
+    It 'writes status.json even when something is in the way at a fixed temporary name' {
+        # A folder a user made at status.json.tmp before the install locked the data folder would
+        # otherwise make every audit fail, leaving whatever status.json was there in place.
+        InModuleScope CEAudit -Parameters @{ Root = (Join-Path $TestDrive 'tmp-planted') } {
+            param($Root)
+            $path = Join-Path $Root 'status.json'
+            New-Item -ItemType Directory -Force -Path "$path.tmp" | Out-Null
+            Set-Content -LiteralPath $path -Value '{ "schemaVersion": 0 }'
+            Write-CEStatus -Status ([ordered]@{ schemaVersion = 1 }) -Path $path | Should -Be $path
+            (Get-Content -LiteralPath $path -Raw | ConvertFrom-Json).schemaVersion | Should -Be 1
+            @(Get-ChildItem -LiteralPath $Root -Filter '*.tmp' -File).Count | Should -Be 0 -Because 'the temporary file is renamed over status.json'
+            Mock Set-Content { throw 'disk full' }
+            { Write-CEStatus -Status ([ordered]@{ schemaVersion = 2 }) -Path $path } | Should -Throw '*disk full*'
+            (Get-Content -LiteralPath $path -Raw | ConvertFrom-Json).schemaVersion | Should -Be 1
+        }
+    }
+
+    It 'compliance scripts ignore a status.json a standard user could have written when run as SYSTEM' {
+        # Each script is uploaded on its own, so both carry the same check.
+        $copies = foreach ($file in @('Detect-CECompliance.ps1', 'Discover-CECompliance.ps1')) {
+            $ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $script:intune $file), [ref]$null, [ref]$null)
+            $ast.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-CEStatusTrustProblem' }, $true).Extent.Text
+        }
+        @($copies).Count | Should -Be 2
+        $copies[0] | Should -BeExactly $copies[1]
+
+        $root = Join-Path $TestDrive 'trust-status'
+        New-TestStatus -Kind Insecure -DataRoot $root | Out-Null
+        $link = Join-Path $TestDrive 'trust-link'
+        New-Item -ItemType Junction -Path $link -Target $root | Out-Null
+        function global:New-TestOwnerAcl {
+            param([string]$Sid, [object[]]$Rules = @())
+            $acl = New-Object psobject
+            $acl | Add-Member -MemberType ScriptMethod -Name GetOwner -Value ([scriptblock]::Create("param(`$type) [Security.Principal.SecurityIdentifier]::new('$Sid')"))
+            $acl | Add-Member -MemberType NoteProperty -Name TestRules -Value @($Rules)
+            $acl | Add-Member -MemberType ScriptMethod -Name GetAccessRules -Value { param($explicit, $inherited, $type) $this.TestRules }
+            return $acl
+        }
+        function global:New-TestRule {
+            param([string]$Sid, [Security.AccessControl.FileSystemRights]$Rights, [string]$Type = 'Allow')
+            [pscustomobject]@{ IdentityReference = [Security.Principal.SecurityIdentifier]::new($Sid); FileSystemRights = $Rights; AccessControlType = [Security.AccessControl.AccessControlType]$Type }
+        }
+        $locked = @((New-TestRule -Sid 'S-1-5-18' -Rights FullControl), (New-TestRule -Sid 'S-1-5-32-544' -Rights FullControl))
+        $global:TestRootOwner = 'S-1-5-18'
+        $global:TestStatusOwner = 'S-1-5-18'
+        $global:TestRootRules = $locked
+        $global:TestStatusRules = $locked
+        Mock Get-Acl { if ($LiteralPath -like '*status.json') { New-TestOwnerAcl -Sid $global:TestStatusOwner -Rules $global:TestStatusRules } else { New-TestOwnerAcl -Sid $global:TestRootOwner -Rules $global:TestRootRules } }
+        try {
+            Get-CEStatusTrustProblem -DataRoot $root | Should -BeNullOrEmpty
+            (Get-CEComplianceData -DataRoot $root -Installed $true -Elevated $true -NoKick).CEAutoFailCount | Should -BeGreaterThan 0
+
+            $global:TestStatusOwner = 'S-1-5-21-1-2-3-1001'
+            Get-CEStatusTrustProblem -DataRoot $root | Should -Match 'status\.json is owned by S-1-5-21-1-2-3-1001'
+            $data = Get-CEComplianceData -DataRoot $root -Installed $true -Elevated $true -NoKick
+            $data.CEAutoFailCount | Should -Be -1 -Because 'an untrusted status counts as no data'
+            $data.CEToolVersion | Should -Be '0.0.0'
+            (Get-CEComplianceData -DataRoot $root -Installed $true -Elevated $false -NoKick).CEAutoFailCount | Should -BeGreaterThan 0 -Because 'a standard user can only mislead themselves'
+
+            $global:TestStatusOwner = 'S-1-5-18'
+            $global:TestRootOwner = 'S-1-5-21-1-2-3-1001'
+            Get-CEStatusTrustProblem -DataRoot $root | Should -Match 'owned by S-1-5-21-1-2-3-1001'
+
+            $global:TestRootOwner = 'S-1-5-18'
+            # An administrator owner is not enough: a hard link to the user's own ntuser.ini has one.
+            $global:TestStatusRules = $locked + @(New-TestRule -Sid 'S-1-5-21-1-2-3-1001' -Rights FullControl)
+            Get-CEStatusTrustProblem -DataRoot $root | Should -Match 'status\.json can be changed by S-1-5-21-1-2-3-1001'
+            (Get-CEComplianceData -DataRoot $root -Installed $true -Elevated $true -NoKick).CEAutoFailCount | Should -Be -1
+            $global:TestStatusRules = $locked + @(New-TestRule -Sid 'S-1-5-32-545' -Rights ReadAndExecute) + @(New-TestRule -Sid 'S-1-5-32-545' -Rights Write -Type Deny)
+            Get-CEStatusTrustProblem -DataRoot $root | Should -BeNullOrEmpty -Because 'reading it, or a standard user being denied, is not changing it'
+            # A deny against SYSTEM or Administrators is tampering: it could stop the audit replacing a forged status.json.
+            $global:TestStatusRules = $locked + @(New-TestRule -Sid 'S-1-5-18' -Rights ([Security.AccessControl.FileSystemRights]'CreateFiles, Delete') -Type Deny)
+            Get-CEStatusTrustProblem -DataRoot $root | Should -Match 'denies S-1-5-18' -Because 'the audit could be blocked from replacing status.json'
+            $global:TestStatusRules = $locked
+            $global:TestRootRules = $locked + @(New-TestRule -Sid 'S-1-5-32-545' -Rights Delete)
+            Get-CEStatusTrustProblem -DataRoot $root | Should -Match 'can be changed by S-1-5-32-545' -Because 'whoever can delete the folder can put another in its place'
+            $global:TestRootRules = $locked + @(New-TestRule -Sid 'S-1-3-0' -Rights FullControl)
+            Get-CEStatusTrustProblem -DataRoot $root | Should -BeNullOrEmpty -Because 'CREATOR OWNER only applies to new items'
+            $global:TestRootRules = $locked
+
+            Get-CEStatusTrustProblem -DataRoot $link | Should -Match 'is a link' -Because 'a locked junction still leads to a folder the user owns'
+            (Get-CEComplianceData -DataRoot $link -Installed $true -Elevated $true -NoKick).CEAutoFailCount | Should -Be -1
+        }
+        finally { [IO.Directory]::Delete($link, $false) }
+
+        # The detection script checks before reading status.json, and says why it fails.
+        $text = (Get-Content -LiteralPath (Join-Path $script:intune 'Detect-CECompliance.ps1') -Raw) -replace '\r\n', "`n"
+        $check = [regex]::Match($text, '(?m)^if \(\$elevated\) \{\n    \$problem = Get-CEStatusTrustProblem -DataRoot \$dataRoot\n    if \(\$problem\) \{\n        Write-Output "UNTRUSTED: [^\n]*\n        exit 1\n    \}\n\}')
+        $check.Success | Should -BeTrue
+        $check.Index | Should -BeLessThan $text.IndexOf('Get-Content -LiteralPath $statusPath')
+        # Nothing takes a folder back any more, and nothing needs reinstalling: exit 1 runs the remediation
+        # script, whose SYSTEM audit moves an untrusted data folder aside and writes a fresh status.json.
+        $check.Value | Should -Not -Match 'Reinstall|take the folder back'
+        $check.Value | Should -Match 'next SYSTEM audit'
+        $check.Value | Should -Match 'EngramicBaseline\.untrusted-'
+    }
+
+    It 'the deployment rehearsal makes nothing in the data folder before the install, and cleans up without following links' {
+        # It made <data folder>\deployment-test before installing, which on a fresh device made the data
+        # folder unlocked: the install then moved it aside, the SYSTEM helper's folder was gone and every
+        # later step failed. Its clean-up was an elevated Remove-Item -Recurse, which follows junctions on 5.1.
+        $path = Join-Path $script:intune 'Test-IntuneDeployment.ps1'
+        $raw = Get-Content -LiteralPath $path -Raw
+        $installed = $raw.IndexOf("if (`$p.ExitCode -ne 0) { throw 'Install failed; stopping.' }")
+        $installed | Should -BeGreaterThan 0
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$null, [ref]$null)
+        $writers = @('New-Item', 'Set-Content', 'Add-Content', 'Out-File', 'Copy-Item', 'Move-Item', 'Initialize-CEDataFolder')
+        $early = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $writers -contains $n.GetCommandName() }, $true) |
+            Where-Object { $_.Extent.StartOffset -lt $installed -and $_.Extent.Text -match '\$(workDir|dataRoot)\b' } | ForEach-Object { $_.Extent.Text })
+        $early | Should -BeNullOrEmpty -Because 'nothing may make the data folder before the install creates it locked'
+        $raw.IndexOf('$workDir = Initialize-CEDataFolder -Path $workDir') | Should -BeGreaterThan $installed -Because 'its own folder is made after the install, the locked way'
+        $text = $raw -replace '\r\n', "`n"
+        $finally = [regex]::Match($text, '(?ms)^finally \{.*?\n\}').Value
+        $finally | Should -Match 'if \(\$workDirReady\) \{'
+        $finally | Should -Match 'Remove-CEDataTree -Path \$workDir'
+        $text | Should -Not -Match 'Remove-Item[^\n]*\$workDir' -Because 'Remove-Item -Recurse follows junctions on Windows PowerShell 5.1'
+        # A config override staged in the package is checked for after the install: there, unchanged, and
+        # administrator-owned, since the SYSTEM audit ignores a config file SYSTEM or Administrators do not own.
+        $stagedCheck = $raw.IndexOf("Add-Step 'Config overrides staged in the package deployed'")
+        $stagedCheck | Should -BeGreaterThan $installed
+        $check = $raw.Substring($raw.LastIndexOf('$staged = @(', $stagedCheck), $stagedCheck - $raw.LastIndexOf('$staged = @(', $stagedCheck))
+        $check | Should -Match 'Get-FileHash'
+        $check | Should -Match "@\('S-1-5-18', 'S-1-5-32-544'\) -notcontains \(Get-Acl -LiteralPath \`$deployed\)\.GetOwner\(\[Security\.Principal\.SecurityIdentifier\]\)\.Value"
+    }
+
+    It 'CI and its sandbox mirror stage the rehearsal''s config override in the package, never in the data folder before the install' {
+        # A file put in %ProgramData%\EngramicBaseline before the install makes the data folder there, unlocked;
+        # the install moves it aside and the override (here the Windows Update skip) is lost with it.
+        $ci = Get-Content -LiteralPath (Join-Path (Join-Path (Join-Path $script:RepoRoot '.github') 'workflows') 'ci.yml') -Raw
+        $mirror = Get-Content -LiteralPath (Join-Path (Join-Path (Join-Path $script:RepoRoot 'tools') 'sandbox') 'Invoke-SandboxCI.ps1') -Raw
+        foreach ($t in @($ci, $mirror)) {
+            $t | Should -Not -Match "Join-Path \`$env:ProgramData 'EngramicBaseline"
+            $t | Should -Match "Join-Path \(Get-Location\) 'data\\config'"
+            # The package is built without the rehearsal's CI-only override.
+            $t | Should -Match 'Remove-Item -LiteralPath \./data -Recurse -Force -ErrorAction SilentlyContinue\r?\n\s*\./intune/Build-IntunePackage\.ps1 -DownloadTool'
+        }
+        $ci.IndexOf('Remove-Item -LiteralPath ./data') | Should -BeGreaterThan $ci.IndexOf('run: ./intune/Test-IntuneDeployment.ps1') -Because 'only after the rehearsal'
+        $mirror | Should -Match "-Name 'Build the Intune package' -Shell 'powershell\.exe' -Script \`$build"
+        $mirror | Should -Match "/XD \.git output build \.playwright-mcp 'C:\\baseline-tool\\data'" -Because 'the mirror starts from a checkout with no staged overrides, as CI does'
+    }
+
+    It 'the install never puts an older version over a newer one: <Installed> installed, package <Package>' -ForEach @(
+        @{ Installed = '0.3.3'; Package = '0.3.2'; Newer = $true }
+        @{ Installed = '0.3.10'; Package = '0.3.9'; Newer = $true }
+        @{ Installed = '1.0'; Package = '0.9.9'; Newer = $true }
+        @{ Installed = '0.3.2'; Package = '0.3.2'; Newer = $false }
+        @{ Installed = '0.3.1'; Package = '0.3.2'; Newer = $false }
+        @{ Installed = ''; Package = '0.3.2'; Newer = $false }
+        @{ Installed = 'not a version'; Package = '0.3.2'; Newer = $false }
+    ) {
+        $installer = Join-Path $script:intune 'Install-CEChecker.ps1'
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile($installer, [ref]$null, [ref]$null)
+        $fn = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Test-CENewerInstalled' }, $true)
+        $fn | Should -Not -BeNullOrEmpty
+        . ([scriptblock]::Create($fn.Extent.Text))
+        Test-CENewerInstalled -Installed $Installed -Package $Package | Should -Be $Newer
+
+        # The check reads the detection value and stops before anything is copied or an audit
+        # starts. -AllowDowngrade overrides it and reaches the 64-bit relaunch.
+        (Get-Command $installer).Parameters['AllowDowngrade'].ParameterType | Should -Be ([switch])
+        $text = (Get-Content -LiteralPath $installer -Raw) -replace '\r\n', "`n"
+        $guard = [regex]::Match($text, '(?m)^    if \(-not \$AllowDowngrade -and \(Test-CENewerInstalled -Installed \$installedVersion -Package \$version\)\) \{\n[^\n]*Write-Warning[^\n]*\n        exit 0\n    \}')
+        $guard.Success | Should -BeTrue
+        $text | Should -Match "(?m)^    \`$installedItem = Get-ItemProperty -LiteralPath \`$regPath -ErrorAction SilentlyContinue\n    if \(\`$installedItem -and \`$installedItem\.PSObject\.Properties\['Version'\]\) \{ \`$installedVersion = \[string\]\`$installedItem\.Version \}\n    if \(-not \`$AllowDowngrade"
+        $guard.Index | Should -BeGreaterThan $text.IndexOf('$version = [string]$manifest.ModuleVersion')
+        foreach ($later in @('New-Item -ItemType Directory -Path $staging', 'Remove-Item -LiteralPath $InstallPath', 'Register-ScheduledTask', 'New-ItemProperty -Path $regPath', 'Start-ScheduledTask')) {
+            $text.IndexOf($later) | Should -BeGreaterThan $guard.Index -Because "$later comes after the downgrade check"
+        }
+    }
+
+    It 'the build takes a relative -OutputPath from the PowerShell location, not the process directory' {
+        $pwshExe = (Get-Process -Id $PID).Path
+        $buildPath = Join-Path $script:intune 'Build-IntunePackage.ps1'
+        $fakeDir = Join-Path $TestDrive 'fake iwau'
+        New-Item -ItemType Directory -Path $fakeDir -Force | Out-Null
+        $fake = Join-Path $fakeDir 'IntuneWinAppUtil.cmd'
+        # Stands in for IntuneWinAppUtil: -c <payload> -s <setup> -o <output> -q.
+        Set-Content -LiteralPath $fake -Encoding Ascii -Value @('@echo off', 'echo package> "%~6\Install-CEChecker.intunewin"')
+        $here = Join-Path $TestDrive 'build-here'
+        $elsewhere = Join-Path $TestDrive 'process-dir'
+        New-Item -ItemType Directory -Path $here, $elsewhere -Force | Out-Null
+        $cmd = "[Environment]::CurrentDirectory = '$elsewhere'; Set-Location -LiteralPath '$here'; & '$buildPath' -OutputPath '.\rel-build' -IntuneWinAppUtilPath '$fake'; exit [int](-not `$?)"
+        $log = Join-Path $TestDrive 'intune-build-rel.log'
+        # Windows PowerShell turns redirected native output on stderr into error records; the exit code is what is tested.
+        & { $ErrorActionPreference = 'Continue'; & $pwshExe -NoProfile -ExecutionPolicy Bypass -Command $cmd *> $log }
+        $LASTEXITCODE | Should -Be 0 -Because (Get-Content $log -Raw)
+        $out = Join-Path $here 'rel-build'
+        Test-Path -LiteralPath (Join-Path (Join-Path $out 'upload') 'Detect-CEChecker.ps1') | Should -BeTrue
+        @(Get-ChildItem -LiteralPath $out -Filter 'EngramicBaseline-*.intunewin').Count | Should -Be 1
+        Test-Path -LiteralPath (Join-Path $elsewhere 'rel-build') | Should -BeFalse
+        (Get-Content $log -Raw) | Should -Match ([regex]::Escape("Next: follow $(Join-Path $out 'INTUNE-SETTINGS.md')")) -Because 'it prints the full path'
+    }
+
     It 'Remediations detection prints a summary and exits 1 when not ready, 0 when ready' {
         $pwshExe = (Get-Process -Id $PID).Path
         $detect = Join-Path $script:intune 'Detect-CECompliance.ps1'
@@ -1318,6 +2400,30 @@ Describe 'Intune: status, discovery and compliance rules' {
         New-TestStatus -Kind Insecure -DataRoot (Join-Path $bad 'EngramicBaseline') | Out-Null
         $good = Join-Path $TestDrive 'pd-good'
         New-TestStatus -Kind Secure -DataRoot (Join-Path $good 'EngramicBaseline') -AttestMfa | Out-Null
+        # A device that is ready, except (below) for a run that failed after it.
+        $okData = Join-Path (Join-Path $TestDrive 'pd-ok') 'EngramicBaseline'
+        New-Item -ItemType Directory -Force -Path $okData | Out-Null
+        [ordered]@{ auditTime = [datetime]::UtcNow.ToString('o'); autoFailCount = 0; autoFails = @(); toolVersion = '1.0.0'; checks = [ordered]@{ 'FW-01' = @{ status = 'Pass' } } } |
+            ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $okData 'status.json') -Encoding UTF8
+        $lastError = Join-Path $okData 'last-error.json'
+        Set-Content -LiteralPath $lastError -Value '{ "Message": "Access to the path is denied." }'
+        if (([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+            # Elevated (as in CI), the script only reads a status.json that administrators own and only
+            # they can change, as the SYSTEM audit's is.
+            foreach ($dir in @((Join-Path $bad 'EngramicBaseline'), (Join-Path $good 'EngramicBaseline'), $okData)) {
+                foreach ($p in @(@($dir) + @(Get-ChildItem -LiteralPath $dir -File | ForEach-Object { $_.FullName }))) {
+                    $acl = Get-Acl -LiteralPath $p
+                    $acl.SetOwner([Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))
+                    $acl.SetAccessRuleProtection($true, $false)
+                    foreach ($r in @($acl.GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier]))) { [void]$acl.RemoveAccessRuleSpecific($r) }
+                    $inherit = if ($p -eq $dir) { [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit' } else { [Security.AccessControl.InheritanceFlags]::None }
+                    foreach ($sid in @('S-1-5-18', 'S-1-5-32-544')) {
+                        $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule((New-Object Security.Principal.SecurityIdentifier($sid)), 'FullControl', $inherit, 'None', 'Allow')))
+                    }
+                    Set-Acl -LiteralPath $p -AclObject $acl
+                }
+            }
+        }
 
         $saved = $env:ProgramData
         try {
@@ -1333,6 +2439,23 @@ Describe 'Intune: status, discovery and compliance rules' {
             $out = & $pwshExe -NoProfile -File $detect
             $LASTEXITCODE | Should -Be 1
             "$out" | Should -Match '^NO_DATA'
+
+            # A run that failed after status.json was written: status.json may not be current, and a
+            # user who stopped every audit could otherwise keep an old one looking ready.
+            $env:ProgramData = Join-Path $TestDrive 'pd-ok'
+            (Get-Item -LiteralPath $lastError).LastWriteTimeUtc = [datetime]::UtcNow.AddMinutes(5)
+            $out = & $pwshExe -NoProfile -File $detect
+            "$out" | Should -Match '^LAST_RUN_ERROR \| OK \|'
+            $LASTEXITCODE | Should -Be 1
+            # One left from before the last good run changes nothing.
+            (Get-Item -LiteralPath $lastError).LastWriteTimeUtc = [datetime]::UtcNow.AddHours(-5)
+            $out = & $pwshExe -NoProfile -File $detect
+            "$out" | Should -Match '^LAST_RUN_ERROR \| OK \|'
+            $LASTEXITCODE | Should -Be 0
+            Remove-Item -LiteralPath $lastError
+            $out = & $pwshExe -NoProfile -File $detect
+            "$out" | Should -Match '^OK \|'
+            $LASTEXITCODE | Should -Be 0
         }
         finally { $env:ProgramData = $saved }
     }
@@ -1356,6 +2479,505 @@ Describe 'Headless scheduled audit' {
         Test-Path (Join-Path $status.ReportFolder 'report.html') | Should -BeTrue
         @(Get-ChildItem (Join-Path $root 'logs') -Filter 'audit-*.log').Count | Should -Be 1
         Test-Path (Join-Path $root 'last-error.json') | Should -BeFalse
+    }
+
+    It 'deletes old report folders without following a link that one contains' {
+        # SYSTEM housekeeping under the data folder must not follow a junction (Remove-Item -Recurse
+        # does on 5.1), or it could empty a folder the link points at.
+        $root = Join-Path $TestDrive 'housekeep'
+        $reports = Join-Path $root 'reports'
+        $outside = Join-Path $TestDrive 'housekeep-outside'
+        New-Item -ItemType Directory -Force -Path $reports, $outside | Out-Null
+        Set-Content -LiteralPath (Join-Path $outside 'keep.txt') -Value 'keep'
+        # 16 report folders, oldest first; the newest 14 are kept, so the two oldest are removed.
+        $old = 1..16 | ForEach-Object { $d = Join-Path $reports ('PC-2026010{0:00}-000000' -f $_); New-Item -ItemType Directory -Path $d -Force | Out-Null; $d }
+        $link = Join-Path $old[0] 'to-outside'
+        New-Item -ItemType Junction -Path $link -Target $outside | Out-Null
+        # As a standard user here; the elevated per-folder trust check has its own test below. (Elevated,
+        # as in CI, these test folders inherit the runner account's write access and would be left.)
+        Mock -ModuleName CEAudit Test-CEIsAdmin { $false }
+        try {
+            Get-ChildItem -LiteralPath $reports -Directory | Sort-Object Name -Descending | Select-Object -Skip 14 |
+                ForEach-Object { Remove-CEDataTree -Path $_.FullName | Out-Null }
+            Test-Path -LiteralPath $old[0] | Should -BeFalse -Because 'the oldest report folder is removed'
+            Test-Path -LiteralPath $old[1] | Should -BeFalse
+            @(Get-ChildItem -LiteralPath $reports -Directory).Count | Should -Be 14
+            Get-Content -LiteralPath (Join-Path $outside 'keep.txt') | Should -Be 'keep' -Because 'the junction inside a deleted folder was not followed'
+        }
+        finally { if ((Test-Path -LiteralPath $link) -and ((Get-Item -LiteralPath $link -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) { [IO.Directory]::Delete($link, $false) } }
+    }
+
+    It 'report housekeeping as administrator never lists a folder a standard user controls, or a quarantine' {
+        # The recursive delete checked nothing below the folder it was given. As administrator or SYSTEM it
+        # now checks each folder immediately before listing it: one that is a link, not admin-owned, or
+        # changeable by a non-administrator is left in place unread, so no entry in a folder it walks can be
+        # swapped for a junction. A *.untrusted-* quarantine is left for an administrator.
+        $old = Join-Path $TestDrive 'housekeep-trust\reports\PC-20260101-000000'
+        $userDir = Join-Path $old 'A'
+        $quarantine = Join-Path $old 'x.untrusted-0123'
+        $outside = Join-Path $TestDrive 'housekeep-trust-outside'
+        New-Item -ItemType Directory -Force -Path $userDir, (Join-Path $old 'ok'), $quarantine, $outside | Out-Null
+        Set-Content -LiteralPath (Join-Path $old 'ok\report.html') -Value '<html/>'
+        Set-Content -LiteralPath (Join-Path $userDir 'zz-sentinel.txt') -Value 'mine'
+        Set-Content -LiteralPath (Join-Path $quarantine 'q.txt') -Value 'quarantined'
+        Set-Content -LiteralPath (Join-Path $outside 'zz-sentinel.txt') -Value 'target'
+        $userLink = Join-Path $userDir 'to-outside'
+        New-Item -ItemType Junction -Path $userLink -Target $outside | Out-Null
+        try {
+            InModuleScope CEAudit -Parameters @{ Old = $old; UserDir = $userDir } {
+                param($Old, $UserDir)
+                Mock Test-CEIsAdmin { $true }
+                Mock Get-CELockedFolderProblem { if ($Path -eq $UserDir) { "$Path is owned by S-1-5-21-1-2-3-1001" } else { '' } }
+                Remove-CEDataTree -Path $Old -WarningVariable w -WarningAction SilentlyContinue | Should -BeFalse -Because 'something was left in place'
+                Should -Invoke Get-CELockedFolderProblem -Times 1 -Exactly -ParameterFilter { $Path -eq $UserDir } -Because 'each folder is checked just before it would be listed'
+                Should -Invoke Get-CELockedFolderProblem -Times 0 -ParameterFilter { $Path -like '*.untrusted-*' } -Because 'a quarantine is not even read'
+                "$w" | Should -Match ([regex]::Escape($UserDir))
+            }
+            Test-Path -LiteralPath (Join-Path $old 'ok') | Should -BeFalse -Because 'trusted folders are removed'
+            Get-Content -LiteralPath (Join-Path $userDir 'zz-sentinel.txt') | Should -Be 'mine' -Because 'an untrusted folder is never listed or walked'
+            Test-Path -LiteralPath $userLink | Should -BeTrue
+            Get-Content -LiteralPath (Join-Path $quarantine 'q.txt') | Should -Be 'quarantined'
+            Get-Content -LiteralPath (Join-Path $outside 'zz-sentinel.txt') | Should -Be 'target'
+        }
+        finally { if ((Test-Path -LiteralPath $userLink) -and ([IO.File]::GetAttributes($userLink) -band [IO.FileAttributes]::ReparsePoint)) { [IO.Directory]::Delete($userLink, $false) } }
+
+        # A standard user's own housekeeping needs no check: it can only delete what that user could anyway.
+        $mine = Join-Path $TestDrive 'housekeep-user\PC-20260101-000000'
+        New-Item -ItemType Directory -Force -Path (Join-Path $mine 'sub') | Out-Null
+        Set-Content -LiteralPath (Join-Path $mine 'sub\f.txt') -Value 'x'
+        InModuleScope CEAudit -Parameters @{ Mine = $mine } {
+            param($Mine)
+            Mock Test-CEIsAdmin { $false }
+            Mock Get-CELockedFolderProblem { throw 'not checked for a standard user' }
+            Remove-CEDataTree -Path $Mine | Should -BeTrue
+        }
+        Test-Path -LiteralPath $mine | Should -BeFalse
+    }
+
+    It 'writes the audit event through the one ReportEvent writer, with the documented IDs' {
+        # Write-CEEventLog and the data-folder move-aside notice share Write-CEEventEntry (RegisterEventSource
+        # and ReportEvent, never EventLog.WriteEntry): 1000 clean, 1001 attention, 1002 auto-fail, 1003 moved aside.
+        InModuleScope CEAudit {
+            Mock Test-Path { $true }
+            Mock Write-CEEventEntry { }
+            Write-CEEventLog -Status ([pscustomobject]@{ autoFailCount = 2; autoFails = @('SU-03'); checks = [ordered]@{}; frameworks = [ordered]@{}; reportFolder = 'X' })
+            Should -Invoke Write-CEEventEntry -Times 1 -Exactly -ParameterFilter { $Id -eq 1002 -and $Type -eq 'Error' -and $Message -like 'Engramic Baseline device audit*' }
+            Write-CEEventLog -Status ([pscustomobject]@{ autoFailCount = 0; autoFails = @(); checks = [ordered]@{ 'FW-01' = [ordered]@{ status = 'Fail' } }; frameworks = [ordered]@{}; reportFolder = 'X' })
+            Should -Invoke Write-CEEventEntry -Times 1 -Exactly -ParameterFilter { $Id -eq 1001 -and $Type -eq 'Warning' }
+            Write-CEEventLog -Status ([pscustomobject]@{ autoFailCount = 0; autoFails = @(); checks = [ordered]@{ 'FW-01' = [ordered]@{ status = 'Pass' } }; frameworks = [ordered]@{}; reportFolder = 'X' })
+            Should -Invoke Write-CEEventEntry -Times 1 -Exactly -ParameterFilter { $Id -eq 1000 -and $Type -eq 'Information' }
+        }
+    }
+
+    It 'takes the audit mutex before it sets up the data folder, inside the error handling' {
+        # The mutex must be held before Initialize-CEDataFolder so an upgrade never runs underneath the
+        # audit, and the folder setup must be inside the try so a failure is recorded, not silent.
+        $text = (Get-Content -LiteralPath (Join-Path $script:RepoRoot 'app\Invoke-CEScheduledAudit.ps1') -Raw) -replace '\r\n', "`n"
+        $wait = $text.IndexOf('$mutex.WaitOne(')
+        $init = $text.IndexOf('foreach ($d in @($DataRoot, $reportRoot, $logRoot)) { Initialize-CEDataFolder')
+        $wait | Should -BeGreaterThan 0
+        $init | Should -BeGreaterThan 0
+        $wait | Should -BeLessThan $init -Because 'the mutex is taken before the data folder is touched'
+        # The try that contains the folder setup opens after the mutex is held.
+        $mainTry = $text.LastIndexOf("`ntry {", $init)
+        $mainTry | Should -BeGreaterThan $wait -Because 'the folder setup is inside the try opened after the mutex, so a failure is recorded'
+    }
+
+    It 'only runs report/log housekeeping and writes last-error.json when the data folders were set up' {
+        # Finding 2: if Initialize-CEDataFolder throws (which is exactly when $DataRoot / $reportRoot may
+        # be a junction a standard user controls), the finally-block housekeeping and the catch's
+        # last-error.json write must NOT run - otherwise a SYSTEM delete follows the user's junction, or a
+        # SYSTEM write lands through it. Both are gated on $foldersReady, set true only after setup.
+        $text = (Get-Content -LiteralPath (Join-Path $script:RepoRoot 'app\Invoke-CEScheduledAudit.ps1') -Raw) -replace '\r\n', "`n"
+        # $foldersReady starts false, before the try that sets the folders up.
+        $init = $text.IndexOf('Initialize-CEDataFolder -Path $d')
+        $init | Should -BeGreaterThan 0
+        $mainTry = $text.LastIndexOf("`ntry {", $init)
+        $declare = $text.IndexOf('$foldersReady = $false')
+        $declare | Should -BeGreaterThan 0
+        $declare | Should -BeLessThan $mainTry -Because 'it must be false until setup succeeds'
+        # It is set true only after Initialize-CEDataFolder has run for all three folders.
+        $setTrue = $text.IndexOf('$foldersReady = $true')
+        $setTrue | Should -BeGreaterThan $init -Because 'set only after the folders are set up'
+        # The catch writes last-error.json only under the guard (anchor on the actual write, not the
+        # explanatory comment that also names last-error.json).
+        $catchIdx = $text.IndexOf("`ncatch {")
+        $guardInCatch = $text.IndexOf('if ($foldersReady) {', $catchIdx)
+        $lastErrorWrite = $text.IndexOf('Write-CEAuditFailure -DataRoot $DataRoot', $catchIdx)
+        $guardInCatch | Should -BeGreaterThan $catchIdx
+        $lastErrorWrite | Should -BeGreaterThan $guardInCatch -Because 'last-error.json is written only into a data root that was set up'
+        # The finally runs housekeeping only under the guard.
+        $finallyIdx = $text.IndexOf("`nfinally {")
+        $guardInFinally = $text.IndexOf('if ($foldersReady) {', $finallyIdx)
+        $house = $text.IndexOf('Remove-CEDataTree', $finallyIdx)
+        $guardInFinally | Should -BeGreaterThan $finallyIdx
+        $guardInFinally | Should -BeLessThan $house -Because 'old report folders are deleted only when the folders were set up and trusted'
+        # The old comment that claimed it writes last-error.json "even" into an untrusted root is gone.
+        $text | Should -Not -Match "don't create last-error.json in a folder we don't trust" -Because 'the comment now matches the guarded code'
+    }
+}
+
+Describe 'Counting failed machine audits (last-error.json)' {
+    It 'reads the previous last-error.json only when trusted, and moves an untrusted one OUT of the data folder instead' {
+        $pd = Join-Path $TestDrive 'pd-failcount'
+        $root = Join-Path $pd 'EngramicBaseline'
+        New-Item -ItemType Directory -Force -Path $root | Out-Null
+        $errPath = Join-Path $root 'last-error.json'
+        InModuleScope CEAudit -Parameters @{ Root = $root; Pd = $pd; ErrPath = $errPath } {
+            param($Root, $Pd, $ErrPath)
+            $script:CEDataRootOverride = $Root
+            try {
+                Mock Test-CEIsWindows { $true }
+                Mock Test-CEIsAdmin { $true }
+                Mock Write-CEEventEntry { }
+                $global:TestUntrustedLastError = $false
+                $global:TestUntrustedRoot = $false
+                Mock Get-CEDataPathProblem {
+                    if ($global:TestUntrustedLastError -and $Path -like '*last-error.json') { "$Path is owned by S-1-5-21-1-2-3-1001" }
+                    elseif ($global:TestUntrustedRoot -and $Path -like '*EngramicBaseline') { "$Path is owned by S-1-5-21-1-2-3-1001" }
+                }
+                $now = [datetime]::UtcNow
+                (Write-CEAuditFailure -DataRoot $Root -Message 'one' -Now $now.AddHours(-3)).FailedRuns | Should -Be 1
+                (Write-CEAuditFailure -DataRoot $Root -Message 'two' -Now $now.AddHours(-2)).FailedRuns | Should -Be 2
+                @(Get-ChildItem -LiteralPath $Root -Filter '*.tmp' -File).Count | Should -Be 0 -Because 'written to a temporary name and renamed into place'
+
+                # A forged count (say one a user reset to 0 so the device never flips) is not read.
+                $global:TestUntrustedLastError = $true
+                Set-Content -LiteralPath $ErrPath -Value '{ "FailedRuns": 0, "FirstFailure": "2099-01-01T00:00:00Z", "Message": "forged" }'
+                $r = Write-CEAuditFailure -DataRoot $Root -Message 'three' -Now $now -WarningVariable w -WarningAction SilentlyContinue
+                $r.FailedRuns | Should -Be 1 -Because 'an untrusted count is never carried over'
+                $r.FirstFailure | Should -Be $now.ToString('o')
+                $aside = @(Get-ChildItem -LiteralPath $Pd -File -Filter 'EngramicBaseline.untrusted-*-last-error.json')
+                $aside.Count | Should -Be 1 -Because 'moved out of the data folder, beside it, never deleted'
+                Get-Content -LiteralPath $aside[0].FullName -Raw | Should -Match 'forged'
+                @(Get-ChildItem -LiteralPath $Root -Force -Filter '*.untrusted-*').Count | Should -Be 0
+                "$w" | Should -Match ([regex]::Escape($aside[0].FullName))
+                Should -Invoke Write-CEEventEntry -Times 1 -Exactly -ParameterFilter { $Id -eq 1003 -and $Message -like "*$($aside[0].FullName)*" }
+                (Get-Content -LiteralPath $ErrPath -Raw | ConvertFrom-Json).Message | Should -Be 'three'
+
+                # After a success an untrusted file is moved aside too, never deleted; a trusted one is removed.
+                Clear-CEAuditFailure -DataRoot $Root -WarningAction SilentlyContinue
+                Test-Path -LiteralPath $ErrPath | Should -BeFalse
+                @(Get-ChildItem -LiteralPath $Pd -File -Filter 'EngramicBaseline.untrusted-*-last-error.json').Count | Should -Be 2
+                $global:TestUntrustedLastError = $false
+                Write-CEAuditFailure -DataRoot $Root -Message 'four' -Now $now | Out-Null
+                Clear-CEAuditFailure -DataRoot $Root
+                Test-Path -LiteralPath $ErrPath | Should -BeFalse
+                @(Get-ChildItem -LiteralPath $Pd -File -Filter 'EngramicBaseline.untrusted-*-last-error.json').Count | Should -Be 2 -Because 'a trusted file is simply removed'
+                Clear-CEAuditFailure -DataRoot $Root
+                Should -Invoke Write-CEEventEntry -Times 2 -Exactly
+
+                # Nothing is written into a data folder that is not trusted.
+                $global:TestUntrustedRoot = $true
+                { Write-CEAuditFailure -DataRoot $Root -Message 'five' -Now $now } | Should -Throw '*Did not record the failure*'
+                Test-Path -LiteralPath $ErrPath | Should -BeFalse
+            }
+            finally {
+                $script:CEDataRootOverride = $null
+                Remove-Variable -Name TestUntrustedLastError, TestUntrustedRoot -Scope Global -ErrorAction SilentlyContinue
+            }
+        }
+    }
+
+    It 'the scheduled audit counts failed runs in a fresh process, carrying the first failure time over' {
+        $pwshExe = (Get-Process -Id $PID).Path
+        # Every run fails just after the data folders are set up, the same way elevated (CI) or not: it
+        # runs a copy of the tool whose own scheduled-audit.json is not JSON, and the tool's own config is
+        # read with no permission check. A config override in the data folder would not do: an elevated
+        # run uses one only if administrators own it and the folders it is in, and otherwise ignores it,
+        # so the audit succeeds.
+        $tool = Join-Path $TestDrive 'failing-tool'
+        New-Item -ItemType Directory -Path $tool | Out-Null
+        foreach ($part in @('app', 'config', 'src')) { Copy-Item -LiteralPath (Join-Path $script:RepoRoot $part) -Destination $tool -Recurse }
+        Set-Content -LiteralPath (Join-Path (Join-Path $tool 'config') 'scheduled-audit.json') -Value 'not json'
+        # The data folder is made first, the locked way when elevated, as the install makes it. A folder
+        # this test made plainly would be writable by the runner's own account, so an elevated run would
+        # rightly move it aside - taking last-error.json, and the count, with it.
+        $root = Join-Path $TestDrive 'headless-failing'
+        InModuleScope CEAudit -Parameters @{ Root = $root } {
+            param($Root)
+            $script:CEDataRootOverride = $Root
+            try { Initialize-CEDataFolder -Path $Root | Out-Null }
+            finally { $script:CEDataRootOverride = $null }
+        }
+        $auditScript = Join-Path (Join-Path $tool 'app') 'Invoke-CEScheduledAudit.ps1'
+        $errPath = Join-Path $root 'last-error.json'
+        & $pwshExe -NoProfile -File $auditScript -DataRoot $root *> $null
+        $LASTEXITCODE | Should -Be 1
+        $one = Get-Content -LiteralPath $errPath -Raw | ConvertFrom-Json
+        $one.FailedRuns | Should -Be 1
+        & $pwshExe -NoProfile -File $auditScript -DataRoot $root *> $null
+        $LASTEXITCODE | Should -Be 1
+        $two = Get-Content -LiteralPath $errPath -Raw | ConvertFrom-Json
+        $two.FailedRuns | Should -Be 2
+        "$($two.FirstFailure)" | Should -Be "$($one.FirstFailure)"
+        "$($two.Time)" | Should -Not -Be "$($one.Time)"
+        Test-Path -LiteralPath (Join-Path $root 'status.json') | Should -BeFalse -Because 'a failed run never writes status.json'
+        @(Get-ChildItem -LiteralPath $TestDrive -Filter 'headless-failing.untrusted-*').Count | Should -Be 0 -Because 'each run kept the data folder it found'
+    }
+
+    It 'only the scheduled machine audit counts failures; the user probe never does' {
+        $audit = (Get-Content -LiteralPath (Join-Path $script:RepoRoot 'app\Invoke-CEScheduledAudit.ps1') -Raw) -replace '\r\n', "`n"
+        $audit | Should -Match 'Write-CEAuditFailure -DataRoot \$DataRoot '
+        $audit | Should -Match 'Clear-CEAuditFailure -DataRoot \$DataRoot'
+        $audit.IndexOf('Clear-CEAuditFailure') | Should -BeGreaterThan $audit.IndexOf('Write-CEStatus -Status') -Because 'the count is reset only once the new status.json is written'
+        $probe = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'app\Invoke-CEUserProbe.ps1') -Raw
+        $probe | Should -Not -Match 'Write-CEAuditFailure|FailedRuns'
+        $probe | Should -Match "Join-Path \`$base 'EngramicBaseline'" -Because 'its data folder is the user''s own, which Intune never reads'
+        $probe | Should -Match '\$base = \$env:LOCALAPPDATA'
+    }
+}
+
+Describe 'Locked-at-birth data folders (Initialize-CEDataFolder)' {
+    It 'creates the data folder, and returns without error when it already exists' {
+        $p = Join-Path $TestDrive 'idf-create'
+        Initialize-CEDataFolder -Path $p | Should -Be $p
+        Test-Path -LiteralPath $p -PathType Container | Should -BeTrue
+        # Idempotent: a second call over an existing folder just returns it.
+        { Initialize-CEDataFolder -Path $p } | Should -Not -Throw
+        Test-Path -LiteralPath $p -PathType Container | Should -BeTrue
+    }
+
+    It 'when elevated, the folder is born administrator-owned and locked to SYSTEM and Administrators' {
+        # This branch only runs where the suite runs elevated (CI). A standard user cannot set an
+        # owner to Administrators, and only affects their own data, so there it gets a plain folder.
+        if (-not (([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))) {
+            Set-ItResult -Skipped -Because 'needs an elevated session'
+            return
+        }
+        # Only the data folder and folders in it are made locked, so make this one the data folder.
+        $p = Join-Path $TestDrive 'idf-locked'
+        InModuleScope CEAudit -Parameters @{ P = $p } {
+            param($P)
+            $script:CEDataRootOverride = $P
+            try { Initialize-CEDataFolder -Path $P | Out-Null }
+            finally { $script:CEDataRootOverride = $null }
+        }
+        $acl = Get-Acl -LiteralPath $p
+        "$($acl.GetOwner([Security.Principal.SecurityIdentifier]))" | Should -Be 'S-1-5-32-544'
+        $acl.AreAccessRulesProtected | Should -BeTrue
+        # Compared as SIDs: $acl.Access names accounts (NTAccount), which never equal a SecurityIdentifier.
+        $sids = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | ForEach-Object { $_.IdentityReference.Value })
+        @($sids | Where-Object { @('S-1-5-18', 'S-1-5-32-544') -notcontains $_ }).Count | Should -Be 0 -Because "only SYSTEM and Administrators are granted anything (granted: $($sids -join ', '))"
+        @($sids | Sort-Object -Unique) | Should -Be @('S-1-5-18', 'S-1-5-32-544')
+    }
+
+    It 'when elevated, locks or moves aside only the data folder and folders in it, and leaves any other folder as it is' {
+        # An elevated caller once moved aside ANY folder it was handed that a standard user could write, and
+        # made a locked one in its place: Write-CEStatus -Path elsewhere renamed the caller's folder (in CI,
+        # Pester's own TestDrive). Only the data folder, however it is spelled, is the tool's to lock.
+        $pd = Join-Path $TestDrive 'pd-scope'
+        $root = Join-Path $pd 'EngramicBaseline'
+        $reports = Join-Path $root 'reports'
+        $outside = @((Join-Path $pd 'elsewhere'), (Join-Path $pd 'EngramicBaseline2'), (Join-Path $pd 'EngramicBaseline.untrusted-0123'), $pd)
+        foreach ($d in @($outside) + @($reports)) {
+            New-Item -ItemType Directory -Force -Path $d | Out-Null
+            Set-Content -LiteralPath (Join-Path $d 'mine.txt') -Value 'mine'
+        }
+        InModuleScope CEAudit -Parameters @{ Root = $root; Reports = $reports; Outside = $outside; Pd = $pd; Drive = $TestDrive } {
+            param($Root, $Reports, $Outside, $Pd, $Drive)
+            $script:CEDataRootOverride = $Root
+            try {
+                Mock Test-CEIsWindows { $true }
+                Mock Test-CEIsAdmin { $true }
+                # Anything that is not empty looks writable by a standard user, so an elevated caller that
+                # judged it would move it aside. A birth descriptor a standard user can apply (no owner).
+                Mock Get-CELockedFolderProblem { if (@(Get-ChildItem -LiteralPath $Path -Force).Count) { "$Path is writable by S-1-5-21-1-2-3-1001" } else { '' } }
+                Mock New-CELockedDirectorySecurity { $s = New-Object Security.AccessControl.DirectorySecurity; $s.SetSecurityDescriptorSddlForm('D:(A;OICI;FA;;;WD)'); $s }
+                Mock Write-CEEventEntry { }
+                $spellings = @($Outside) + @((Join-Path (Join-Path $Root '..') 'elsewhere'), (Join-Path $Root '..'), $Drive)
+                foreach ($d in $spellings) {
+                    Initialize-CEDataFolder -Path $d -WarningVariable w -WarningAction SilentlyContinue | Should -Be $d
+                    "$w" | Should -BeNullOrEmpty -Because "$d is not in the data folder"
+                }
+                # Write-CEStatus -Path elsewhere writes there and leaves the folder alone.
+                $elsewhere = Join-Path $Pd 'elsewhere'
+                Write-CEStatus -Status ([ordered]@{ schemaVersion = 1 }) -Path (Join-Path $elsewhere 'status.json') | Out-Null
+                (Get-Content -LiteralPath (Join-Path $elsewhere 'status.json') -Raw | ConvertFrom-Json).schemaVersion | Should -Be 1
+                # A missing folder outside it is made plainly, with no locked descriptor.
+                $fresh = Join-Path $Pd 'fresh-elsewhere'
+                Initialize-CEDataFolder -Path $fresh | Should -Be $fresh
+                Test-Path -LiteralPath $fresh -PathType Container | Should -BeTrue
+                foreach ($d in $Outside) { Get-Content -LiteralPath (Join-Path $d 'mine.txt') | Should -Be 'mine' -Because "$d is left where it was" }
+                $names = @('elsewhere', 'EngramicBaseline', 'EngramicBaseline.untrusted-0123', 'EngramicBaseline2', 'fresh-elsewhere', 'mine.txt')
+                @(Get-ChildItem -LiteralPath $Pd -Force | ForEach-Object { $_.Name } | Sort-Object) | Should -Be @($names | Sort-Object) -Because 'nothing outside the data folder is moved aside'
+                @(Get-ChildItem -LiteralPath $Drive -Filter "$(Split-Path -Leaf $Pd).untrusted-*").Count | Should -Be 0
+                @(Get-ChildItem -LiteralPath (Split-Path -Parent $Drive) -Filter "$(Split-Path -Leaf $Drive).untrusted-*").Count | Should -Be 0 -Because 'the test drive itself stays where Pester made it'
+                Should -Invoke Get-CELockedFolderProblem -Times 0 -Exactly -Because 'a folder outside the data folder is not even judged'
+                Should -Invoke New-CELockedDirectorySecurity -Times 0 -Exactly -Because 'nor made locked'
+                Should -Invoke Write-CEEventEntry -Times 0 -Exactly
+                foreach ($d in @($Outside) + @((Join-Path (Join-Path $Root '..') 'elsewhere'))) {
+                    { Get-CEDataAsidePath -Path $d } | Should -Throw '*never moved aside*'
+                    { Move-CEDataItemAside -Path $d } | Should -Throw '*never moved aside*'
+                }
+
+                # The data folder is still handled however it is spelled: '.', '..' and a trailing separator.
+                foreach ($d in @((Join-Path (Join-Path $Root '.') 'reports'), (Join-Path (Join-Path (Join-Path $Root 'sub') '..') 'reports'), ($Reports + [IO.Path]::DirectorySeparatorChar))) {
+                    Set-Content -LiteralPath (Join-Path $Reports 'mine.txt') -Value 'racer'
+                    Initialize-CEDataFolder -Path $d -WarningVariable w -WarningAction SilentlyContinue | Should -Be $d
+                    Test-Path -LiteralPath (Join-Path $Reports 'mine.txt') | Should -BeFalse -Because "$d is in the data folder, so a fresh folder took its place"
+                    "$w" | Should -Match 'Moved an untrusted'
+                }
+                @(Get-ChildItem -LiteralPath $Pd -Directory -Filter 'EngramicBaseline.untrusted-*-reports').Count | Should -Be 3
+                Test-Path -LiteralPath (Join-Path $Root 'sub') | Should -BeFalse -Because 'the .. was collapsed, not created'
+            }
+            finally { $script:CEDataRootOverride = $null }
+        }
+    }
+
+    It 'judges whether a path is in the data folder on its full spelling, ignoring case, so .. and look-alike names do not count' -Skip:(-not ($PSVersionTable.PSVersion.Major -lt 6 -or $IsWindows)) {
+        # This decides whether the tool may lock a folder or move it aside, so '..' must never climb out of
+        # the data folder, and a sibling whose name merely starts the same way is not in it.
+        $here = Join-Path $TestDrive 'rel-here'
+        New-Item -ItemType Directory -Path $here | Out-Null
+        InModuleScope CEAudit -Parameters @{ Here = $here } {
+            param($Here)
+            $script:CEDataRootOverride = 'C:\ProgramData\EngramicBaseline'
+            try {
+                $in = @('C:\ProgramData\EngramicBaseline', 'C:\ProgramData\EngramicBaseline\', 'c:\programdata\ENGRAMICBASELINE\Reports',
+                    'C:/ProgramData/EngramicBaseline/reports', 'C:\ProgramData\EngramicBaseline\.\reports', 'C:\ProgramData\EngramicBaseline\x\..\reports',
+                    'C:\ProgramData\Other\..\EngramicBaseline\cache', 'C:\ProgramData\\EngramicBaseline\\logs')
+                foreach ($p in $in) { (Resolve-CEDataPath -Path $p).InDataRoot | Should -BeTrue -Because "$p is in the data folder" }
+                $out = @('C:\ProgramData\EngramicBaseline2', 'C:\ProgramData\EngramicBaseline2\reports', 'C:\ProgramData\EngramicBaseline.untrusted-0123',
+                    'C:\ProgramData\EngramicBaseline-old\x', 'C:\ProgramData\EngramicBaseline\..', 'C:\ProgramData\EngramicBaseline\..\Other',
+                    'C:\ProgramData\EngramicBaseline\reports\..\..\Other', 'C:\ProgramData', 'C:\', 'D:\ProgramData\EngramicBaseline',
+                    '\\server\share\ProgramData\EngramicBaseline')
+                foreach ($p in $out) { (Resolve-CEDataPath -Path $p).InDataRoot | Should -BeFalse -Because "$p is not in the data folder" }
+                $r = Resolve-CEDataPath -Path 'C:\ProgramData\EngramicBaseline\sub\..\Reports\'
+                $r.Path | Should -Be 'C:\ProgramData\EngramicBaseline\Reports'
+                $r.Root | Should -Be 'C:\ProgramData\EngramicBaseline'
+                $r.Relative | Should -Be 'Reports'
+                (Resolve-CEDataPath -Path 'C:\ProgramData\EngramicBaseline').Relative | Should -Be ''
+                # Only the spelling changes: an 8.3 name is kept as written, never looked up and expanded.
+                ConvertTo-CEFullPath -Path 'C:\PROGRA~1\x\..\y' | Should -Be 'C:\PROGRA~1\y'
+                # A UNC data folder: '..' cannot climb out of it either (Windows leaves that to the caller).
+                $script:CEDataRootOverride = '\\server\share\EngramicBaseline'
+                (Resolve-CEDataPath -Path '\\server\share\EngramicBaseline\reports').InDataRoot | Should -BeTrue
+                (Resolve-CEDataPath -Path '\\server\share\EngramicBaseline\..\Other').InDataRoot | Should -BeFalse
+                (Resolve-CEDataPath -Path '\\server\share\EngramicBaseline2').InDataRoot | Should -BeFalse
+                # A relative path (or data folder) is taken from PowerShell's location, not the process directory.
+                $script:CEDataRootOverride = '.\data'
+                $process = [Environment]::CurrentDirectory
+                Push-Location -LiteralPath $Here
+                try {
+                    [Environment]::CurrentDirectory = [IO.Path]::GetTempPath()
+                    ConvertTo-CEFullPath -Path 'a\..\b' | Should -Be (Join-Path $Here 'b')
+                    (Resolve-CEDataPath -Path (Join-Path (Join-Path $Here 'data') 'reports')).InDataRoot | Should -BeTrue
+                    (Resolve-CEDataPath -Path '.\data\..\elsewhere').InDataRoot | Should -BeFalse
+                }
+                finally { Pop-Location; [Environment]::CurrentDirectory = $process }
+            }
+            finally { $script:CEDataRootOverride = $null }
+        }
+    }
+
+    It 'never locks or moves aside a folder outside the data folder, whoever runs it (no mocks)' -Skip:(-not ($PSVersionTable.PSVersion.Major -lt 6 -or $IsWindows)) {
+        # The real path for whoever runs the suite: a standard user here, an administrator in CI, where a
+        # status.json written to the runner's own temp folder used to move that folder aside (Pester's
+        # TestDrive with it) and put a folder only administrators could change in its place.
+        $mine = Join-Path $TestDrive 'status-elsewhere'
+        New-Item -ItemType Directory -Path $mine | Out-Null
+        Set-Content -LiteralPath (Join-Path $mine 'mine.txt') -Value 'mine'
+        $before = (Get-Acl -LiteralPath $mine).Sddl
+        $driveBefore = (Get-Acl -LiteralPath $TestDrive).Sddl
+        Write-CEStatus -Status ([ordered]@{ schemaVersion = 1 }) -Path (Join-Path $mine 'status.json') | Should -Be (Join-Path $mine 'status.json')
+        Write-CEStatus -Status ([ordered]@{ schemaVersion = 2 }) -Path (Join-Path $TestDrive 'status-in-drive.json') | Out-Null
+        (Get-Content -LiteralPath (Join-Path $mine 'status.json') -Raw | ConvertFrom-Json).schemaVersion | Should -Be 1
+        Get-Content -LiteralPath (Join-Path $mine 'mine.txt') | Should -Be 'mine'
+        (Get-Acl -LiteralPath $mine).Sddl | Should -Be $before -Because 'the folder keeps the permissions its owner gave it'
+        (Get-Acl -LiteralPath $TestDrive).Sddl | Should -Be $driveBefore
+        @(Get-ChildItem -LiteralPath (Split-Path -Parent $TestDrive) -Filter "$(Split-Path -Leaf $TestDrive).untrusted-*").Count | Should -Be 0
+        @(Get-ChildItem -LiteralPath $TestDrive -Filter '*.untrusted-*').Count | Should -Be 0
+        # A missing folder outside the data folder is made plainly: it takes its parent's permissions.
+        $fresh = Join-Path $TestDrive 'fresh-elsewhere'
+        Initialize-CEDataFolder -Path $fresh | Should -Be $fresh
+        (Get-Acl -LiteralPath $fresh).AreAccessRulesProtected | Should -BeFalse -Because 'it is not given the data folder''s locked, protected descriptor'
+        # A bare file name has no folder to make: it is written to the current location.
+        Push-Location -LiteralPath $fresh
+        try { Write-CEStatus -Status ([ordered]@{ schemaVersion = 3 }) -Path 'bare-status.json' | Should -Be 'bare-status.json' }
+        finally { Pop-Location }
+        (Get-Content -LiteralPath (Join-Path $fresh 'bare-status.json') -Raw | ConvertFrom-Json).schemaVersion | Should -Be 3
+    }
+
+    It 'moves an untrusted data folder, or a folder in it, aside OUT of the data folder, and records where it went' {
+        # A quarantine inside the data folder (<data>\reports.untrusted-<id>) is a tree a standard user may
+        # control inside a tree SYSTEM later walks and deletes. It goes beside the data folder instead, and
+        # the warning and an Application event (1003) name where, so nothing is lost silently.
+        $pd = Join-Path $TestDrive 'pd-module-aside'
+        $root = Join-Path $pd 'EngramicBaseline'
+        New-Item -ItemType Directory -Force -Path (Join-Path $root 'reports') | Out-Null
+        Set-Content -LiteralPath (Join-Path $root 'reports\planted.txt') -Value 'racer'
+        InModuleScope CEAudit -Parameters @{ Root = $root; Pd = $pd } {
+            param($Root, $Pd)
+            $script:CEDataRootOverride = $Root
+            try {
+                Mock Test-CEIsWindows { $true }
+                Mock Test-CEIsAdmin { $true }
+                # A birth descriptor a standard user can apply (no owner), and a stand-in trust check.
+                Mock New-CELockedDirectorySecurity { $s = New-Object Security.AccessControl.DirectorySecurity; $s.SetSecurityDescriptorSddlForm('D:(A;OICI;FA;;;WD)'); $s }
+                Mock Get-CELockedFolderProblem { if (Test-Path -LiteralPath (Join-Path $Path 'planted.txt')) { "$Path is owned by S-1-5-21-1-2-3-1001" } else { '' } }
+                Mock Write-CEEventEntry { }
+                $reports = Join-Path $Root 'reports'
+                Initialize-CEDataFolder -Path $reports -WarningVariable w -WarningAction SilentlyContinue | Should -Be $reports
+                Test-Path -LiteralPath (Join-Path $reports 'planted.txt') | Should -BeFalse -Because 'a fresh folder took its place'
+                @(Get-ChildItem -LiteralPath $Root -Recurse -Force -Filter '*.untrusted-*').Count | Should -Be 0 -Because 'nothing is quarantined inside the data folder'
+                $aside = @(Get-ChildItem -LiteralPath $Pd -Directory -Filter 'EngramicBaseline.untrusted-*-reports')
+                $aside.Count | Should -Be 1
+                $asidePath = $aside[0].FullName
+                Get-Content -LiteralPath (Join-Path $asidePath 'planted.txt') | Should -Be 'racer'
+                "$w" | Should -Match ([regex]::Escape($asidePath))
+                Should -Invoke Write-CEEventEntry -Times 1 -Exactly -ParameterFilter { $Id -eq 1003 -and $Type -eq 'Warning' -and $Message -like "*$asidePath*" }
+                # The data folder itself goes beside itself.
+                Set-Content -LiteralPath (Join-Path $Root 'planted.txt') -Value 'racer'
+                Initialize-CEDataFolder -Path $Root -WarningAction SilentlyContinue | Out-Null
+                @(Get-ChildItem -LiteralPath $Pd -Directory | Where-Object { $_.Name -match '^EngramicBaseline\.untrusted-[0-9a-f]{32}$' }).Count | Should -Be 1
+                # Named as the installer names them (Get-CEAsidePath); nothing outside the data folder is moved aside.
+                Get-CEDataAsidePath -Path (Join-Path $Root 'packs') | Should -Match ('^' + [regex]::Escape($Root) + '\.untrusted-[0-9a-f]{32}-packs$')
+                { Get-CEDataAsidePath -Path 'X:\elsewhere\status-dir' } | Should -Throw '*not in the data folder*'
+            }
+            finally { $script:CEDataRootOverride = $null }
+        }
+    }
+
+    It 'the birth descriptor names Administrators as owner, and matches the installer''s copy' {
+        # Owner is in the descriptor (O:BA) so it is applied in the one call that creates the folder,
+        # never forced afterwards onto a folder a racer may have made. Both copies stay identical.
+        InModuleScope CEAudit {
+            $sddl = (New-CELockedDirectorySecurity).GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::Owner)
+            $sddl | Should -Be 'O:BA'
+        }
+    }
+
+    It 'Get-CELockedFolderProblem keeps an admin-only folder (even with a benign read ACE) and rejects user-writable/wrong-owner/deny/link' {
+        # The module judges a kept folder by trust, the same way the installer's Test-CELockedFolder
+        # does: admin owner, not a link, no non-admin write/DAC/owner right, no deny against a trusted
+        # SID. A read-only ACE an admin added is kept (Finding 4); a non-admin write ACE is rejected.
+        InModuleScope CEAudit {
+            $newAcl = {
+                param([string]$OwnerSid, [object[]]$Rules)
+                $o = New-Object psobject
+                $o | Add-Member -MemberType ScriptMethod -Name GetOwner -Value ([scriptblock]::Create("param(`$t) [Security.Principal.SecurityIdentifier]::new('$OwnerSid')"))
+                $o | Add-Member -MemberType NoteProperty -Name TestRules -Value @($Rules)
+                $o | Add-Member -MemberType ScriptMethod -Name GetAccessRules -Value { param($e, $i, $t) $this.TestRules }
+                return $o
+            }
+            $rule = { param([string]$Sid, [Security.AccessControl.FileSystemRights]$R, [string]$T = 'Allow') [pscustomobject]@{ IdentityReference = [Security.Principal.SecurityIdentifier]::new($Sid); FileSystemRights = $R; AccessControlType = [Security.AccessControl.AccessControlType]$T } }
+            $adminOnly = @((& $rule 'S-1-5-18' 'FullControl'), (& $rule 'S-1-5-32-544' 'FullControl'))
+            Mock Test-CEIsWindows { $true }
+            Mock Test-CEReparsePoint { $false }
+            Mock Get-Acl { & $newAcl 'S-1-5-32-544' $adminOnly }.GetNewClosure()
+            Get-CELockedFolderProblem -Path 'X:\seal' | Should -BeNullOrEmpty
+            Mock Get-Acl { & $newAcl 'S-1-5-32-544' ($adminOnly + @(& $rule 'S-1-5-32-545' 'ReadAndExecute')) }.GetNewClosure()
+            Get-CELockedFolderProblem -Path 'X:\seal' | Should -BeNullOrEmpty -Because 'a read-only ACE grants no write (Finding 4)'
+            Mock Get-Acl { & $newAcl 'S-1-5-21-1-2-3-1001' $adminOnly }.GetNewClosure()
+            Get-CELockedFolderProblem -Path 'X:\seal' | Should -Match 'owned by S-1-5-21-1-2-3-1001'
+            Mock Get-Acl { & $newAcl 'S-1-5-32-544' ($adminOnly + @(& $rule 'S-1-5-21-1-2-3-1001' 'Modify')) }.GetNewClosure()
+            Get-CELockedFolderProblem -Path 'X:\seal' | Should -Match 'writable by S-1-5-21-1-2-3-1001'
+            Mock Get-Acl { & $newAcl 'S-1-5-32-544' ($adminOnly + @(& $rule 'S-1-5-18' 'CreateFiles' 'Deny')) }.GetNewClosure()
+            Get-CELockedFolderProblem -Path 'X:\seal' | Should -Match 'denies S-1-5-18'
+            Mock Test-CEReparsePoint { $true }
+            Get-CELockedFolderProblem -Path 'X:\seal' | Should -Match 'is a link'
+        }
     }
 }
 
@@ -1995,6 +3617,54 @@ Describe 'Firmware catalog (SU-08 with the catalog service)' {
             }
         }
 
+        It 'does not read a cached record that standard users could change, even in a trusted cache folder' {
+            # A file keeps the owner who created it, even in a folder the install locked later.
+            InModuleScope CEAudit -Parameters @{ Hw = $script:hw } {
+                param($Hw)
+                $body = New-TestCatalogRecord -Vendor 'dell' -Id '0CF1' -Releases @(New-TestRelease '1.17.0' 30) | ConvertTo-Json -Depth 5
+                Mock Invoke-CEHttpGet { [pscustomobject]@{ StatusCode = 200; Body = $body; ETag = '"abc"' } }
+                Get-CEFirmwareCatalogRecord -Hardware $Hw | Out-Null
+                Mock Test-CEIsAdmin { $true }
+                Mock Get-CEPathAclProblem { if ($Path -like '*.json') { "$Path is owned by S-1-5-21-1-2-3-1001" } }
+                Mock Invoke-CEHttpGet { throw 'No connection could be made' }
+                $r = Get-CEFirmwareCatalogRecord -Hardware $Hw
+                $r.FromCache | Should -BeFalse
+                $r.Status | Should -Be 'Error'
+                Mock Get-CEPathAclProblem { }
+                (Get-CEFirmwareCatalogRecord -Hardware $Hw).FromCache | Should -BeTrue -Because 'an admin-only cache file is still used'
+            }
+        }
+
+        It 'does not read or write the cache when the data folder itself is untrusted, even if cache and the file are not' {
+            # The data folder is checked as well as cache\ and the file, as Get-CEConfig and packs do:
+            # whoever can write %ProgramData%\EngramicBaseline could replace cache\ wholesale.
+            InModuleScope CEAudit -Parameters @{ Hw = $script:hw; Root = $script:dataRoot } {
+                param($Hw, $Root)
+                $body = New-TestCatalogRecord -Vendor 'dell' -Id '0CF1' -Releases @(New-TestRelease '1.17.0' 30) | ConvertTo-Json -Depth 5
+                Mock Invoke-CEHttpGet { [pscustomobject]@{ StatusCode = 200; Body = $body; ETag = '"abc"' } }
+                Get-CEFirmwareCatalogRecord -Hardware $Hw | Out-Null      # a valid record is now cached
+                $cacheFile = Join-Path (Join-Path $Root 'cache') 'firmware-dell-0CF1.json'
+                Test-Path -LiteralPath $cacheFile | Should -BeTrue
+
+                # Elevated, with only the data root flagged (cache\ and the file look admin-only).
+                Mock Test-CEIsAdmin { $true }
+                Mock Get-CEPathAclProblem { if ($Path -eq $Root) { "$Path is owned by S-1-5-21-1-2-3-1001" } }
+                Mock Invoke-CEHttpGet { throw 'No connection could be made' }
+                $r = Get-CEFirmwareCatalogRecord -Hardware $Hw
+                $r.FromCache | Should -BeFalse -Because 'a forged record could sit in a cache folder inside a data folder the user controls'
+                $r.Status | Should -Be 'Error'
+
+                # And a fresh fetch is not written back into the untrusted data folder.
+                $before = (Get-Item -LiteralPath $cacheFile).LastWriteTimeUtc
+                Mock Invoke-CEHttpGet { [pscustomobject]@{ StatusCode = 200; Body = $body; ETag = '"xyz"' } }
+                Get-CEFirmwareCatalogRecord -Hardware $Hw | Out-Null
+                (Get-Item -LiteralPath $cacheFile).LastWriteTimeUtc | Should -Be $before -Because 'SYSTEM must not write into a folder a standard user could redirect'
+
+                Mock Get-CEPathAclProblem { }
+                (Get-CEFirmwareCatalogRecord -Hardware $Hw).FromCache | Should -BeTrue -Because 'a trusted data folder reads the cache again'
+            }
+        }
+
         It 'reports unknown models, bad records and failures without a cache' {
             InModuleScope CEAudit -Parameters @{ Hw = $script:hw } {
                 param($Hw)
@@ -2066,6 +3736,205 @@ Describe 'Firmware catalog (SU-08 with the catalog service)' {
 
             Set-TestCatalog -Status 'NotFound' -Record $null
             (& $script:firmwareOf).Actual | Should -Match 'months ago'
+        }
+    }
+
+    Context 'service client and proxy' {
+        BeforeAll {
+            function global:New-TestWinHttpBlob {
+                param([int]$Flags, [string]$Proxy = '', [string]$Bypass = '')
+                $list = New-Object System.Collections.ArrayList
+                foreach ($n in @(0x28, 0, $Flags)) { $list.AddRange([BitConverter]::GetBytes([uint32]$n)) }
+                $p = [Text.Encoding]::ASCII.GetBytes($Proxy)
+                $list.AddRange([BitConverter]::GetBytes([uint32]$p.Length)); $list.AddRange($p)
+                $b = [Text.Encoding]::ASCII.GetBytes($Bypass)
+                $list.AddRange([BitConverter]::GetBytes([uint32]$b.Length)); $list.AddRange($b)
+                , [byte[]]$list.ToArray()
+            }
+        }
+
+        It 'accepts https, and plain http only for this device' {
+            InModuleScope CEAudit {
+                (Resolve-CEServiceUri -BaseUrl 'https://baseline.engramic.ai/' -Path 'v1/firmware/dell/0CF1').Uri.AbsoluteUri | Should -Be 'https://baseline.engramic.ai/v1/firmware/dell/0CF1'
+                (Resolve-CEServiceUri -BaseUrl 'http://localhost:8787' -Path '/v1/firmware/dell/0CF1').Uri.AbsoluteUri | Should -Be 'http://localhost:8787/v1/firmware/dell/0CF1'
+                (Resolve-CEServiceUri -BaseUrl 'http://baseline.engramic.ai' -Path 'x').Uri | Should -BeNullOrEmpty
+                (Resolve-CEServiceUri -BaseUrl 'http://baseline.engramic.ai' -Path 'x').Error | Should -Match 'https'
+                (Resolve-CEServiceUri -BaseUrl '' -Path 'x').Uri | Should -BeNullOrEmpty
+                (Resolve-CEServiceUri -BaseUrl 'not a url' -Path 'x').Uri | Should -BeNullOrEmpty
+                (Resolve-CEServiceUri -BaseUrl 'file:///C:/x' -Path 'x').Uri | Should -BeNullOrEmpty
+            }
+        }
+
+        It 'parses the machine WinHTTP proxy setting' {
+            InModuleScope CEAudit {
+                ConvertFrom-CEWinHttpProxyBlob -Blob (New-TestWinHttpBlob -Flags 1) | Should -BeNullOrEmpty -Because 'direct access'
+                ConvertFrom-CEWinHttpProxyBlob -Blob ([byte[]]@(1, 2, 3)) | Should -BeNullOrEmpty
+                $one = ConvertFrom-CEWinHttpProxyBlob -Blob (New-TestWinHttpBlob -Flags 3 -Proxy 'proxy.contoso.com:8080')
+                $one.Proxy | Should -Be 'proxy.contoso.com:8080'
+                @($one.Bypass).Count | Should -Be 0
+                (Select-CEWinHttpProxy -Proxy $one.Proxy -Scheme https).AbsoluteUri | Should -Be 'http://proxy.contoso.com:8080/'
+                (Select-CEWinHttpProxy -Proxy $one.Proxy -Scheme http).AbsoluteUri | Should -Be 'http://proxy.contoso.com:8080/' -Because 'one proxy for every scheme'
+                $schemes = ConvertFrom-CEWinHttpProxyBlob -Blob (New-TestWinHttpBlob -Flags 3 -Proxy 'http=web.contoso.com:80;https=secure.contoso.com:8443' -Bypass '<local>;*.contoso.com')
+                (Select-CEWinHttpProxy -Proxy $schemes.Proxy -Scheme https).Authority | Should -Be 'secure.contoso.com:8443'
+                (Select-CEWinHttpProxy -Proxy $schemes.Proxy -Scheme http).Authority | Should -Be 'web.contoso.com'
+                Select-CEWinHttpProxy -Proxy 'http=web.contoso.com:80' -Scheme https | Should -BeNullOrEmpty -Because 'WinHTTP sends https direct when only http has a proxy'
+                Select-CEWinHttpProxy -Proxy 'https=https://secure.contoso.com:8443' -Scheme https | Should -BeNullOrEmpty -Because 'Windows PowerShell 5.1 cannot use an https proxy address'
+                @($schemes.Bypass) | Should -Be @('<local>', '*.contoso.com')
+                Test-CEProxyBypass -HostName 'intranet' -Bypass $schemes.Bypass | Should -BeTrue
+                Test-CEProxyBypass -HostName 'files.contoso.com' -Bypass $schemes.Bypass | Should -BeTrue
+                Test-CEProxyBypass -HostName 'baseline.engramic.ai' -Bypass $schemes.Bypass | Should -BeFalse
+            }
+        }
+
+        It 'uses network.json first, then the WinHTTP proxy only as SYSTEM' {
+            InModuleScope CEAudit {
+                $saved = (Get-CEConfig).network
+                try {
+                    $uri = [Uri]'https://baseline.engramic.ai/v1/firmware/dell/0CF1'
+                    Mock Get-CEWinHttpProxyBlob { New-TestWinHttpBlob -Flags 3 -Proxy 'proxy.contoso.com:8080' -Bypass '<local>' }
+                    (Get-CEConfig).network = [pscustomobject]@{ proxyUrl = ''; useWinHttpProxyWhenSystem = $true }
+                    Mock Test-CEIsSystem { $false }
+                    (Get-CEProxySetting -Uri $uri).Mode | Should -Be 'System' -Because 'a user keeps their own proxy settings'
+                    Mock Test-CEIsSystem { $true }
+                    $p = Get-CEProxySetting -Uri $uri
+                    $p.Mode | Should -Be 'Proxy'
+                    $p.Address.Authority | Should -Be 'proxy.contoso.com:8080'
+                    (Get-CEProxySetting -Uri ([Uri]'http://localhost:8787/x')).Mode | Should -Be 'Direct' -Because '<local> covers names without a dot'
+                    (Get-CEConfig).network = [pscustomobject]@{ proxyUrl = ''; useWinHttpProxyWhenSystem = $false }
+                    (Get-CEProxySetting -Uri $uri).Mode | Should -Be 'System'
+                    $p.UseDefaultCredentials | Should -BeTrue -Because 'only an administrator can set the WinHTTP proxy'
+                    (Get-CEConfig).network = [pscustomobject]@{ proxyUrl = 'http://configured.contoso.com:3128'; useWinHttpProxyWhenSystem = $true }
+                    $configured = Get-CEProxySetting -Uri $uri
+                    $configured.Address.Authority | Should -Be 'configured.contoso.com:3128'
+                    $configured.UseDefaultCredentials | Should -BeFalse -Because 'a proxy named in a config file gets no Windows sign-in unless asked'
+                    (Get-CEConfig).network = [pscustomobject]@{ proxyUrl = 'http://configured.contoso.com:3128'; proxyUseDefaultCredentials = $true }
+                    (Get-CEProxySetting -Uri $uri).UseDefaultCredentials | Should -BeTrue
+                    (Get-CEConfig).network = [pscustomobject]@{ proxyUrl = 'http://configured.contoso.com:3128'; proxyUseDefaultCredentials = 'yes' }
+                    (Get-CEProxySetting -Uri $uri).UseDefaultCredentials | Should -BeFalse -Because 'only JSON true turns it on'
+                    (Get-CEConfig).network = [pscustomobject]@{ proxyUrl = 'socks5://x:1080' }
+                    (Get-CEProxySetting -Uri $uri -WarningAction SilentlyContinue).Address.Authority | Should -Be 'proxy.contoso.com:8080'
+                }
+                finally { (Get-CEConfig).network = $saved }
+            }
+        }
+
+        It 'goes direct as SYSTEM when the WinHTTP proxy is set only for another scheme' {
+            InModuleScope CEAudit {
+                $saved = (Get-CEConfig).network
+                try {
+                    (Get-CEConfig).network = [pscustomobject]@{ proxyUrl = ''; useWinHttpProxyWhenSystem = $true }
+                    Mock Test-CEIsSystem { $true }
+                    Mock Get-CEWinHttpProxyBlob { New-TestWinHttpBlob -Flags 3 -Proxy 'http=web.contoso.com:80' }
+                    $p = Get-CEProxySetting -Uri ([Uri]'https://baseline.engramic.ai/v1/firmware/dell/0CF1')
+                    $p.Mode | Should -Be 'Direct' -Because 'as in WinHTTP, the http= entry does not apply to https'
+                    $p.UseDefaultCredentials | Should -BeFalse
+                    $p = Get-CEProxySetting -Uri ([Uri]'http://intranet.contoso.com/x')
+                    $p.Mode | Should -Be 'Proxy'
+                    $p.Address.Authority | Should -Be 'web.contoso.com'
+                }
+                finally { (Get-CEConfig).network = $saved }
+            }
+        }
+
+        It 'refuses an https proxyUrl with a warning that says to use the http address' {
+            # .NET Framework (Windows PowerShell 5.1, which runs the scheduled audit) throws for a
+            # proxy at an https address, so every request would fail.
+            InModuleScope CEAudit {
+                $saved = (Get-CEConfig).network
+                try {
+                    Mock Test-CEIsSystem { $false }
+                    (Get-CEConfig).network = [pscustomobject]@{ proxyUrl = 'https://proxy.contoso.com:8443'; useWinHttpProxyWhenSystem = $true }
+                    $p = Get-CEProxySetting -Uri ([Uri]'https://baseline.engramic.ai/x') -WarningVariable warned -WarningAction SilentlyContinue
+                    $p.Mode | Should -Be 'System'
+                    "$warned" | Should -Match 'http://'
+                    "$warned" | Should -Match 'Windows PowerShell'
+                }
+                finally { (Get-CEConfig).network = $saved }
+            }
+        }
+
+        It 'builds the HTTP handler from the proxy setting and sends Windows sign-in only to a proxy allowed it: <Name>' -ForEach @(
+            @{ Name = 'network.json proxy'; Setting = @{ Mode = 'Proxy'; Address = [Uri]'http://configured.contoso.com:3128'; Source = 'network.json'; UseDefaultCredentials = $false }; UseProxy = $true; SignInToProxy = $false }
+            @{ Name = 'network.json proxy with proxyUseDefaultCredentials'; Setting = @{ Mode = 'Proxy'; Address = [Uri]'http://configured.contoso.com:3128'; Source = 'network.json'; UseDefaultCredentials = $true }; UseProxy = $true; SignInToProxy = $true }
+            @{ Name = 'WinHTTP proxy'; Setting = @{ Mode = 'Proxy'; Address = [Uri]'http://proxy.contoso.com:8080'; Source = 'WinHTTP'; UseDefaultCredentials = $true }; UseProxy = $true; SignInToProxy = $true }
+            @{ Name = 'direct'; Setting = @{ Mode = 'Direct'; Address = $null; Source = 'WinHTTP'; UseDefaultCredentials = $false }; UseProxy = $false; SignInToProxy = $null }
+            @{ Name = 'system default'; Setting = @{ Mode = 'System'; Address = $null; Source = ''; UseDefaultCredentials = $false }; UseProxy = $true; SignInToProxy = $null }
+        ) {
+            InModuleScope CEAudit -Parameters @{ Setting = $Setting; UseProxy = $UseProxy; SignInToProxy = $SignInToProxy } {
+                param($Setting, $UseProxy, $SignInToProxy)
+                $handler = New-CEHttpHandler -Proxy $Setting
+                try {
+                    $handler.UseDefaultCredentials | Should -BeFalse -Because 'the site itself never gets the Windows sign-in'
+                    $handler.UseProxy | Should -Be $UseProxy
+                    if ($Setting.Mode -eq 'Proxy') {
+                        $handler.Proxy | Should -BeOfType ([System.Net.WebProxy])
+                        $handler.Proxy.Address.Authority | Should -Be $Setting.Address.Authority
+                        $handler.Proxy.UseDefaultCredentials | Should -Be $SignInToProxy
+                        $handler.Proxy.BypassProxyOnLocal | Should -BeTrue
+                    }
+                    else {
+                        $handler.Proxy | Should -Not -BeOfType ([System.Net.WebProxy]) -Because 'no proxy of our own is set'
+                    }
+                }
+                finally { $handler.Dispose() }
+            }
+        }
+
+        It 'sends each request through a handler built from the proxy setting for its address' {
+            InModuleScope CEAudit {
+                $real = ${function:Invoke-CEHttpRequest}
+                Mock Get-CEProxySetting { @{ Mode = 'Direct'; Address = $null; Source = 'WinHTTP'; UseDefaultCredentials = $false } }
+                Mock New-CEHttpHandler { Add-Type -AssemblyName System.Net.Http; [System.Net.Http.HttpClientHandler]::new() }
+                $r = & $real -Uri 'http://localhost:1/v1/firmware/dell/0CF1' -TimeoutSeconds 5
+                $r.StatusCode | Should -Be 0
+                Should -Invoke Get-CEProxySetting -Times 1 -Exactly -ParameterFilter { $Uri.AbsoluteUri -eq 'http://localhost:1/v1/firmware/dell/0CF1' }
+                Should -Invoke New-CEHttpHandler -Times 1 -Exactly -ParameterFilter { $Proxy.Mode -eq 'Direct' }
+            }
+            # No other code builds a handler, so the checks above cover every request.
+            $text = Get-Content -LiteralPath (Join-Path (Join-Path (Join-Path (Join-Path $script:RepoRoot 'src') 'CEAudit') 'Private') '14-ServiceClient.ps1') -Raw
+            ([regex]::Matches($text, 'HttpClientHandler\]::new')).Count | Should -Be 1
+        }
+
+        It 'ships network.json with no proxy and the WinHTTP fallback on' {
+            $cfg = Get-Content (Join-Path (Join-Path $script:RepoRoot 'config') 'network.json') -Raw | ConvertFrom-Json
+            $cfg.proxyUrl | Should -Be ''
+            $cfg.proxyUseDefaultCredentials | Should -BeFalse
+            $cfg.useWinHttpProxyWhenSystem | Should -BeTrue
+        }
+
+        It 'keeps the firmware catalog wrapper: throws on network errors with the proxy hint' {
+            InModuleScope CEAudit {
+                Mock Invoke-CEHttpRequest { @{ StatusCode = 0; Body = ''; ETag = ''; Error = 'No such host is known. If this device uses a proxy, set proxyUrl in network.json.' } }
+                { Invoke-CEHttpGet -Uri 'https://baseline.engramic.ai/v1/firmware/dell/0CF1' } | Should -Throw '*proxyUrl in network.json*'
+                Mock Invoke-CEHttpRequest { @{ StatusCode = 304; Body = ''; ETag = '"abc"'; Error = '' } }
+                $r = Invoke-CEHttpGet -Uri 'https://baseline.engramic.ai/v1/firmware/dell/0CF1' -ETag '"abc"'
+                $r.StatusCode | Should -Be 304
+                $r.ETag | Should -Be '"abc"'
+                Should -Invoke Invoke-CEHttpRequest -Times 1 -Exactly -ParameterFilter { $ETag -eq '"abc"' -and $MaxBytes -eq 4194304 }
+            }
+        }
+
+        It 'reports a network failure as data, never an exception' {
+            InModuleScope CEAudit {
+                # The real function (the tripwire mock stands in front of it): nothing listens on port 1.
+                $real = ${function:Invoke-CEHttpRequest}
+                $r = & $real -Uri 'http://localhost:1/v1/firmware/dell/0CF1' -TimeoutSeconds 5
+                $r.StatusCode | Should -Be 0
+                $r.Error | Should -Match 'proxyUrl in network\.json'
+            }
+        }
+
+        It 'sends every service request through the shared client' {
+            # One place applies the proxy, TLS 1.2 on Windows PowerShell 5.1 and the size limits.
+            $src = Join-Path (Join-Path $script:RepoRoot 'src') 'CEAudit'
+            $problems = foreach ($file in Get-ChildItem -Path $src -Recurse -Filter '*.ps1') {
+                if ($file.Name -eq '14-ServiceClient.ps1') { continue }
+                $text = Get-Content -LiteralPath $file.FullName -Raw
+                foreach ($pattern in @('Net\.Http\.HttpClient\b', 'Net\.WebClient\b', '\bInvoke-WebRequest\b', '\bInvoke-RestMethod\b')) {
+                    if ($text -match $pattern) { "$($file.Name) matches $pattern" }
+                }
+            }
+            @($problems) -join "`n" | Should -BeNullOrEmpty
         }
     }
 }
@@ -4454,6 +6323,110 @@ Describe 'Security review fixes' {
                 Test-CEDataPathTrusted -Path 'C:\ProgramData\EngramicBaseline\config' | Should -BeTrue
             }
         }
+
+        It 'loads a config override when elevated only if the data folder, the config folder and the file are admin-only' {
+            # A file keeps the owner who created it, so a file a standard user dropped into the config
+            # folder before it was locked must be refused on its own, as pack files are.
+            $data = Join-Path $TestDrive 'per-file-override'
+            $cfgDir = Join-Path $data 'config'
+            New-Item -ItemType Directory -Force -Path $cfgDir | Out-Null
+            Set-Content -LiteralPath (Join-Path $cfgDir 'firmware-catalog.json') -Value '{ "baseUrl": "https://catalog.example.com" }'
+            Set-Content -LiteralPath (Join-Path $cfgDir 'network.json') -Value '{ "proxyUrl": "http://proxy.contoso.com:3128" }'
+            Set-Content -LiteralPath (Join-Path $cfgDir 'thresholds.jsonbak') -Value '{ "not": "config" }'
+            $global:TestOverrideRoot = $data
+            InModuleScope CEAudit -Parameters @{ Data = $data } {
+                param($Data)
+                $script:CEDataRootOverride = $Data
+                try {
+                    Mock Test-CEIsAdmin { $true }
+                    Mock Get-CEPathAclProblem { if ($Path -like '*firmware-catalog.json') { @("$Path is owned by S-1-5-21-1-2-3-1001") } }
+                    Get-CEConfig -Force -WarningVariable warned -WarningAction SilentlyContinue | Out-Null
+                    (Get-CEConfig).'firmware-catalog'.baseUrl | Should -Be 'https://baseline.engramic.ai' -Because 'a user-owned file is refused'
+                    (Get-CEConfig).network.proxyUrl | Should -Be 'http://proxy.contoso.com:3128' -Because 'an admin-only file beside it still loads'
+                    ($warned -join ' ') | Should -Match 'firmware-catalog\.json'
+                    Should -Invoke Get-CEPathAclProblem -ParameterFilter { $Path -like '*network.json' }
+                    Should -Invoke Get-CEPathAclProblem -Times 0 -Exactly -ParameterFilter { $Path -like '*.jsonbak' } -Because 'only .json files are config'
+                    (Get-CEConfig).Keys | Should -Not -Contain 'thresholds.jsonbak'
+
+                    Mock Get-CEPathAclProblem { if ($Path -eq $global:TestOverrideRoot) { @("$Path is owned by S-1-5-21-1-2-3-1001") } }
+                    Get-CEConfig -Force -WarningAction SilentlyContinue | Out-Null
+                    (Get-CEConfig).network.proxyUrl | Should -Be '' -Because 'whoever owns the data folder could replace the config folder'
+
+                    Mock Get-CEPathAclProblem { }
+                    Get-CEConfig -Force | Out-Null
+                    (Get-CEConfig).'firmware-catalog'.baseUrl | Should -Be 'https://catalog.example.com'
+                    (Get-CEConfig).network.proxyUrl | Should -Be 'http://proxy.contoso.com:3128'
+                }
+                finally { $script:CEDataRootOverride = $null; Get-CEConfig -Force -WarningAction SilentlyContinue | Out-Null }
+            }
+        }
+
+        It 'refuses config overrides when elevated if the data folder or the config folder is a link' {
+            # A standard user can plant a junction at %ProgramData%\EngramicBaseline. Its own permissions
+            # can be locked while the folder it leads to stays theirs, so a link is refused whatever its ACL.
+            $target = Join-Path $TestDrive 'bob-data'
+            New-Item -ItemType Directory -Force -Path (Join-Path $target 'config') | Out-Null
+            Set-Content -LiteralPath (Join-Path (Join-Path $target 'config') 'network.json') -Value '{ "proxyUrl": "http://planted.contoso.com:3128" }'
+            $link = Join-Path $TestDrive 'linked-data'
+            New-Item -ItemType Junction -Path $link -Target $target | Out-Null
+            $real = Join-Path $TestDrive 'real-data'
+            New-Item -ItemType Directory -Force -Path $real | Out-Null
+            $configLink = Join-Path $real 'config'
+            New-Item -ItemType Junction -Path $configLink -Target (Join-Path $target 'config') | Out-Null
+            try {
+                InModuleScope CEAudit -Parameters @{ Target = $target; Link = $link; Real = $real } {
+                    param($Target, $Link, $Real)
+                    try {
+                        Mock Test-CEIsAdmin { $true }
+                        # Every ACL looks locked, as after an install locks a junction.
+                        Mock Get-CEPathAclProblem { }
+                        @(Get-CEDataPathProblem -Path $Link) -join ' ' | Should -Match 'is a link'
+                        @(Get-CEDataPathProblem -Path $Target).Count | Should -Be 0
+
+                        $script:CEDataRootOverride = $Link
+                        Get-CEConfig -Force -WarningVariable warned -WarningAction SilentlyContinue | Out-Null
+                        (Get-CEConfig).network.proxyUrl | Should -Be '' -Because 'the data folder is a link'
+                        "$warned" | Should -Match 'Ignoring config overrides'
+
+                        $script:CEDataRootOverride = $Real
+                        Get-CEConfig -Force -WarningAction SilentlyContinue | Out-Null
+                        (Get-CEConfig).network.proxyUrl | Should -Be '' -Because 'the config folder is a link'
+
+                        $script:CEDataRootOverride = $Target
+                        Get-CEConfig -Force | Out-Null
+                        (Get-CEConfig).network.proxyUrl | Should -Be 'http://planted.contoso.com:3128' -Because 'the same file loads from a real folder'
+                    }
+                    finally { $script:CEDataRootOverride = $null; Get-CEConfig -Force -WarningAction SilentlyContinue | Out-Null }
+                }
+            }
+            finally {
+                foreach ($j in @($link, $configLink)) { if (Test-Path -LiteralPath $j) { [IO.Directory]::Delete($j, $false) } }
+            }
+        }
+
+        It 'refuses a pack under the data folder that is reached through a link' {
+            $data = Join-Path $TestDrive ([guid]::NewGuid().ToString('n'))
+            $elsewhere = Join-Path $TestDrive 'bob-packs'
+            New-Item -ItemType Directory -Force -Path $data, (Join-Path $elsewhere 'mypack') | Out-Null
+            Set-Content -LiteralPath (Join-Path (Join-Path $elsewhere 'mypack') 'pack.json') -Value '{ "id": "mypack", "name": "My pack", "version": "1.0.0" }'
+            $packsLink = Join-Path $data 'packs'
+            New-Item -ItemType Junction -Path $packsLink -Target $elsewhere | Out-Null
+            try {
+                InModuleScope CEAudit -Parameters @{ Data = $data } {
+                    param($Data)
+                    try {
+                        $script:CEDataRootOverride = $Data
+                        Mock Get-CEPathAclProblem { }
+                        $pack = @(Get-CEPackCandidate | Where-Object { $_.Id -eq 'mypack' })
+                        $pack.Count | Should -Be 1
+                        $pack[0].Status | Should -Be 'Skipped'
+                        $pack[0].Reason | Should -Match 'is a link'
+                    }
+                    finally { $script:CEDataRootOverride = $null }
+                }
+            }
+            finally { [IO.Directory]::Delete($packsLink, $false) }
+        }
     }
 }
 
@@ -4616,6 +6589,32 @@ Describe 'Elevated audits cannot be steered by the environment or PATH' {
                 $r.Status | Should -Be 'Failed'
                 "$($r.Message)" | Should -Match 'not signed by Microsoft, so it was not run'
                 Should -Invoke Invoke-CENative -Times 0 -Exactly
+            }
+        }
+
+        It 'runs dsregcmd only from System32 (or Sysnative), signed by Microsoft Windows' {
+            $text = Get-Content (Join-Path (Join-Path (Join-Path (Join-Path $script:RepoRoot 'src') 'CEAudit') 'Private') '02-DeviceContext.ps1') -Raw
+            $text | Should -Not -Match "-FilePath\s+'dsregcmd(\.exe)?'" -Because 'never through PATH'
+            InModuleScope CEAudit {
+                $system = [Environment]::GetFolderPath('System')
+                $sysnative = Join-Path ([Environment]::GetFolderPath('Windows')) 'Sysnative'
+                foreach ($c in @(Get-CEDsregCandidate)) {
+                    [IO.Path]::IsPathRooted($c) | Should -BeTrue
+                    (Split-Path -Parent $c) | Should -BeIn @($system, $sysnative)
+                    (Split-Path -Leaf $c) | Should -Be 'dsregcmd.exe'
+                }
+
+                Mock Resolve-CETrustedTool { [pscustomobject]@{ Path = $null; Refused = @('C:\Windows\System32\dsregcmd.exe') } }
+                (Get-CEDsregStatus).Count | Should -Be 0
+                Should -Invoke Invoke-CENative -Times 0 -Exactly
+                Should -Invoke Resolve-CETrustedTool -Times 1 -Exactly -ParameterFilter { $Publisher -contains 'Microsoft Windows' -and @($Candidate | Where-Object { $_ -notmatch 'dsregcmd\.exe$' }).Count -eq 0 }
+
+                Mock Resolve-CETrustedTool { [pscustomobject]@{ Path = 'C:\Windows\System32\dsregcmd.exe'; Refused = @() } }
+                Mock Invoke-CENative { [pscustomobject]@{ ExitCode = 0; Output = @('             AzureAdJoined : YES', '          DomainJoined : NO') } }
+                $r = Get-CEDsregStatus
+                $r['AzureAdJoined'] | Should -Be 'YES'
+                $r['DomainJoined'] | Should -Be 'NO'
+                Should -Invoke Invoke-CENative -Times 1 -Exactly -ParameterFilter { $FilePath -eq 'C:\Windows\System32\dsregcmd.exe' }
             }
         }
 
@@ -4792,7 +6791,9 @@ throw 'boom'
             @(Test-CEAdminOnlyAcl -Owner $admins -Rules @(& $rule $users 1180063)) | Should -Match 'writable by S-1-5-32-545' -Because 'Modify includes write'
             @(Test-CEAdminOnlyAcl -Owner $admins -Rules @(& $rule $user 0x10000000)) | Should -Match 'writable' -Because 'GENERIC_ALL on inherit-only entries'
             @(Test-CEAdminOnlyAcl -Owner $admins -Rules @(& $rule 'S-1-3-0' 2032127)).Count | Should -Be 0 -Because 'CREATOR OWNER only affects new items'
-            @(Test-CEAdminOnlyAcl -Owner $admins -Rules @(& $rule $users 2032127 'Deny')).Count | Should -Be 0
+            @(Test-CEAdminOnlyAcl -Owner $admins -Rules @(& $rule $users 2032127 'Deny')).Count | Should -Be 0 -Because 'a deny against a standard user is harmless'
+            @(Test-CEAdminOnlyAcl -Owner $admins -Rules @(& $rule 'S-1-5-18' 278 'Deny')) | Should -Match 'denies S-1-5-18' -Because 'a deny against SYSTEM could freeze a forged file the tool cannot replace'
+            @(Test-CEAdminOnlyAcl -Owner $admins -Rules @(& $rule 'S-1-5-32-544' 278 'Deny')) | Should -Match 'denies S-1-5-32-544'
         }
     }
 

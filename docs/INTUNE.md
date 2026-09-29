@@ -27,6 +27,12 @@ Remediations (optional, daily)
 
 The full audit doesn't run inside the compliance script, because checking Windows Update can take minutes and discovery scripts have a 10-minute limit. The compliance script only reads the result of the last scheduled audit. If that result is more than a day old, the compliance script starts the audit task, so the next evaluation has fresh data. If no audit has succeeded for 72 hours, the device reports as **not compliant**. A broken install therefore can't pass silently.
 
+A failed audit is handled like this (see [When a failed audit makes a device non-compliant](#when-a-failed-audit-makes-a-device-non-compliant)):
+
+- **One failed run never flips compliance.** Updates, restarts and network drops make the odd run fail, and the last good result still stands.
+- **A stale result does.** A failed run leaves `status.json` alone, so its age keeps growing until `CEAuditAgeHours` passes 72.
+- **An audit that keeps failing does, before its result goes stale:** 3 failed runs in a row (`CEAuditFailedRuns`), or 2 or more failed runs over 72 hours with no successful audit between them (`CEAuditFailingHours`).
+
 ### Shadow AI is per-user
 
 The AI agents, WSL distributions and MCP servers a person uses live in **their** profile and **their** WSL VM, which the SYSTEM audit sees only in part - each user gets their own WSL session. So those checks are **User-scope** (`Register-CECheck -Scope User`) and run as the signed-in user via `Invoke-CEUserProbe.ps1`, which writes `%LOCALAPPDATA%\EngramicBaseline\user-status.json` in the same shape as the device `status.json` (self-describing `checks`, derived `frameworks`) plus an **`ai`** block: the agents found, whether they are `contained` (none running as admin, no root distribution) and a `deviations` count, the `environments` they run in (WSL distributions, containers), the **MCP servers** each recognised agent is wired to (`ai.mcpServers`), an `ai.credentialsPlaintext` count of agent credentials found stored in plaintext (never the values themselves - see [SECURITY.md](../SECURITY.md)), and what could not be read in the profile (`ai.notRead`: each location once, what was not read, why and every way to read it; `ai.scanComplete` is `false` only when one of them could hide an AI tool, and then `agentsFound` and `contained` describe only what was seen; a location that could hide only a virtual machine or an MCP config is listed but leaves it `true`). The SYSTEM audit reports the same skips in SC-09 and FW-07, which are then Manual, in a note on UA-07 that leaves its status alone (so `CEMfaAttested` does not change with what a SYSTEM audit could read), and in the report's AI section; with nobody signed in at the console, FW-07 is Manual rather than Not applicable and the report says the list of AI tools may be incomplete, because the profile was not looked at. FW-07 is also Manual, never Not applicable, when Hyper-V virtual machines could not be listed (an audit without elevation cannot list them, and nor can one on a device with Hyper-V but not its PowerShell module): list them from an elevated prompt, or run the audit elevated. A user-context Intune remediation can key off `ai.deviations` / `ai.contained` (a plaintext credential also counts as a deviation) or the standalone `ai.credentialsPlaintext`. Both status files carry `platform` (`windows`), so results from other operating systems can sit alongside them later. The installer registers a second scheduled task, `\EngramicBaseline\User probe`, with a **Users-group principal** so each signed-in user runs their own instance in their own session (at logon and daily). Pass `-NoUserProbeTask` to `Install-CEChecker.ps1` to skip it.
@@ -45,9 +51,13 @@ The audit itself runs locally. One check calls out: **SU-08** asks the firmware 
 
 - **What is sent:** only the vendor and the 4-character model id in the URL, e.g. `GET /v1/firmware/dell/0CF1`. No serial number, device name, user or audit results.
 - **When:** at most every 12 hours per device (answers are cached in `%ProgramData%\EngramicBaseline\cache`), and only for Dell, HP and Lenovo hardware that isn't a virtual machine.
-- **Firewall and proxy:** allow outbound HTTPS (TCP 443) to `baseline.engramic.ai`. The audit runs as **SYSTEM**, which doesn't pick up proxy settings configured for signed-in users, so on networks that only reach the internet through a proxy, set a machine-wide proxy or allow the domain directly.
+- **Firewall and proxy:** allow outbound HTTPS (TCP 443) to `baseline.engramic.ai`. The audit runs as **SYSTEM**, which doesn't pick up proxy settings configured for signed-in users. As SYSTEM it uses the machine's WinHTTP proxy (`netsh winhttp set proxy`, including its bypass list and any per-scheme entries) when one is set. Otherwise deploy `%ProgramData%\EngramicBaseline\config\network.json` with `proxyUrl` (see [Config overrides and packs](#config-overrides-and-packs) for how), or allow the domain directly. Give the proxy's `http://` address: requests to the catalog still go through it encrypted, and Windows PowerShell, which runs the audit, can't use an `https://` proxy address. Add `"proxyUseDefaultCredentials": true` only if that proxy needs Windows sign-in; as SYSTEM that is the computer account. The WinHTTP proxy always gets it, since only an administrator can set it.
+
+  ```json
+  { "proxyUrl": "http://proxy.contoso.com:8080", "proxyUseDefaultCredentials": false, "useWinHttpProxyWhenSystem": true }
+  ```
 - **If it can't connect:** nothing fails. SU-08 uses the cached answer if it has one, otherwise it falls back to judging the BIOS by its release date, and records the reason in the finding's evidence.
-- **To turn it off** or point it at your own firmware catalog service, deploy `%ProgramData%\EngramicBaseline\config\firmware-catalog.json` with `baseUrl` set to `""` or to your own https address. Like every file in that folder, it replaces the packaged copy rather than merging with it, so include every setting:
+- **To turn it off** or point it at your own firmware catalog service, deploy `%ProgramData%\EngramicBaseline\config\firmware-catalog.json` (see [Config overrides and packs](#config-overrides-and-packs)) with `baseUrl` set to `""` or to your own https address. Like every file in that folder, it replaces the packaged copy rather than merging with it, so include every setting:
 
   ```json
   { "baseUrl": "", "timeoutSeconds": 20, "cacheHours": 12, "maxRecordAgeDays": 7 }
@@ -64,7 +74,7 @@ Get-ChildItem -Recurse | Unblock-File        # only if you downloaded a zip
 
 The script rehearses the whole deployment the way Intune does it:
 
-1. **Install:** installs from a 32-bit host, to prove the switch to 64-bit works.
+1. **Install:** installs from a 32-bit host, to prove the switch to 64-bit works, and checks that any config overrides staged in `data\config\` were deployed.
 2. **Detection:** checks the Win32 detection script reports the app as installed.
 3. **Audit:** runs the scheduled audit **as SYSTEM** and waits for `status.json`.
 4. **Discovery:** runs the compliance discovery script as SYSTEM in both the **32-bit and 64-bit** hosts, and checks the output is valid single-line JSON under 1 MB.
@@ -100,7 +110,24 @@ If you'd rather not build it yourself, every release ships these same files: dow
 - `config/auto-remediation.json`: fixes the Remediations script may apply automatically (off by default).
 - `config/scheduled-audit.json`: checks to skip in the unattended audit.
 
-You can also change settings on individual devices without rebuilding. A file with the same name in `%ProgramData%\EngramicBaseline\config\` replaces the packaged one.
+### Config overrides and packs
+
+A file with the same name in `%ProgramData%\EngramicBaseline\config\` replaces the packaged one, so a setting can differ from the packaged default without editing it. There are two supported ways to put such a file on devices:
+
+- **Staged in the package (recommended).** Before building, put the `.json` files in a `data\config\` folder at the top of the repository, for example `data\config\cloud-services.json`. `Build-IntunePackage.ps1` packs them, and every install and upgrade copies them into `%ProgramData%\EngramicBaseline\config\` once it has set up the locked data folder, replacing a file of the same name. They reach every device the app is assigned to, whatever order Intune runs things in, and they survive a data folder being moved aside (below). Removing a file from the package does not delete the copy already on devices. `Test-IntuneDeployment.ps1` installs them too, and checks they arrived.
+- **Deployed after the app.** To vary a setting from device to device, or to install a pack into `%ProgramData%\EngramicBaseline\packs\`, deploy the files as SYSTEM, and only once the app is installed: as a Win32 app that has Engramic Baseline as a dependency, or as a Remediation that runs on a schedule and puts the files back if they are missing. Do not use a one-off platform script. Intune can run it before the Win32 app during enrolment, and the folder it makes is then moved aside when the app installs, taking the files with it. The SYSTEM audit only uses a file owned by SYSTEM or Administrators; one an administrator copies in by hand on a Windows client is owned by their own account, so make Administrators its owner (`icacls <file> /setowner *S-1-5-32-544`).
+
+The SYSTEM audit ignores (with a warning) any file in the config folder that a standard user owns or can change, or a folder that is a link. The Remediations detection script and the compliance discovery script, running as SYSTEM, likewise ignore a `status.json` that administrators don't own, that anyone else can change, or that carries a deny entry against SYSTEM or Administrators.
+
+### How the install protects the data folder
+
+The install creates `%ProgramData%\EngramicBaseline` and every folder the tool keeps (`logs`, `reports`, `config`, `cache`, `packs`) with their locked permissions **and owner (Administrators) applied in the same call that makes them**, so there is never a moment when a standard user can write them or add to them, and the owner is never changed afterwards; only `config` also lets Users read.
+
+Upgrades keep the data folder in place, so your config overrides, installed packs and report history are preserved. The install records in `HKLM\SOFTWARE\EngramicBaseline.DataRoot` (a key only administrators can write, kept separate so an uninstall without `-RemoveData` leaves it) that it sealed the folder at birth; a later install - including a reinstall or an Intune supersedence that uninstalls the old version first - keeps the folder as long as it is still owned by SYSTEM or Administrators, is not a link, and grants no non-administrator any write, delete, change-permissions or take-ownership right. A read-only entry an administrator adds (by browsing the folder in Explorer, or granting a helpdesk group read) does **not** force it aside; nor does locking it with `icacls`. It never takes an *untrusted* folder back in place: a junction or symbolic link found where the folder should be is removed as a link (never what it points at), and any real folder that is not the sealed, trusted one is moved aside whole to `%ProgramData%\EngramicBaseline.untrusted-<id>` and a fresh, locked folder made instead. A folder inside it that has been tampered with is moved to `%ProgramData%\EngramicBaseline.untrusted-<id>-<name>` in the same way: a moved-aside folder is never left inside the data folder.
+
+**When the folder is moved aside.** It always happens the first time this version installs on a device where `%ProgramData%\EngramicBaseline` already exists without the seal: on the first upgrade from an earlier version, and on a new device where a script made the folder before the app installed. It also happens if the folder has been tampered with, and the scheduled audit does the same if it finds the folder, or one of its folders, untrusted. Only the data folder and what is in it are ever moved aside or locked (`%ProgramData%\EngramicBaseline`, or the folder the scheduled audit is given with `-DataRoot`): a folder anywhere else, such as one named with `Write-CEStatus -Path`, is created if it is missing and otherwise left exactly as it is. **Nothing in a moved-aside folder is carried over** - not reports, logs, config overrides or packs, and not even a file that now looks administrator-owned and locked. While a standard user could change the folder, they could give themselves rights over a file an administrator then put in it, change the file and lock it again, and a handle they opened keeps working after any later lock; nothing about the file shows whether that happened. So the install copies in the config overrides staged in the package again (above); redeploy anything else after the app, and `-RunNow` and the next scheduled audit write a new `status.json` within minutes. Every move-aside is recorded in the install log (`logs\install-*.log`) or the audit's log (`logs\audit-*.log`), and in the Application event log (source `EngramicBaseline`, event ID 1003), naming the folder it went to. Check that folder, then delete it.
+
+`Uninstall-CEChecker.ps1 -RemoveData` removes the data folder only when the install sealed it and it is still locked, and it checks each folder again just before reading it, leaving in place (and reporting) any folder a standard user could change; it also drops the seal. Any `EngramicBaseline.untrusted-*` quarantine folder beside the data folder is **left for you to check and delete by hand**, because it holds a tree a standard user may own - the uninstaller never deletes such a tree as SYSTEM.
 
 ## 3. Create the Win32 app
 
@@ -119,12 +146,13 @@ You can also change settings on individual devices without rebuilding. A file wi
 The installer:
 
 - **Program files:** copies the tool to `C:\Program Files\EngramicBaseline`. The folder's permissions only allow administrators and SYSTEM to change it, because the scheduled task runs these scripts as SYSTEM.
-- **Data folder:** creates `C:\ProgramData\EngramicBaseline`, readable by administrators only (except `config\`).
+- **Data folder:** creates `C:\ProgramData\EngramicBaseline`, readable by administrators only (except `config\`), and copies in any config overrides staged in the package's `data\config\` folder.
 - **Background tasks:** registers the event log source and two scheduled tasks. `\EngramicBaseline\Audit` runs as SYSTEM daily at 11:00 with up to 2 hours' random delay, 15 minutes after start-up, when missed, and on battery. `\EngramicBaseline\User probe` runs as each signed-in user (Users-group principal, non-elevated) at logon and daily, for the shadow-AI/WSL User-scope checks. Skip the second with `-NoUserProbeTask`.
 - **Start menu:** adds a Start menu shortcut so users can open the desktop app and fix things themselves.
 - **Detection value:** writes the detection value `HKLM\SOFTWARE\EngramicBaseline\Version`.
+- **No downgrades:** if a newer version is already installed, changes nothing and exits `0`.
 
-Options: `-DailyAt 13:30`, `-RandomDelayMinutes 60`, `-NoShortcut`, `-NoScheduledTask`, `-InstallPath`.
+Options: `-DailyAt 13:30`, `-RandomDelayMinutes 60`, `-NoShortcut`, `-NoScheduledTask`, `-InstallPath`, `-AllowDowngrade` (install over a newer version).
 
 To upgrade, bump `ModuleVersion` in `src/CEAudit/CEAudit.psd1` and `$required` in `intune/Detect-CEChecker.ps1` (the build refuses to run if they differ). Then rebuild, and use Intune's *supersedence* or replace the package content. The installer upgrades in place.
 
@@ -141,9 +169,9 @@ To upgrade, bump `ModuleVersion` in `src/CEAudit/CEAudit.psd1` and `$required` i
 
 | Rules file | Device is compliant when |
 |---|---|
-| `compliance-rules-autofail-only.json` (**start here**) | The tool is installed, an audit ran within 72 hours, there are no automatic-fail items (overdue updates or apps), Windows is supported, and antivirus is on and current |
+| `compliance-rules-autofail-only.json` (**start here**) | The tool is installed, an audit ran within 72 hours and isn't repeatedly failing, there are no automatic-fail items (overdue updates or apps), Windows is supported, and antivirus is on and current |
 | `compliance-rules.json` | All of the above, **plus** no failing Cyber Essentials checks, the everyday account is a standard user, and MFA is attested for cloud services |
-| `compliance-rules-frameworks.json` | Installed, audited within 72 hours, no automatic-fail or failing controls, **and** at least 80% of the applicable Cyber Essentials v3.3 controls met (`CEv33MetPct`). Shadow-AI posture is enforced separately, via a user-context remediation on `ai.deviations` (SYSTEM compliance can't see per-user AI). |
+| `compliance-rules-frameworks.json` | Installed, audited within 72 hours and not repeatedly failing, no automatic-fail or failing controls, **and** at least 80% of the applicable Cyber Essentials v3.3 controls met (`CEv33MetPct`). Shadow-AI posture is enforced separately, via a user-context remediation on `ai.deviations` (SYSTEM compliance can't see per-user AI). |
 
 Suggested rollout:
 
@@ -158,7 +186,9 @@ Suggested rollout:
 | `CECheckerInstalled` | Boolean | Detection key present |
 | `CEToolVersion` | String | Version that produced the last audit |
 | `CEAuditAgeHours` | Int64 | Hours since the last successful audit (99999 if none) |
-| `CEAuditError` | Boolean | The most recent run failed (see `logs\`) |
+| `CEAuditError` | Boolean | The most recent run failed (see `logs\`). For reporting only: no rules file uses it, because one failed run shouldn't flip compliance |
+| `CEAuditFailedRuns` | Int64 | SYSTEM audits that have failed in a row since the last successful one (0 when the last run succeeded; 99999 if `last-error.json` can't be trusted) |
+| `CEAuditFailingHours` | Int64 | Hours since the first of those failed runs; 0 unless at least 2 runs have failed (99999 if unknown or `last-error.json` can't be trusted) |
 | `CEAutoFailCount` | Int64 | v3.3 automatic-fail controls currently failing (-1 if unknown) |
 | `CEFailCount` | Int64 | Failing Cyber Essentials controls (-1 if unknown) |
 | `CEReviewCount` | Int64 | Cyber Essentials controls needing review or attestation |
@@ -174,6 +204,20 @@ Suggested rollout:
 | `CEFailing` | String | IDs of failing findings (up to 400 characters) |
 
 Any of these can be used in your own rules file. Unknown values are always reported as failing values.
+
+### When a failed audit makes a device non-compliant
+
+Every rules file has these three audit rules. Intune requires all of a policy's rules to pass, so any one of them makes the device non-compliant:
+
+| Rule | Non-compliant when | Why |
+|---|---|---|
+| `CEAuditAgeHours` LessEquals 72 | No audit has succeeded for more than 72 hours | The last result is too old to describe the device |
+| `CEAuditFailedRuns` LessThan 3 | 3 or more runs in a row have failed | The audit is broken, not unlucky; don't wait for the result to go stale |
+| `CEAuditFailingHours` LessThan 72 | 2 or more runs have failed and the first was 72 or more hours ago, with no successful audit between | A device that is often off may fail only once or twice in 3 days. With the default audit-age limit this usually coincides with a stale result, but it still holds if you relax that limit |
+
+One failed run changes none of these, so a single transient failure never flips compliance; `CEAuditError` reports it without failing a rule. The scheduled audit keeps the count in `last-error.json`: the number of failed runs in a row and the UTC time of the first, carried over from the previous `last-error.json` only if that file passes the same trust check as `status.json` (otherwise it is moved aside to `C:\ProgramData\EngramicBaseline.untrusted-<id>-last-error.json`, event 1003, and the count starts again at 1). A successful audit deletes it, which resets both counts. The discovery script applies that trust check too: if `last-error.json` could have been changed by a standard user, it reports the device as having no trustworthy data, like an untrusted `status.json`. The per-user probe (`Invoke-CEUserProbe.ps1`) keeps its own `last-error.json` in the user's profile and never affects these counts. If the audit can't even set up the data folder, it writes no `last-error.json` (see the scheduled task's exit code and logs), and `CEAuditAgeHours` catches it.
+
+To change the thresholds, edit the operands in your copy of the rules file, as for the audit age.
 
 ## 5. Remediations (optional)
 
@@ -193,6 +237,8 @@ The **Pre-remediation detection output** column then gives you one line per devi
 FAIL | autofail=2 fail=7 review=4 | age=5h | TC2=Likely fail TC3=Likely pass TC4=Check TC5=Likely fail | v0.3.2 | SU-03:Overdue,SU-05:7zip-7zip,UA-01
 ```
 
+A device also counts as not ready, with `LAST_RUN_ERROR` at the start of its line, when an audit failed after the last `status.json` was written, so the remediation script runs a fresh audit.
+
 Out of the box, the remediation script only runs a fresh audit. To have it fix things automatically, set `"enabled": true` in `config/auto-remediation.json` and copy the fixes you want from `suggested` into `remediationIds`. High-risk fixes are always skipped. Every change is written to an undo log in the device's report folder, and `Restore-CEChangeset.ps1` can roll it back.
 
 ## Where to look on a device
@@ -202,8 +248,8 @@ Out of the box, the remediation script only runs a fresh audit. To have it fix t
 | Latest result | `C:\ProgramData\EngramicBaseline\status.json` |
 | Full reports | `C:\ProgramData\EngramicBaseline\reports\` (last 14 kept) |
 | Run logs | `C:\ProgramData\EngramicBaseline\logs\` |
-| Last failure | `C:\ProgramData\EngramicBaseline\last-error.json` |
-| Event log | Application log, source `EngramicBaseline`: 1000 clean (no attention, no auto-fail), 1001 attention items present, 1002 auto-fail controls failing. The event text includes the status JSON, so the Azure Monitor Agent / Log Analytics can collect it with a Windows event data collection rule. |
+| Last failure | `C:\ProgramData\EngramicBaseline\last-error.json`: the error, `FailedRuns` (failed runs in a row) and `FirstFailure` (UTC). Removed by the next successful audit |
+| Event log | Application log, source `EngramicBaseline`: 1000 clean (no attention, no auto-fail), 1001 attention items present, 1002 auto-fail controls failing. Their text includes the status JSON, so the Azure Monitor Agent / Log Analytics can collect it with a Windows event data collection rule. 1003 means something in the data folder could not be trusted: a link was removed, or the folder (or a folder or file in it) was moved aside, and the text names where to. |
 | Run it now | `Start-ScheduledTask -TaskPath '\EngramicBaseline\' -TaskName Audit` |
 
 ## Behaviour when running as SYSTEM
@@ -218,7 +264,8 @@ Out of the box, the remediation script only runs a fresh audit. To have it fix t
 |---|---|
 | Win32 app shows *failed* | `C:\ProgramData\EngramicBaseline\logs\install-*.log` and `C:\ProgramData\Microsoft\IntuneManagementExtension\Logs\AppWorkload.log` |
 | Compliance shows *error* / *not applicable* for the custom settings | The discovery script didn't return JSON; see `HealthScripts.log` in the IME logs folder |
-| `CEAuditAgeHours` keeps growing | `Get-ScheduledTaskInfo -TaskPath '\EngramicBaseline\' -TaskName Audit`, then `last-error.json` and `logs\audit-*.log` |
+| `CEAuditAgeHours`, `CEAuditFailedRuns` or `CEAuditFailingHours` non-compliant | `Get-ScheduledTaskInfo -TaskPath '\EngramicBaseline\' -TaskName Audit`, then `last-error.json` and `logs\audit-*.log` |
 | SU-08 only reports BIOS age, never "latest for this model" | Open the device's `findings.json` and look for the `Firmware catalog:` line in the SU-08 evidence. `Error - Firmware catalog unreachable` means the device can't reach `baseline.engramic.ai` over HTTPS as SYSTEM (see [Network access](#network-access)); `Unsupported` means the make isn't Dell, HP or Lenovo |
+| A config override or pack is missing after the install | Look for event 1003 in the Application log, or a warning in `logs\install-*.log`: the data folder was moved aside to `C:\ProgramData\EngramicBaseline.untrusted-<id>`. Stage config overrides in the package, or deploy them after the app (see [Config overrides and packs](#config-overrides-and-packs)) |
 | Everything says `CEMfaAttested` is false | Expected until `config/cloud-services.json` records MFA for each service. Use the lenient rules until then. |
 | `CEMfaAttested` turned false after an upgrade | New AI tools in the catalog (for example AI browser extensions) can add services to UA-07. Attest MFA for the service in `config/cloud-services.json`. |

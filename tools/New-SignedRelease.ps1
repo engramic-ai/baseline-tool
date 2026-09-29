@@ -60,6 +60,11 @@ if ($dirty.Count -and -not $AllowDirtyTree) {
     throw ("The working tree has $($dirty.Count) uncommitted change(s), so this build could not be " +
         'reproduced from any commit. Commit them, or pass -AllowDirtyTree for a throwaway build.')
 }
+# data\config holds config overrides an organisation stages for its own package (docs/INTUNE.md),
+# which the build would pack. A release must never carry them, not even a throwaway one.
+if (@(Get-ChildItem -LiteralPath (Join-Path $repo 'data') -Recurse -File -Force -ErrorAction SilentlyContinue).Count) {
+    throw 'The data folder holds files (config overrides staged for a package), which the build would ship. Move them out of the tree before building a release.'
+}
 Write-Host ("Version   : {0}" -f $version)
 Write-Host ("Commit    : {0}{1}" -f $commit, $(if ($dirty.Count) { ' (DIRTY)' } else { '' }))
 Write-Host ("Signing   : {0}" -f $AzureMetadata)

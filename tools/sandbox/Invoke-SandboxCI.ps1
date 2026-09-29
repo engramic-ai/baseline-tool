@@ -27,7 +27,9 @@ New-Item -ItemType Directory -Path $results -Force | Out-Null
 
 $work = 'C:\work\baseline-tool'
 New-Item -ItemType Directory -Path $work -Force | Out-Null
-& robocopy.exe 'C:\baseline-tool' $work /E /NFL /NDL /NJH /NJS /XD .git output build .playwright-mcp | Out-Null
+# The repository's data folder (config overrides staged for a package) is left out, as a fresh CI
+# checkout has none: the rehearsal stages its own override below.
+& robocopy.exe 'C:\baseline-tool' $work /E /NFL /NDL /NJH /NJS /XD .git output build .playwright-mcp 'C:\baseline-tool\data' | Out-Null
 if ($LASTEXITCODE -ge 8) { throw "robocopy failed with exit code $LASTEXITCODE" }
 
 $modules = if (Test-Path 'C:\ps-modules') { 'C:\ps-modules' } else { '' }
@@ -93,15 +95,22 @@ foreach ($s in $shells) {
 }
 
 # --- Intune deployment rehearsal ------------------------------------------------------------------
+# Staged in the package's data\config folder, as ci.yml does: the install copies it into the locked
+# data folder. A file put in %ProgramData%\EngramicBaseline before the install would be moved aside.
 $override = @'
-$dir = Join-Path $env:ProgramData 'EngramicBaseline\config'
+$dir = Join-Path (Get-Location) 'data\config'
 New-Item -ItemType Directory -Path $dir -Force | Out-Null
 '{ "excludeCheckIds": ["SU-03"] }' | Set-Content (Join-Path $dir 'scheduled-audit.json')
 'skipping the online Windows Update search, as ci.yml does'
 '@
+# Build what ships, without the rehearsal's CI-only override, as ci.yml does.
+$build = @'
+Remove-Item -LiteralPath ./data -Recurse -Force -ErrorAction SilentlyContinue
+./intune/Build-IntunePackage.ps1 -DownloadTool
+'@
 Invoke-Step -Job 'Intune deployment rehearsal' -Name 'Skip the online Windows Update search' -Shell 'powershell.exe' -Script $override
 Invoke-Step -Job 'Intune deployment rehearsal' -Name 'Install, audit as SYSTEM, discovery, rules, uninstall' -Shell 'powershell.exe' -Script './intune/Test-IntuneDeployment.ps1 -TimeoutMinutes 20'
-Invoke-Step -Job 'Intune deployment rehearsal' -Name 'Build the Intune package' -Shell 'powershell.exe' -Script './intune/Build-IntunePackage.ps1 -DownloadTool'
+Invoke-Step -Job 'Intune deployment rehearsal' -Name 'Build the Intune package' -Shell 'powershell.exe' -Script $build
 
 # --- summary, the way the PR checks page would show it --------------------------------------------
 $jobs = @($steps | Group-Object Job | ForEach-Object { [pscustomobject]@{ Job = $_.Name; Ok = -not @($_.Group | Where-Object { -not $_.Ok }).Count; Seconds = ($_.Group | Measure-Object Seconds -Sum).Sum } })

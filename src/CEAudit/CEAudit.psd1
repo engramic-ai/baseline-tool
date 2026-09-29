@@ -12,7 +12,7 @@
         'New-CEChangeset', 'Export-CEReport', 'Invoke-CERemediation', 'Get-CERemediation',
         'Restore-CEUndoLog', 'Test-CEIsAdmin', 'Invoke-CEChangeset', 'Get-CEUndoLogs', 'Get-CESummary',
         'Get-CEStatusCheckMap', 'Get-CEFrameworkRollup', 'Get-CEAiPosture', 'Get-CEStatusStyle', 'Get-CESeverityStyle', 'Get-CEBucketStyle',
-        'ConvertTo-CEStatus', 'Write-CEStatus', 'Write-CEEventLog', 'Get-CEDataRoot', 'Get-CEToolVersion', 'Test-CEComplianceRules'
+        'ConvertTo-CEStatus', 'Write-CEStatus', 'Write-CEAuditFailure', 'Clear-CEAuditFailure', 'Write-CEEventLog', 'Get-CEDataRoot', 'Initialize-CEDataFolder', 'Remove-CEDataTree', 'Get-CEToolVersion', 'Test-CEComplianceRules'
     )
     CmdletsToExport   = @()
     VariablesToExport = @()

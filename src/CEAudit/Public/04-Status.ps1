@@ -183,20 +183,172 @@ function ConvertTo-CEStatus {
 }
 
 function Write-CEStatus {
-    <# Writes status.json atomically so readers never see a half-written file. #>
+    <#
+        Writes status.json atomically so readers never see a half-written file: to the data folder by
+        default, or to -Path. Its folder is made the way Initialize-CEDataFolder makes it: locked when
+        it is the data folder and the audit is elevated, and otherwise (a -Path somewhere else) only
+        created if it is missing and never moved aside or re-permissioned.
+    #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory)]$Status,
         [string]$Path = (Join-Path (Get-CEDataRoot) 'status.json')
     )
     $dir = Split-Path -Parent $Path
-    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    # Create the data folder the locked way (Initialize-CEDataFolder) so an elevated audit that makes
+    # it before the installer runs never leaves it briefly writable by a standard user. A folder
+    # outside the data folder is the caller's: Initialize-CEDataFolder only makes it if it is missing.
+    # A bare file name has no folder to make: it is written to the current location.
+    if ($dir) { Initialize-CEDataFolder -Path $dir | Out-Null }
     if ($PSCmdlet.ShouldProcess($Path, 'Write compliance status')) {
-        $tmp = "$Path.tmp"
-        $Status | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $tmp -Encoding UTF8
-        Move-Item -LiteralPath $tmp -Destination $Path -Force
+        # A name of its own each time: anything already at a fixed name (a folder a user made
+        # before the install locked the data folder, say) would make every write fail.
+        $tmp = '{0}.{1}.tmp' -f $Path, [guid]::NewGuid().ToString('n')
+        try {
+            $Status | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $tmp -Encoding UTF8
+            Move-Item -LiteralPath $tmp -Destination $Path -Force
+        }
+        catch {
+            Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+            throw
+        }
     }
     return $Path
+}
+
+function ConvertTo-CEUtcTime {
+    <# A time read from JSON (a string, or a DateTime that PowerShell 7's ConvertFrom-Json made) as UTC, or $null. #>
+    param($Value)
+    if ($Value -is [datetime]) { return $Value.ToUniversalTime() }
+    $time = [datetime]::MinValue
+    if ($Value -and [datetime]::TryParse([string]$Value, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind, [ref]$time)) {
+        return $time.ToUniversalTime()
+    }
+    return $null
+}
+
+function Get-CEAuditFailureProblem {
+    <#
+        '' when last-error.json at $Path may be read, replaced or deleted, or why not. It must be a
+        file, and when elevated it must pass the same trust check the Intune scripts apply to
+        status.json (Get-CEDataPathProblem: not a link, administrator-owned, no non-administrator
+        write, delete, change-permissions or take-ownership right, no deny against administrators).
+        A non-elevated run only affects its own user, so it trusts any file.
+    #>
+    param([Parameter(Mandatory)][string]$Path)
+    $attributes = [IO.File]::GetAttributes($Path)
+    if ($attributes -band [IO.FileAttributes]::ReparsePoint) { return "$Path is a link (junction or symbolic link)" }
+    if ($attributes -band [IO.FileAttributes]::Directory) { return "$Path is a folder, not a file" }
+    if (-not (Test-CEIsAdmin)) { return '' }
+    $problems = @(Get-CEDataPathProblem -Path $Path)
+    if ($problems.Count) { return [string]$problems[0] }
+    return ''
+}
+
+function Move-CEAuditFailureAside {
+    <#
+        Moves an untrusted last-error.json out of the data folder (Move-CEDataItemAside), never reading,
+        deleting or writing through it, and says so in a warning (the scheduled audit's log) and an
+        Application event, ID 1003, naming where it went. One outside the data folder (a -DataRoot that
+        is not Get-CEDataRoot) is never moved: Move-CEDataItemAside throws instead.
+    #>
+    param([Parameter(Mandatory)][string]$Path, [string]$Reason)
+    $aside = Move-CEDataItemAside -Path $Path
+    $notice = "Moved an untrusted $Path aside to $aside ($Reason). Its failed-run count is not used, so the count starts again; check it, then delete it."
+    Write-Warning $notice
+    Write-CEEventEntry -Id 1003 -Type Warning -Message "Engramic Baseline - data folder: $notice"
+}
+
+function Test-CEPathPresent {
+    <# Whether anything - a file, folder or link, even a link whose target is gone - is at $Path. #>
+    param([Parameter(Mandatory)][string]$Path)
+    try { [void][IO.File]::GetAttributes($Path); return $true }
+    catch { return $false }
+}
+
+function Write-CEAuditFailure {
+    <#
+        Records a failed machine (SYSTEM) audit in last-error.json in the data folder, with the run of
+        failures since the last successful audit: FailedRuns (failed runs in a row, this one included)
+        and FirstFailure (UTC time of the first of them), besides Time, Message and Where. A successful
+        audit removes the file (Clear-CEAuditFailure), so the count starts again at 1. Intune's
+        discovery script turns these into CEAuditFailedRuns and CEAuditFailingHours.
+
+        The previous file is read only when it passes the same trust check as status.json
+        (Get-CEAuditFailureProblem). One that fails it is moved aside out of the data folder, with a
+        warning and event 1003, never read, and the count starts again at 1. The new file is written
+        to a temporary name and renamed into place, so a reader never sees half of it. Only the
+        scheduled machine audit calls this: the per-user probe keeps its own last-error.json in the
+        user's profile, which never counts. Returns the record.
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory)][string]$DataRoot,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Message,
+        [AllowEmptyString()][string]$Where = '',
+        [datetime]$Now = [datetime]::UtcNow
+    )
+    $Now = $Now.ToUniversalTime()
+    if (Test-CEIsAdmin) {
+        $rootProblem = @(Get-CEDataPathProblem -Path $DataRoot)
+        if ($rootProblem.Count) { throw "Did not record the failure: $($rootProblem[0])" }
+    }
+    $path = Join-Path $DataRoot 'last-error.json'
+    $previous = $null
+    if (Test-CEPathPresent -Path $path) {
+        $problem = Get-CEAuditFailureProblem -Path $path
+        if ($problem) { Move-CEAuditFailureAside -Path $path -Reason $problem }
+        else {
+            try { $previous = Get-Content -LiteralPath $path -Raw -ErrorAction Stop | ConvertFrom-Json }
+            catch { Write-Warning "Could not read the previous $path, so the failed-run count starts again: $($_.Exception.Message)" }
+        }
+    }
+
+    $failedRuns = 1
+    $firstFailure = $Now
+    if ($previous) {
+        # A last-error.json from before failures were counted has no FailedRuns: it was one failure.
+        $runs = [long]0
+        if (-not [long]::TryParse([string](Get-CEObjectValue $previous 'FailedRuns' ''), [ref]$runs) -or $runs -lt 1) { $runs = 1 }
+        $failedRuns = [int][math]::Min($runs + 1, 1000000)
+        $first = ConvertTo-CEUtcTime (Get-CEObjectValue $previous 'FirstFailure')
+        if (-not $first) { $first = ConvertTo-CEUtcTime (Get-CEObjectValue $previous 'Time') }
+        if ($first -and $first -le $Now) { $firstFailure = $first }
+    }
+    $record = [pscustomobject][ordered]@{
+        Time         = $Now.ToString('o')
+        Message      = $Message
+        Where        = $Where
+        FailedRuns   = $failedRuns
+        FirstFailure = $firstFailure.ToString('o')
+    }
+    if ($PSCmdlet.ShouldProcess($path, 'Record the failed audit')) {
+        $tmp = '{0}.{1}.tmp' -f $path, [guid]::NewGuid().ToString('n')
+        try {
+            $record | ConvertTo-Json | Set-Content -LiteralPath $tmp -Encoding UTF8
+            Move-Item -LiteralPath $tmp -Destination $path -Force
+        }
+        catch {
+            Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+            throw
+        }
+    }
+    return $record
+}
+
+function Clear-CEAuditFailure {
+    <#
+        After a successful machine audit: removes last-error.json, so the next failure counts from 1.
+        One that fails the trust check (Get-CEAuditFailureProblem) is moved aside out of the data
+        folder with a warning and event 1003, never deleted.
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param([Parameter(Mandatory)][string]$DataRoot)
+    $path = Join-Path $DataRoot 'last-error.json'
+    if (-not (Test-CEPathPresent -Path $path)) { return }
+    $problem = Get-CEAuditFailureProblem -Path $path
+    if ($problem) { Move-CEAuditFailureAside -Path $path -Reason $problem; return }
+    if ($PSCmdlet.ShouldProcess($path, 'Remove the record of a failed audit')) { [IO.File]::Delete($path) }
 }
 
 function Write-CEEventLog {
@@ -205,7 +357,8 @@ function Write-CEEventLog {
         by the installer), so SIEM / Log Analytics can pick it up. Severity is
         derived from the controls, not a single verdict:
         1000 = clean (no attention, no auto-fail), 1001 = attention items,
-        1002 = auto-fail controls failing.
+        1002 = auto-fail controls failing. (1003 is a data folder moved aside,
+        written by Initialize-CEDataFolder and the installer.)
     #>
     [CmdletBinding()]
     param([Parameter(Mandatory)]$Status)
@@ -264,42 +417,6 @@ function Write-CEEventLog {
     $lines += "Report: $(Get-CEObjectValue $Status 'reportFolder')"
     $lines += ''
     $lines += ($Status | ConvertTo-Json -Depth 6 -Compress)
-    $message = $lines -join "`r`n"
-    if ($message.Length -gt 31000) { $message = $message.Substring(0, 31000) }
-    # Write via the low-level RegisterEventSource/ReportEvent API. The managed
-    # EventLog.WriteEntry / SourceExists enumerate every event log to find the
-    # source's log and throw when Security/State are inaccessible (hosted CI
-    # runners, restricted images), even to SYSTEM. RegisterEventSource opens the
-    # source directly and never enumerates.
-    $typeMap = @{ Error = [uint16]1; Warning = [uint16]2; Information = [uint16]4 }
-    try {
-        if (-not ('CEAudit.EventReporter' -as [type])) {
-            Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-namespace CEAudit {
-    public static class EventReporter {
-        [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-        static extern IntPtr RegisterEventSource(string server, string source);
-        [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-        static extern bool ReportEvent(IntPtr handle, ushort type, ushort category, uint eventId, IntPtr sid, ushort numStrings, uint dataSize, string[] strings, IntPtr rawData);
-        [DllImport("advapi32.dll", SetLastError = true)]
-        static extern bool DeregisterEventSource(IntPtr handle);
-        public static int Write(string source, ushort type, uint eventId, string message) {
-            IntPtr handle = RegisterEventSource(null, source);
-            if (handle == IntPtr.Zero) { return Marshal.GetLastWin32Error(); }
-            try {
-                bool ok = ReportEvent(handle, type, 0, eventId, IntPtr.Zero, 1, 0, new string[] { message }, IntPtr.Zero);
-                return ok ? 0 : Marshal.GetLastWin32Error();
-            }
-            finally { DeregisterEventSource(handle); }
-        }
-    }
-}
-'@ -ErrorAction Stop
-        }
-        $rc = [CEAudit.EventReporter]::Write($source, $typeMap[$type], [uint32]$id, $message)
-        if ($rc -ne 0) { Write-Warning "Event write failed for source '$source' id $id (Win32 error $rc)" }
-    }
-    catch { Write-Warning "Could not write event: $_" }
+    # Written through RegisterEventSource/ReportEvent (Write-CEEventEntry), never EventLog.WriteEntry.
+    Write-CEEventEntry -Id $id -Type $type -Message ($lines -join "`r`n")
 }

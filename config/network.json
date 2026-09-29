@@ -1,0 +1,6 @@
+{
+  "notes": "Proxy for the tool's own HTTPS requests (the firmware catalog). proxyUrl is the proxy's http:// address (https sites still go through it encrypted; Windows PowerShell can't use an https:// proxy address). Empty proxyUrl uses the system default; when running as SYSTEM it falls back to the machine WinHTTP proxy (netsh winhttp set proxy). Set proxyUseDefaultCredentials to true only if the proxy in proxyUrl needs Windows sign-in (NTLM or Kerberos); as SYSTEM that is the computer account. The WinHTTP proxy always gets it.",
+  "proxyUrl": "",
+  "proxyUseDefaultCredentials": false,
+  "useWinHttpProxyWhenSystem": true
+}

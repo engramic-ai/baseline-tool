@@ -152,7 +152,7 @@ Alternatively, download the ready-made package from [Releases](https://github.co
 | **Custom compliance** | `Discover-CECompliance.ps1` plus a rules file, so each device reports compliant or not compliant, with user-facing reasons in Company Portal. There's a lenient rules file (automatic fails, supported OS, antivirus, audit freshness), a strict one (the full Cyber Essentials check set) and one that gates on framework coverage. |
 | **Remediations** (optional) | A tenant-wide report with one line per device showing the compliance state, counts and failing check IDs. It can also apply fixes you allow-list. |
 
-Compliance is based on the last scheduled audit. A device that hasn't completed an audit in 72 hours is **not compliant**, so a broken install can't pass silently.
+Compliance is based on the last scheduled audit. A device that hasn't completed an audit in 72 hours is **not compliant**, so a broken install can't pass silently. One failed audit never changes compliance, but an audit that keeps failing does, before its result goes stale: 3 failed runs in a row, or 2 or more over 72 hours with no success between (`CEAuditFailedRuns`, `CEAuditFailingHours`; see [docs/INTUNE.md](docs/INTUNE.md#when-a-failed-audit-makes-a-device-non-compliant)).
 
 ## The checks in detail
 
@@ -212,6 +212,7 @@ Installed apps such as OneDrive, Dropbox, Slack and Xero are detected and listed
 | `config/thresholds.json` | Patch window (14 days), lockout (10), password length (12), PIN length (6), screen lock (900 s), signature age, firmware age warning (730 days) and more |
 | `config/secure-boot.json` | Secure Boot certificates NC-08 expects, the expiry dates of the 2011 CAs they replace, and the servicing event IDs it reads |
 | `config/firmware-catalog.json` | Address of the hosted firmware catalog service. SU-08 compares the installed BIOS with the latest release for the model. On by default (`https://baseline.engramic.ai`); set `baseUrl` to `""` to turn it off |
+| `config/network.json` | Proxy for the tool's own HTTPS requests (the firmware catalog). Empty `proxyUrl` uses the system default; audits running as SYSTEM then use the machine's WinHTTP proxy (`netsh winhttp set proxy`). A `proxyUrl` proxy gets the device's Windows sign-in only with `proxyUseDefaultCredentials: true` |
 | `config/av-products.json` | Security products MP-01 recognises from their service and driver names (25 products), and whether each blocks malware or only detects it. Add products your organisation uses |
 | `config/tpm-firmware-advisories.json` | TPM firmware versions affected by known vulnerabilities, used by SU-08. Review it when new TPM advisories are published |
 | `config/os-lifecycle.json` | Windows 11 end-of-servicing dates by release and edition. **Review this periodically**: SU-01 warns when it's more than 90 days old |
@@ -225,7 +226,7 @@ Installed apps such as OneDrive, Dropbox, Slack and Xero are detected and listed
 | `config/scheduled-audit.json` | Checks to skip in the unattended (scheduled / Intune) audit |
 | `config/auto-remediation.json` | Fixes the Intune Remediations script may apply automatically (off by default) |
 
-On managed devices, a file with the same name in `%ProgramData%\EngramicBaseline\config\` replaces the packaged one, so you can change settings on individual devices without rebuilding.
+On managed devices, a file with the same name in `%ProgramData%\EngramicBaseline\config\` replaces the packaged one, so you can change settings on individual devices without rebuilding. Audits running as administrator or SYSTEM only use such a file if administrators own it, the folder and `%ProgramData%\EngramicBaseline`, standard users can't change any of them, and neither folder is a junction or symbolic link (the Intune install sets the folders up this way); otherwise they ignore it with a warning. To ship overrides with the Intune app, put them in `data\config\` before building and the install copies them in; see [Config overrides and packs](docs/INTUNE.md#config-overrides-and-packs) for this and for deploying them after the app.
 
 ---
 

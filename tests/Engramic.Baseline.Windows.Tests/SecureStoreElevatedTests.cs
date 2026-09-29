@@ -12,12 +12,6 @@ namespace Engramic.Baseline.Windows.Tests;
 /// </summary>
 public sealed class SecureStoreElevatedTests : IDisposable
 {
-    /// <summary>Like ProgramData: SYSTEM and Administrators in full control, and users may read.</summary>
-    private const string ProgramDataAccess = "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)";
-
-    /// <summary>The installer's New-CEDataDirectorySecurity.</summary>
-    private const string LockedAccess = "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)";
-
     private readonly TempTree _tree = new();
 
     public void Dispose() => _tree.Dispose();
@@ -26,8 +20,8 @@ public sealed class SecureStoreElevatedTests : IDisposable
     public void Opens_the_data_folder_the_installer_makes_and_writes_files_owned_by_Administrators()
     {
         Assert.SkipUnless(Elevation.IsElevated, Elevation.NeedsElevation);
-        var programData = _tree.Folder("ProgramData", ProgramDataAccess);
-        var dataFolder = _tree.Folder(@"ProgramData\EngramicBaseline", LockedAccess);
+        var programData = _tree.Folder("ProgramData", Descriptors.ProgramDataLike);
+        var dataFolder = _tree.Folder(@"ProgramData\EngramicBaseline", Descriptors.InstallerLocked);
         using var store = SecureStore.Open(new SecureStoreOptions { ProgramDataPath = programData, Registry = DataFolderFixture.Sealed() });
 
         store.WriteFile("status.json", "old"u8);
@@ -47,7 +41,7 @@ public sealed class SecureStoreElevatedTests : IDisposable
     public void Refuses_a_data_folder_owned_by_the_administrator_s_own_account()
     {
         Assert.SkipUnless(Elevation.IsElevated && !Elevation.IsSystem, Elevation.NeedsElevation);
-        var programData = _tree.Folder("ProgramData", ProgramDataAccess);
+        var programData = _tree.Folder("ProgramData", Descriptors.ProgramDataLike);
         var dataFolder = _tree.Folder(@"ProgramData\EngramicBaseline", $"O:{Elevation.CurrentUser}D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)");
 
         var e = Assert.Throws<SecureStoreException>(() => SecureStore.Open(new SecureStoreOptions { ProgramDataPath = programData, Registry = DataFolderFixture.Sealed() }));
@@ -60,7 +54,7 @@ public sealed class SecureStoreElevatedTests : IDisposable
     {
         Assert.SkipUnless(Elevation.IsElevated && !Elevation.IsSystem, Elevation.NeedsElevation);
         var programData = _tree.Folder("ProgramData", $"O:{Elevation.CurrentUser}D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)");
-        _tree.Folder(@"ProgramData\EngramicBaseline", LockedAccess);
+        _tree.Folder(@"ProgramData\EngramicBaseline", Descriptors.InstallerLocked);
 
         var e = Assert.Throws<SecureStoreException>(() => SecureStore.Open(new SecureStoreOptions { ProgramDataPath = programData, Registry = DataFolderFixture.Sealed() }));
 
@@ -71,8 +65,8 @@ public sealed class SecureStoreElevatedTests : IDisposable
     public void Refuses_the_locked_data_folder_of_an_install_that_did_not_seal_it()
     {
         Assert.SkipUnless(Elevation.IsElevated, Elevation.NeedsElevation);
-        var programData = _tree.Folder("ProgramData", ProgramDataAccess);
-        _tree.Folder(@"ProgramData\EngramicBaseline", LockedAccess);
+        var programData = _tree.Folder("ProgramData", Descriptors.ProgramDataLike);
+        _tree.Folder(@"ProgramData\EngramicBaseline", Descriptors.InstallerLocked);
 
         var e = Assert.Throws<SecureStoreException>(() => SecureStore.Open(new SecureStoreOptions { ProgramDataPath = programData, Registry = new Testing.FakeRegistry() }));
 
@@ -83,8 +77,8 @@ public sealed class SecureStoreElevatedTests : IDisposable
     public void A_symbolic_link_to_a_file_outside_is_refused_with_the_product_s_rules()
     {
         Assert.SkipUnless(Elevation.IsElevated, Elevation.NeedsElevation);
-        var programData = _tree.Folder("ProgramData", ProgramDataAccess);
-        var dataFolder = _tree.Folder(@"ProgramData\EngramicBaseline", LockedAccess);
+        var programData = _tree.Folder("ProgramData", Descriptors.ProgramDataLike);
+        var dataFolder = _tree.Folder(@"ProgramData\EngramicBaseline", Descriptors.InstallerLocked);
         var outside = _tree.File("outside.json", "outside");
         File.CreateSymbolicLink(Path.Combine(dataFolder, "status.json"), outside);
         using var store = SecureStore.Open(new SecureStoreOptions { ProgramDataPath = programData, Registry = DataFolderFixture.Sealed() });

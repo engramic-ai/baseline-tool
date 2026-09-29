@@ -6,7 +6,7 @@
 # credentials found in them - provider, type, storage - without ever recording
 # a credential value or anything derived from one.
 #
-# Decisions (see issue #8):
+# Decisions:
 #  * The machine / SYSTEM audit records presence, path and ACL only; it never
 #    opens a config file. Parsing and classification happen only in the user's
 #    own session (Invoke-CEUserProbe.ps1), on the user's own files.

@@ -19,7 +19,9 @@
                       and keep the report - anonymous, current marketing screenshots on demand.
                       Networking on.
       sign-test       prove tools\Sign-Release.ps1 and the -RequireSignature gate end to end with a
-                      throwaway self-signed certificate that dies with the sandbox. Networking on.
+                      throwaway self-signed certificate that dies with the sandbox, then publish, sign
+                      and check baseline.exe and run it, and check a build signed on the host in
+                      build\release-dotnet. Networking on.
       msi-test        install the desktop MSI on a clean Windows, check the files, Start menu
                       entry, Installed apps entry and signatures, then uninstall and check it
                       left nothing behind. Networking off.

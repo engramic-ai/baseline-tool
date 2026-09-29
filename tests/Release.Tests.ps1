@@ -376,3 +376,14 @@ Describe 'New-SignedRelease.ps1 -DotNet' {
         $block.IndexOf('return') | Should -BeLessThan $block.IndexOf('Build-IntunePackage.ps1') -Because 'the PowerShell release is untouched by -DotNet'
     }
 }
+
+Describe 'The sign-test sandbox' {
+    It 'signs baseline.exe, checks every PE file and runs the slice from the signed build' {
+        $sandbox = Get-Content -LiteralPath (Join-Path $script:Tools 'sandbox\Invoke-SandboxSignTest.ps1') -Raw
+        $sandbox | Should -Match ([regex]::Escape("& `$checkScript -Path `$payload -Unsigned"))
+        $sandbox | Should -Match ([regex]::Escape("-IncludeExtensions '.exe', '.dll'"))
+        $sandbox | Should -Match ([regex]::Escape("& `$checkScript -Path `$payload -Thumbprint `$cert.Thumbprint -AllowUntrustedChain -PassThru"))
+        $sandbox | Should -Match ([regex]::Escape("@('audit', '--id', 'SU-01')"))
+        $sandbox | Should -Match ([regex]::Escape("@('--version')"))
+    }
+}

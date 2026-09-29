@@ -1,6 +1,6 @@
 {
   "name": "sign-test",
-  "description": "Prove the signing pipeline end to end with a throwaway self-signed certificate",
+  "description": "Prove the signing pipeline end to end with a throwaway self-signed certificate, baseline.exe included",
   "networking": true,
   "mappedFolders": [ { "host": "{root}", "sandbox": "C:\\baseline-tool", "readOnly": true } ],
   "tools": [],

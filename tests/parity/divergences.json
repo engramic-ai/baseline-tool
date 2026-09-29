@@ -1,0 +1,35 @@
+{
+  "about": "The ledger of accepted differences between the PowerShell module and baseline.exe, which tools/parity/Compare-Parity.ps1 and tools/contracts/Compare-IntuneReaders.ps1 read (docs/DOTNET.md). Each entry names a path as those scripts print it, and covers everything under it; a * stands for any part of one name, such as the host in discovery[*]. kind is ignored for a value that differs by design, which is not compared, or explained for a difference that is accepted, with the reason, until more is ported. scope names the contexts (standard user, elevated administrator, SYSTEM) and the checks (identifiers, or *) the entry applies to. Any other difference is unexplained, and the gate is zero unexplained differences.",
+  "divergences": [
+    {
+      "path": "status.toolVersion",
+      "kind": "ignored",
+      "reason": "Each tool writes its own version: the module the one in CEAudit.psd1, baseline.exe the one in Directory.Build.props.",
+      "scope": { "contexts": ["standard user", "elevated administrator", "SYSTEM"], "checks": ["*"] }
+    },
+    {
+      "path": "status.auditTime",
+      "kind": "ignored",
+      "reason": "When each audit started: the tools run one after the other.",
+      "scope": { "contexts": ["standard user", "elevated administrator", "SYSTEM"], "checks": ["*"] }
+    },
+    {
+      "path": "status.hardware",
+      "kind": "explained",
+      "reason": "baseline.exe writes null until the hardware inventory is ported with the hardware checks. The Intune scripts do not read it.",
+      "scope": { "contexts": ["standard user", "elevated administrator", "SYSTEM"], "checks": ["*"] }
+    },
+    {
+      "path": "discovery[*].CEToolVersion",
+      "kind": "ignored",
+      "reason": "The discovery script reports toolVersion from status.json, which is each tool's own version.",
+      "scope": { "contexts": ["standard user", "elevated administrator", "SYSTEM"], "checks": ["*"] }
+    },
+    {
+      "path": "detection[*].Version",
+      "kind": "ignored",
+      "reason": "The detection script prints toolVersion from status.json, which is each tool's own version, as v<version>.",
+      "scope": { "contexts": ["standard user", "elevated administrator", "SYSTEM"], "checks": ["*"] }
+    }
+  ]
+}

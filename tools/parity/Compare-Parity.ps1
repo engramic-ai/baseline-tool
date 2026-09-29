@@ -1,28 +1,34 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Runs checks in the PowerShell module and in baseline.exe on this device and compares what they find.
+    Runs checks in the PowerShell module and in baseline.exe on this device, as this account, and compares what
+    they find.
 
 .DESCRIPTION
-    The start of the parity harness. For the checks named by -Id (SU-01 by default) it:
+    The parity harness. For the checks named by -Id (SU-01 by default) it:
 
       1. runs the untouched module out of process in Windows PowerShell 5.1: Invoke-CEAuditCore, then
          Get-CESummary and ConvertTo-CEStatus, and writes findings.json and status.json as the module does
          (Write-CEStatus);
       2. runs baseline.exe audit --json findings and --json status, keeping the exact bytes each writes;
-      3. compares the two: every field of every finding, matched by FindingId, and every value of
-         status.json by its path, and runs the Intune discovery script's Get-CEComplianceData on both
-         status files;
+      3. runs the unchanged Intune discovery and detection scripts on both status files, in 64-bit and 32-bit
+         Windows PowerShell 5.1 (tools\contracts\Invoke-IntuneReaders.ps1);
+      4. compares them: first the device context each tool saw (computer, account, elevation, Windows), since
+         one difference there explains many after it; then every field of every finding, matched by FindingId,
+         and their order; every value of status.json by its path, and its byte order mark; and every value
+         each Intune script reported in each host.
 
-    then prints each value with its result and exits 1 if anything differs that is not ignored or
-    explained below. What is ignored differs by design: the tool version, the audit time and the report
-    folder. What is explained differs until more of the tool is ported (see $ExplainedPaths).
+    Every accepted difference is in the ledger, tests\parity\divergences.json: the path, whether the value is
+    ignored (it differs by design) or explained (an accepted difference, until more is ported), the reason, and
+    the scope, which contexts and checks it applies to. Anything else that differs is unexplained, and the gate
+    is zero unexplained differences: the script exits 1 if there is any, and 0 otherwise. An explained entry in
+    scope that explained nothing is listed, so it can come off the ledger once nothing needs it.
 
-    Both tools run hidden, as the account that runs this script, and read the device only. The module is
-    given an empty data folder under -OutputPath, so no administrator's config overrides or packs apply
-    to it; baseline.exe reads only the config it ships with. Nothing outside -OutputPath is written.
-
-    Run it the same way as the audit to compare: as a standard user, elevated, or as SYSTEM.
+    Run it as the account whose audit you want to compare: a standard user, an elevated administrator or
+    SYSTEM. The context is found from the process and applied to the ledger. Both tools run hidden and read
+    the device only. The module is given an empty data folder under -OutputPath, so no administrator's config
+    overrides or packs apply to it; baseline.exe reads only the config it ships with. Nothing outside
+    -OutputPath is written.
 
 .PARAMETER Id
     The checks to run. Default: SU-01.
@@ -32,6 +38,13 @@
 
 .PARAMETER OutputPath
     Folder for both tools' files. Default: artifacts\parity\<yyyyMMdd-HHmmss>.
+
+.PARAMETER LedgerPath
+    The ledger of accepted differences. Default: tests\parity\divergences.json.
+
+.PARAMETER ResultPath
+    Also write the comparison as JSON: the context, every value compared with its result and ledger entry,
+    the counts and the verdict.
 
 .PARAMETER TimeoutMinutes
     How long each tool may run. Default: 10.
@@ -45,6 +58,8 @@ param(
     [ValidatePattern('^[A-Za-z]{2}-\d{2}$')][string[]]$Id = @('SU-01'),
     [string]$BaselineExe,
     [string]$OutputPath,
+    [string]$LedgerPath,
+    [string]$ResultPath,
     [ValidateRange(1, 120)][int]$TimeoutMinutes = 10
 )
 
@@ -52,20 +67,11 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
 $repo = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+Import-Module (Join-Path $PSScriptRoot 'Parity.psm1') -Force
+if (-not $LedgerPath) { $LedgerPath = Join-Path $repo 'tests\parity\divergences.json' }
 
-# Values that differ by design: skipped.
-$IgnoredPaths = @(
-    @{ Path = 'status.toolVersion'; Reason = 'the version of each tool' }
-    @{ Path = 'status.auditTime'; Reason = 'when each audit ran' }
-    @{ Path = 'status.reportFolder'; Reason = 'where each tool writes its report' }
-    @{ Path = 'discovery.CEToolVersion'; Reason = 'the version of each tool' }
-)
-
-# Differences that are expected until more is ported, each with its reason. Every accepted difference
-# needs one; an entry here that no longer matches anything is reported, so it can be removed.
-$ExplainedPaths = @(
-    @{ Path = 'status.hardware'; Reason = 'baseline.exe writes null until the hardware inventory is ported with the hardware checks' }
-)
+# The values that say which device and account each tool audited: compared first.
+$ContextPaths = @('status.computerName', 'status.runAs', 'status.elevated', 'status.os')
 
 function Resolve-BaselineExe {
     param([string]$Path)
@@ -90,6 +96,8 @@ function Invoke-HiddenProcess {
     $start.CreateNoWindow = $true
     $start.RedirectStandardOutput = $true
     $start.RedirectStandardError = $true
+    # Windows PowerShell finds its own modules; a PSModulePath inherited from PowerShell 7 would point it at 7's.
+    [void]$start.EnvironmentVariables.Remove('PSModulePath')
     $process = [System.Diagnostics.Process]::Start($start)
     try {
         $errors = $process.StandardError.ReadToEndAsync()
@@ -144,6 +152,13 @@ function Invoke-Baseline {
     }
 }
 
+function Invoke-Reader {
+    <# What the unchanged Intune scripts report for the status.json in $Folder, in both hosts, kept beside it as readers.json. #>
+    param([string]$Folder)
+    $readers = Join-Path $repo 'tools\contracts\Invoke-IntuneReaders.ps1'
+    return @(& $readers -StatusPath (Join-Path $Folder 'status.json') -WorkPath $Folder -ResultPath (Join-Path $Folder 'readers.json') -TimeoutSeconds ($TimeoutMinutes * 60))
+}
+
 function Read-JsonFile {
     <# A JSON file as PowerShell reads it, and whether it starts with a UTF-8 byte order mark. #>
     param([string]$Path)
@@ -152,153 +167,89 @@ function Read-JsonFile {
     return [pscustomobject]@{ Value = (Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json); Bom = $bom }
 }
 
-function ConvertTo-FlatValue {
-    <# Every value under $Value as an ordered map of path to text, such as checks.SU-01.frameworks[1] = "CE+ TC2". #>
-    param($Value, [string]$Path, [System.Collections.Specialized.OrderedDictionary]$Into)
-    if ($null -eq $Value) { $Into[$Path] = 'null'; return }
-    if ($Value -is [string]) { $Into[$Path] = '"' + $Value + '"'; return }
-    if ($Value -is [bool]) { $Into[$Path] = $Value.ToString().ToLowerInvariant(); return }
-    if ($Value -is [datetime]) { $Into[$Path] = '"' + $Value.ToString('o', [Globalization.CultureInfo]::InvariantCulture) + '"'; return }
-    if ($Value -is [System.Collections.IDictionary]) {
-        if ($Value.Count -eq 0) { $Into[$Path] = '{}'; return }
-        foreach ($key in $Value.Keys) { ConvertTo-FlatValue -Value $Value[$key] -Path "$Path.$key" -Into $Into }
-        return
-    }
-    if ($Value -is [System.Management.Automation.PSCustomObject]) {
-        $properties = @($Value.PSObject.Properties)
-        if ($properties.Count -eq 0) { $Into[$Path] = '{}'; return }
-        foreach ($property in $properties) { ConvertTo-FlatValue -Value $property.Value -Path "$Path.$($property.Name)" -Into $Into }
-        return
-    }
-    if ($Value -is [System.Collections.IEnumerable]) {
-        $items = @($Value)
-        if ($items.Count -eq 0) { $Into[$Path] = '[]'; return }
-        for ($i = 0; $i -lt $items.Count; $i++) { ConvertTo-FlatValue -Value $items[$i] -Path "$Path[$i]" -Into $Into }
-        return
-    }
-    $Into[$Path] = [Convert]::ToString($Value, [Globalization.CultureInfo]::InvariantCulture)
-}
-
-function Get-Rule {
-    <# The ignore or explain rule that covers a path (the path itself or anything under it), or $null. #>
-    param([string]$Path, [object[]]$Rules)
-    foreach ($rule in $Rules) {
-        if ($Path -eq $rule.Path -or $Path.StartsWith($rule.Path + '.', [StringComparison]::Ordinal) -or $Path.StartsWith($rule.Path + '[', [StringComparison]::Ordinal)) { return $rule }
-    }
-    return $null
-}
-
-function Compare-Flat {
-    <#
-        One row per path in either document, in document order: both values, and whether they match, are
-        ignored, are explained or differ, with the rule that ignores or explains them.
-    #>
-    param($Module, $Baseline, [string]$Path)
-    $left = New-Object System.Collections.Specialized.OrderedDictionary
-    $right = New-Object System.Collections.Specialized.OrderedDictionary
-    ConvertTo-FlatValue -Value $Module -Path $Path -Into $left
-    ConvertTo-FlatValue -Value $Baseline -Path $Path -Into $right
-    # The module's paths in order, each path only baseline.exe has placed after the one before it in its own order.
-    $paths = New-Object System.Collections.ArrayList
-    foreach ($key in $left.Keys) { [void]$paths.Add($key) }
-    $after = -1
-    foreach ($key in $right.Keys) {
-        $at = $paths.IndexOf($key)
-        if ($at -lt 0) { $at = $after + 1; $paths.Insert($at, $key) }
-        $after = $at
-    }
-    foreach ($key in $paths) {
-        $a = if ($left.Contains($key)) { [string]$left[$key] } else { '(missing)' }
-        $b = if ($right.Contains($key)) { [string]$right[$key] } else { '(missing)' }
-        $ignoreRule = Get-Rule -Path $key -Rules $IgnoredPaths
-        $explainRule = Get-Rule -Path $key -Rules $ExplainedPaths
-        $rule = $null
-        if ($ignoreRule) { $result = 'ignored'; $rule = $ignoreRule }
-        elseif ([string]::Equals($a, $b, [StringComparison]::Ordinal)) { $result = 'match' }
-        elseif ($explainRule) { $result = 'explained'; $rule = $explainRule; $explainRule.Used = $true }
-        else { $result = 'DIFFERENT' }
-        [pscustomobject]@{ Path = $key; Module = $a; Baseline = $b; Result = $result; Rule = $rule }
-    }
-}
-
-function Write-Comparison {
-    <#
-        Prints the rows: a match with its value, a difference with both values, and each ignore or explain
-        rule once, with how many values it covered and why.
-    #>
-    param([object[]]$Rows)
-    $shown = @{}
-    foreach ($row in $Rows) {
-        switch ($row.Result) {
-            'match' { Write-Host ('  match      {0} = {1}' -f $row.Path, $row.Module) }
-            'DIFFERENT' { Write-Host ('  DIFFERENT  {0}: module {1}, baseline.exe {2}' -f $row.Path, $row.Module, $row.Baseline) }
-            default {
-                $key = $row.Result + '|' + $row.Rule.Path
-                if ($shown.ContainsKey($key)) { continue }
-                $shown[$key] = $true
-                $covered = @($Rows | Where-Object { $_.Result -eq $row.Result -and $null -ne $_.Rule -and $_.Rule.Path -eq $row.Rule.Path })
-                $values = if ($covered.Count -eq 1) { ': module {0}, baseline.exe {1}' -f $row.Module, $row.Baseline } else { " ($($covered.Count) values)" }
-                Write-Host ('  {0,-10} {1}{2}; {3}' -f $row.Result, $row.Rule.Path, $values, $row.Rule.Reason)
-            }
-        }
-    }
-}
-
-function Get-DiscoveryOutput {
-    <# What the unchanged Intune discovery script reports for a status.json in $Folder, read as a standard user reads it. #>
-    param([string]$Folder)
-    # Intune runs the script without strict mode, and it reads checks that may not have run.
-    Set-StrictMode -Off
-    . (Join-Path $repo 'intune\Discover-CECompliance.ps1')
-    return Get-CEComplianceData -DataRoot $Folder -Installed $true -Elevated $false -NoKick
+function Get-Flat {
+    <# A value flattened to paths and text (ConvertTo-ParityFlatValue). #>
+    param($Value, [string]$Path)
+    $flat = New-Object System.Collections.Specialized.OrderedDictionary
+    ConvertTo-ParityFlatValue -Value $Value -Path $Path -Into $flat
+    return , $flat
 }
 
 $exe = Resolve-BaselineExe -Path $BaselineExe
+$context = Get-ParityContext
+$ledger = Read-ParityLedger -Path $LedgerPath
+$Id = @($Id | ForEach-Object { $_.ToUpperInvariant() })
+$entries = Select-ParityLedgerEntry -Ledger $ledger -Context $context -CheckId $Id
 if (-not $OutputPath) { $OutputPath = Join-Path $repo ('artifacts\parity\' + (Get-Date -Format 'yyyyMMdd-HHmmss')) }
 $moduleFolder = Join-Path $OutputPath 'module'
 $baselineFolder = Join-Path $OutputPath 'baseline'
 New-Item -ItemType Directory -Path $moduleFolder -Force | Out-Null
-$Id = @($Id | ForEach-Object { $_.ToUpperInvariant() })
 
-Write-Host "Comparing $($Id -join ', ') on $([Environment]::MachineName)"
+Write-Host "Comparing $($Id -join ', ') on $([Environment]::MachineName) as $([Security.Principal.WindowsIdentity]::GetCurrent().Name) ($context)"
 Write-Host "  module       : $(Join-Path $repo 'src\CEAudit') in Windows PowerShell 5.1"
 Write-Host "  baseline.exe : $exe"
+Write-Host "  ledger       : $LedgerPath ($(@($entries).Count) of $(@($ledger).Count) entries apply)"
 Write-Host "  output       : $OutputPath"
 Invoke-Module -Ids $Id -Folder $moduleFolder -DataRoot (Join-Path $OutputPath 'module-data')
 Invoke-Baseline -Exe $exe -Ids $Id -Folder $baselineFolder
 
-$rows = New-Object System.Collections.ArrayList
-
 $moduleFindings = @((Read-JsonFile (Join-Path $moduleFolder 'findings.json')).Value.Findings)
 $baselineFindings = @((Read-JsonFile (Join-Path $baselineFolder 'findings.json')).Value.Findings)
+$moduleStatus = Read-JsonFile (Join-Path $moduleFolder 'status.json')
+$baselineStatus = Read-JsonFile (Join-Path $baselineFolder 'status.json')
+
+$statusRows = @(Compare-ParityValue -Module (Get-Flat $moduleStatus.Value 'status') -Baseline (Get-Flat $baselineStatus.Value 'status') -Entry $entries)
+$rows = New-Object System.Collections.ArrayList
+foreach ($row in $statusRows) { if ($ContextPaths -contains $row.Path) { [void]$rows.Add($row) } }
 $findingIds = New-Object System.Collections.ArrayList
 foreach ($f in $moduleFindings + $baselineFindings) { if (-not $findingIds.Contains([string]$f.FindingId)) { [void]$findingIds.Add([string]$f.FindingId) } }
 foreach ($findingId in $findingIds) {
     $a = @($moduleFindings | Where-Object { $_.FindingId -ceq $findingId }) | Select-Object -First 1
     $b = @($baselineFindings | Where-Object { $_.FindingId -ceq $findingId }) | Select-Object -First 1
-    foreach ($row in Compare-Flat -Module $a -Baseline $b -Path "finding[$findingId]") { [void]$rows.Add($row) }
+    foreach ($row in Compare-ParityValue -Module (Get-Flat $a "finding[$findingId]") -Baseline (Get-Flat $b "finding[$findingId]") -Entry $entries) { [void]$rows.Add($row) }
 }
-foreach ($row in Compare-Flat -Module @($moduleFindings | ForEach-Object { $_.FindingId }) -Baseline @($baselineFindings | ForEach-Object { $_.FindingId }) -Path 'findingOrder') { [void]$rows.Add($row) }
+$moduleOrder = Get-Flat @($moduleFindings | ForEach-Object { $_.FindingId }) 'findingOrder'
+$baselineOrder = Get-Flat @($baselineFindings | ForEach-Object { $_.FindingId }) 'findingOrder'
+foreach ($row in Compare-ParityValue -Module $moduleOrder -Baseline $baselineOrder -Entry $entries) { [void]$rows.Add($row) }
+foreach ($row in $statusRows) { if ($ContextPaths -notcontains $row.Path) { [void]$rows.Add($row) } }
+$moduleBom = Get-Flat $moduleStatus.Bom 'status.json byte order mark'
+$baselineBom = Get-Flat $baselineStatus.Bom 'status.json byte order mark'
+foreach ($row in Compare-ParityValue -Module $moduleBom -Baseline $baselineBom -Entry $entries) { [void]$rows.Add($row) }
 
-$moduleStatus = Read-JsonFile (Join-Path $moduleFolder 'status.json')
-$baselineStatus = Read-JsonFile (Join-Path $baselineFolder 'status.json')
-foreach ($row in Compare-Flat -Module $moduleStatus.Value -Baseline $baselineStatus.Value -Path 'status') { [void]$rows.Add($row) }
-foreach ($row in Compare-Flat -Module $moduleStatus.Bom -Baseline $baselineStatus.Bom -Path 'status.json byte order mark') { [void]$rows.Add($row) }
-foreach ($row in Compare-Flat -Module (Get-DiscoveryOutput -Folder $moduleFolder) -Baseline (Get-DiscoveryOutput -Folder $baselineFolder) -Path 'discovery') { [void]$rows.Add($row) }
+Write-Host '  Intune scripts: discovery and detection in 64-bit and 32-bit Windows PowerShell 5.1, on each status.json'
+$moduleReaders = New-Object System.Collections.Specialized.OrderedDictionary
+Add-ParityReaderValue -Result (Invoke-Reader -Folder $moduleFolder) -Into $moduleReaders
+$baselineReaders = New-Object System.Collections.Specialized.OrderedDictionary
+Add-ParityReaderValue -Result (Invoke-Reader -Folder $baselineFolder) -Into $baselineReaders
+foreach ($row in Compare-ParityValue -Module $moduleReaders -Baseline $baselineReaders -Entry $entries) { [void]$rows.Add($row) }
 
 Write-Host ''
-Write-Comparison -Rows $rows
+Write-Host 'Device context:'
+Write-ParityComparison -Row @($rows | Where-Object { $ContextPaths -contains $_.Path })
+Write-Host 'Findings, status.json and the Intune scripts:'
+Write-ParityComparison -Row @($rows | Where-Object { $ContextPaths -notcontains $_.Path })
 Write-Host ''
 
-foreach ($rule in $ExplainedPaths) {
-    if (-not $rule.ContainsKey('Used')) { Write-Host "Explained difference no longer seen, so it can be removed: $($rule.Path)" }
+$verdict = Get-ParityVerdict -Row $rows -Entry $entries
+foreach ($path in $verdict.Unused) { Write-Host "Ledger entry that explained nothing here (take it off once no context or check needs it): $path" }
+Write-Host ('{0} values compared: {1} match, {2} ignored, {3} explained, {4} different' -f $verdict.Compared, $verdict.Match, $verdict.Ignored, $verdict.Explained, $verdict.Unexplained)
+if (@($rows | Where-Object { $ContextPaths -contains $_.Path -and $_.Result -eq 'DIFFERENT' }).Count) {
+    Write-Host 'The tools saw a different device context, which may explain the differences after it.'
 }
-$different = @($rows | Where-Object { $_.Result -eq 'DIFFERENT' })
-$counts = '{0} values compared: {1} match, {2} ignored, {3} explained, {4} different' -f $rows.Count, @($rows | Where-Object { $_.Result -eq 'match' }).Count,
-    @($rows | Where-Object { $_.Result -eq 'ignored' }).Count, @($rows | Where-Object { $_.Result -eq 'explained' }).Count, $different.Count
-Write-Host $counts
-if ($different.Count) {
-    Write-Host 'Result: DIFFERENT. The tools disagree where they should not; see the rows marked DIFFERENT.'
+if ($ResultPath) {
+    $record = [pscustomobject][ordered]@{
+        Checks      = $Id
+        Context     = $context
+        Account     = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+        BaselineExe = $exe
+        Ledger      = $LedgerPath
+        Verdict     = $verdict
+        Values      = ConvertTo-ParityRecord -Row $rows
+    }
+    [IO.File]::WriteAllText($ResultPath, (ConvertTo-Json -InputObject $record -Depth 6), (New-Object System.Text.UTF8Encoding($true)))
+}
+if (-not $verdict.Passed) {
+    Write-Host 'Result: DIFFERENT. The tools disagree where the ledger does not explain it; see the rows marked DIFFERENT.'
     exit 1
 }
 Write-Host 'Result: no unexplained differences.'

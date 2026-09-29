@@ -155,6 +155,12 @@
           "Microsoft.Extensions.TimeProvider.Testing": "[10.10.0, )"
         }
       },
+      "engramic.baseline.testing.windows": {
+        "type": "Project",
+        "dependencies": {
+          "Engramic.Baseline.Platform": "[1.0.0-alpha.0, )"
+        }
+      },
       "engramic.baseline.windows": {
         "type": "Project",
         "dependencies": {

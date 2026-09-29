@@ -149,6 +149,12 @@ dotnet test --solution Baseline.slnx -c Release --no-build
 
 On Linux, use `Baseline.Portable.slnf` in place of `Baseline.slnx`.
 
+A hung test fails the run instead of holding it until CI gives up: once no test has finished for 30 seconds,
+the hang dump extension (`tests/Directory.Build.props`) dumps and stops the test process, and `TestResults/`
+gets the dump and a `_hang.log` that names the tests still running. Tests that wait on work on other threads,
+as the runner's tests do, give up on each wait after 10 seconds and say what they were waiting for, and they
+move a fake clock only once the code under test has started its timer on it.
+
 Publish after a restore of the whole solution, with `--no-restore`: a restore for a single runtime would
 apply that runtime to the referenced libraries too, which their lock files do not list.
 

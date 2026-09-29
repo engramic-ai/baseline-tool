@@ -1,3 +1,4 @@
+using System.Threading.Channels;
 using Engramic.Baseline.Model;
 using Microsoft.Extensions.Time.Testing;
 
@@ -24,6 +25,26 @@ internal sealed class FakeCheck(CheckInfo info, Func<CheckContext, CancellationT
         Runs++;
         return run is null ? ValueTask.FromResult<IReadOnlyList<CheckResult>>([new CheckResult(FindingStatus.Pass)]) : run(context, cancel);
     }
+}
+
+/// <summary>
+/// A fake clock that tells a test when a timer is started on it, so the test moves the time only once the code
+/// under test is waiting for it, whichever threads run what and in whatever order.
+/// </summary>
+internal sealed class WatchedClock(DateTimeOffset now) : FakeTimeProvider(now)
+{
+    private readonly Channel<TimeSpan> _started = Channel.CreateUnbounded<TimeSpan>();
+
+    public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+    {
+        var timer = base.CreateTimer(callback, state, dueTime, period);
+        _ = _started.Writer.TryWrite(dueTime);
+        return timer;
+    }
+
+    /// <summary>Waits for the next timer started on this clock, failing the test if none is started in time.</summary>
+    /// <returns>How long after it was started the timer is due.</returns>
+    public Task<TimeSpan> NextTimerAsync() => _started.Reader.ReadAsync(TestContext.Current.CancellationToken).AsTask().WithTimeout("a timer to be started on the clock");
 }
 
 /// <summary>Config files held in memory, by name.</summary>

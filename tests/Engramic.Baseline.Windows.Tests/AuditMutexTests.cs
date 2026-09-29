@@ -59,7 +59,8 @@ public sealed class AuditMutexTests
 
         var sddl = TestMutexes.OnOtherThread(() =>
         {
-            using var opened = Mutex.OpenExisting(name);
+            // Reading the access list needs READ_CONTROL, which Mutex.OpenExisting does not ask for.
+            using var opened = MutexAcl.OpenExisting(name, MutexRights.ReadPermissions | MutexRights.Synchronize);
             return opened.GetAccessControl().GetSecurityDescriptorSddlForm(AccessControlSections.Access);
         });
 

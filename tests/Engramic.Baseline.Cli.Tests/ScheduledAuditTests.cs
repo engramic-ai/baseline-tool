@@ -155,6 +155,17 @@ public sealed class ScheduledAuditTests
     }
 
     [Fact]
+    public void Fails_rather_than_stopping_when_opening_the_data_folder_throws_anything_else()
+    {
+        var settings = Settings() with { OpenStore = () => throw new IOException("The device is not ready.") };
+
+        var code = ScheduledAudit.Run(settings, _output, _error);
+
+        Assert.Equal(ScheduledAudit.Failed, code);
+        Assert.Equal("Audit failed: The device is not ready.", _error.ToString().TrimEnd());
+    }
+
+    [Fact]
     public void Fails_when_status_json_cannot_be_written()
     {
         _store.WriteError = new SecureStoreException(@"C:\ProgramData\EngramicBaseline\status.json is read-only, so it cannot be replaced.");

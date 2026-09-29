@@ -80,7 +80,7 @@ internal static class ScheduledAudit
             {
                 store = settings.OpenStore();
             }
-            catch (SecureStoreException e)
+            catch (Exception e) when (e is not OutOfMemoryException)
             {
                 // Nothing is written anywhere: the data folder is exactly what cannot be trusted.
                 return Fail(error, e.Message, dataFolder: null);
@@ -132,9 +132,10 @@ internal static class ScheduledAudit
     }
 
     /// <summary>
-    /// Where every failed run ends. Counting it in last-error.json, and the event, will join here: only when
-    /// the data folder was opened and checked (<paramref name="dataFolder"/> is not null), as the module
-    /// records a failure only in a data folder it set up and trusts.
+    /// Where every failed run ends. Counting it in last-error.json, and the event, will join here, written
+    /// only into a data folder that was opened and checked (<paramref name="dataFolder"/>), as the module
+    /// records a failure only in a data folder it set up and trusts. A run that failed before that, such as
+    /// one kept out by a mutex it may not open, is a failed run too.
     /// </summary>
     private static int Fail(TextWriter error, string message, ISecureStore? dataFolder)
     {

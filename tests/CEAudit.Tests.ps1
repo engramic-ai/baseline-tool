@@ -1514,6 +1514,23 @@ Describe 'Intune: status, discovery and compliance rules' {
         (Get-CEComplianceData -DataRoot $root -Installed $true -Elevated $false -NoKick).CEAuditFailedRuns | Should -Be 1
     }
 
+    It 'compliance scripts read JSON as UTF-8, so Windows PowerShell 5.1 reads non-ASCII text in a file without a BOM' {
+        foreach ($file in @('Detect-CECompliance.ps1', 'Discover-CECompliance.ps1', 'Remediate-CECompliance.ps1')) {
+            $ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $script:intune $file), [ref]$null, [ref]$null)
+            $reads = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-Content' }, $true))
+            $reads.Count | Should -BeGreaterThan 0 -Because "$file reads JSON"
+            foreach ($read in $reads) { $read.Extent.Text | Should -Match '-Encoding UTF8\b' -Because "$file line $($read.Extent.StartLineNumber)" }
+        }
+        $root = Join-Path $TestDrive 'utf8-status'
+        New-Item -ItemType Directory -Path $root -Force | Out-Null
+        $name = 'SU-' + [char]0x00E9 + [char]0x00FC + [char]0x4E2D
+        $json = [ordered]@{ SchemaVersion = 1; AuditTime = [datetime]::UtcNow.ToString('o'); toolVersion = "1.0.0-$name"; autoFailCount = 1; autoFails = @($name); checks = [ordered]@{} } | ConvertTo-Json -Depth 4
+        [IO.File]::WriteAllText((Join-Path $root 'status.json'), $json, (New-Object Text.UTF8Encoding($false)))
+        $data = Get-CEComplianceData -DataRoot $root -Installed $true -Elevated $false -NoKick
+        $data.CEToolVersion | Should -BeExactly "1.0.0-$name"
+        $data.CEFailing | Should -BeExactly $name
+    }
+
     It 'never reports compliant when nothing is installed or no audit has run' {
         $data = Get-CEComplianceData -DataRoot (Join-Path $TestDrive 'empty') -Installed $false -Elevated $false -NoKick
         $data.CEAutoFailCount | Should -Be -1

@@ -105,10 +105,12 @@ checked by `Engramic.Baseline.Invariants.Tests`:
   `LibraryImport`, `extern` method, COM import or unmanaged function pointer, and loads no library.
 - `NativeMethods.txt` lists plain names, one per line: no wildcards, modules or namespaces, so every
   function is reviewed by name.
-- A function that opens, creates, copies, moves or deletes a file or folder by path, uses the temp
-  folder, touches the registry, starts a process, sets a security descriptor, reads or sets the
-  environment, loads a library or creates a COM object is sensitive (the list is in `NativeCodeTests`).
-  It may be named only in a file on `src/BannedApiExemptions.txt`, only between the same
+- A function that opens, creates, copies, moves or deletes a file or folder by path, renames or deletes
+  an open file (`SetFileInformationByHandle`, which reads a relative new name against the current
+  directory), uses the temp folder, touches the registry, starts a process, sets a security descriptor,
+  reads or sets the environment or answers from it (the known-folder API builds ProgramData from
+  `%SystemDrive%`), loads a library or creates a COM object is sensitive (the list is in
+  `NativeCodeTests`). It may be named only in a file on `src/BannedApiExemptions.txt`, only between the same
   `#pragma warning disable RS0030 // <reason>` and restore as a banned API, and it comes off
   `NativeMethods.txt` when no exempt file uses it.
 

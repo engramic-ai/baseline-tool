@@ -30,14 +30,21 @@ public sealed partial class NativeCodeTests
             Names(@"(Nt|Zw)?(Create|Open|ReOpen)File(2|Transacted|ById)?", @"(Copy|Move|Delete|Replace)File\w*", @"(Nt|Zw)DeleteFile",
                 @"(Create|Remove)Directory\w*", @"SHCreateDirectory\w*", @"SHFileOperation", @"Create(Symbolic|Hard)Link\w*",
                 @"FindFirstFile\w*", @"(Get|Set)FileAttributes\w*")),
+        // Through a handle, but a rename names where the file goes, and SetFileInformationByHandle reads a
+        // relative name against the current directory: a move by path in all but name.
+        ("renames or deletes an open file, moving it to a path it names",
+            Names(@"SetFileInformationByHandle", @"(Nt|Zw)SetInformationFile")),
         ("uses the shared temp folder", Names(@"GetTemp(Path2?|FileName)")),
         ("reads or writes the registry",
             Names(@"Reg[A-Z]\w*", @"(Nt|Zw)\w*Key(Ex)?", @"SH(Reg\w+|(Get|Set|Delete|Query)Value\w*|(Delete|Copy|Enum)(Empty)?Key\w*|OpenRegStream\w*)")),
         ("starts a process", Names(@"CreateProcess\w*", @"ShellExecute\w*", @"WinExec", @"(Nt|Rtl)Create(User)?Process\w*")),
         ("sets a security descriptor or an owner",
             Names(@"(TreeSet|TreeReset|Set)(Named)?SecurityInfo\w*", @"Set\w*ObjectSecurity\w*", @"SetFileSecurity", @"(Nt|Zw)SetSecurityObject")),
-        ("reads or sets environment variables",
-            Names(@"(Get|Set)EnvironmentVariable", @"(Get|Set|Free)EnvironmentStrings\w*", @"ExpandEnvironmentStrings\w*")),
+        // The known-folder API builds some folders from the process environment: ProgramData is
+        // %SystemDrive%\ProgramData, so a process started with SystemDrive changed is told another folder.
+        ("reads or sets environment variables, or answers from them",
+            Names(@"(Get|Set)EnvironmentVariable", @"(Get|Set|Free)EnvironmentStrings\w*", @"ExpandEnvironmentStrings\w*",
+                @"SHGetKnownFolder\w*", @"SHGetFolderPath\w*", @"SHGetSpecialFolder\w*")),
         ("loads a library or finds a function by name",
             Names(@"LoadLibrary\w*", @"LoadPackagedLibrary", @"GetProcAddress", @"Ldr(LoadDll|GetProcedureAddress\w*)")),
         ("creates a COM object, which can do any of the above",
@@ -150,6 +157,9 @@ public sealed partial class NativeCodeTests
     [InlineData("NtCreateFile")]
     [InlineData("CreateDirectory")]
     [InlineData("MoveFileEx")]
+    [InlineData("SetFileInformationByHandle")]
+    [InlineData("NtSetInformationFile")]
+    [InlineData("ZwSetInformationFile")]
     [InlineData("GetTempPath2")]
     [InlineData("RegOpenKeyEx")]
     [InlineData("RegSetValueExW")]
@@ -161,6 +171,10 @@ public sealed partial class NativeCodeTests
     [InlineData("SetKernelObjectSecurity")]
     [InlineData("GetEnvironmentVariableW")]
     [InlineData("ExpandEnvironmentStrings")]
+    [InlineData("SHGetKnownFolderPath")]
+    [InlineData("SHGetKnownFolderIDList")]
+    [InlineData("SHGetFolderPathW")]
+    [InlineData("SHGetSpecialFolderPath")]
     [InlineData("LoadLibraryEx")]
     [InlineData("GetProcAddress")]
     [InlineData("CoCreateInstance")]
@@ -174,6 +188,10 @@ public sealed partial class NativeCodeTests
     [InlineData("CloseHandle")]
     [InlineData("GetFileInformationByHandleEx")]
     [InlineData("GetFinalPathNameByHandle")]
+    [InlineData("GetSecurityInfo")]
+    [InlineData("GetSecurityDescriptorLength")]
+    [InlineData("FlushFileBuffers")]
+    [InlineData("GetSystemWindowsDirectory")]
     [InlineData("OpenProcessToken")]
     [InlineData("GetTokenInformation")]
     [InlineData("ConvertStringSidToSid")]

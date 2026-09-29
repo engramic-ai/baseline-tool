@@ -149,9 +149,83 @@ function Get-CEMcpConfigCatalogue {
     return , $out.ToArray()
 }
 
+function Get-CEUrlEndpoint {
+    <# scheme://host[:port] of an absolute URL, dropping userinfo, path, query and fragment; '' when it is not one. #>
+    param([string]$Url)
+    $parsed = $null
+    if (-not [Uri]::TryCreate($Url, [UriKind]::Absolute, [ref]$parsed)) { return '' }
+    $endpoint = '{0}://{1}' -f $parsed.Scheme, $parsed.Host
+    if ($parsed.Port -gt 0 -and -not $parsed.IsDefaultPort) { $endpoint += ':' + $parsed.Port }
+    return $endpoint
+}
+
+function Get-CEArgumentCredentialClass {
+    <#
+        Get-CECredentialClass for one command-line value. Key is the name it was given under (a
+        flag such as --api-key before it, or the KEY of KEY=value), or '' for a bare value. A name
+        is matched as _NAME with '-' and '.' read as '_', so --api-key and token=... match the key
+        names an environment variable would (*API*KEY*, *_TOKEN). The class keeps the name as written.
+    #>
+    param([string]$Key, [string]$Value, $Patterns)
+    if (-not $Key) { return (Get-CECredentialClass -Key '(argument)' -Value $Value -Patterns $Patterns) }
+    $cls = Get-CECredentialClass -Key ('_' + ($Key -replace '[-.]', '_')) -Value $Value -Patterns $Patterns
+    if ($cls) { $cls.key = $Key }
+    return $cls
+}
+
+function Get-CEMcpArgumentText {
+    <#
+        What the inventory may show of one word of an MCP server's command line, never a credential.
+        '(redacted)' for: a user name or password in it (a URL with :// then @, or user:password@host);
+        a value the classifier recognises by its prefix or by the flag it is given under (Key); a
+        KEY=value, or a ;- or &-separated part of one, whose KEY is a credential name; and anything
+        shaped like a bare token (long, without the separators a package name or a path has). A URL
+        is cut to scheme://host[:port], and any other KEY=value shows its value by the same rules.
+    #>
+    param([string]$Text, [string]$Key = '', $Patterns)
+    $sep = $Text.IndexOf('://')
+    if ($sep -ge 0 -and $Text.IndexOf('@', $sep) -gt $sep) { return '(redacted)' }
+    if ($Text -match '^[^\s/@:]+:[^\s@]*@') { return '(redacted)' }
+    if (Get-CEArgumentCredentialClass -Key $Key -Value $Text -Patterns $Patterns) { return '(redacted)' }
+    if ($Text -match '^[A-Za-z][A-Za-z0-9+.-]*://') {
+        $endpoint = Get-CEUrlEndpoint $Text
+        if ($endpoint) { return $endpoint }
+        return '(unreadable url)'
+    }
+    foreach ($part in @($Text -split '[;&]')) {
+        if ($part -match '^\s*([A-Za-z_][A-Za-z0-9_. -]*?)\s*=(.*)$' -and
+            (Get-CEArgumentCredentialClass -Key ($Matches[1] -replace ' ', '_') -Value $Matches[2] -Patterns $Patterns)) { return '(redacted)' }
+    }
+    if ($Text -match '^([A-Za-z_][A-Za-z0-9_.-]*)=(.*)$') {
+        $k = $Matches[1]; $v = $Matches[2]
+        return ('{0}={1}' -f $k, (Get-CEMcpArgumentText -Text $v -Patterns $Patterns))
+    }
+    if ($Text.Length -ge 20 -and $Text -notmatch '[\\/@.:]') { return '(redacted)' }
+    return $Text
+}
+
+function Get-CEMcpCommandName {
+    <#
+        The program an MCP server runs, by its file name only (npx, node.exe): a full path names the
+        user, and a command line written into 'command' can carry a token after the program. The
+        program is the quoted part, else the text up to the first .exe/.cmd/.bat/... (so an unquoted
+        path with spaces is kept whole), else the first word; its name goes through the same rules
+        as an argument.
+    #>
+    param([string]$Command, $Patterns)
+    $c = $Command.Trim()
+    if (-not $c) { return '' }
+    if ($c -match '^"([^"]*)"') { $prog = $Matches[1] }
+    elseif ($c -match '^(.*?\.(exe|cmd|bat|com|ps1|sh|py|js|mjs|cjs))(\s|$)') { $prog = $Matches[1] }
+    else { $prog = ($c -split '\s+', 2)[0] }
+    $leaf = ($prog.TrimEnd('\', '/') -split '[\\/]')[-1]
+    if (-not $leaf) { return '' }
+    return (Get-CEMcpArgumentText -Text $leaf -Patterns $Patterns)
+}
+
 function ConvertTo-CEMcpServers {
     <# Extracts normalised server records from one parsed config object. Reads no credential values into output. #>
-    param($Config, [string]$Root, [string]$ToolId, [string]$RelPath, [string]$AclIssue, $Patterns)
+    param($Config, [string]$Root, [string]$ToolId, [string]$RelPath, [string]$AclIssue, $Patterns, [bool]$AclUnread = $false)
 
     $records = New-Object System.Collections.ArrayList
     $rootObj = Get-CEObjectValue $Config $Root
@@ -162,37 +236,39 @@ function ConvertTo-CEMcpServers {
         $srv = $prop.Value
         if ($null -eq $srv) { continue }
 
-        $command = [string](Get-CEObjectValue $srv 'command' '')
+        $rawCommand = [string](Get-CEObjectValue $srv 'command' '')
         $url = [string](Get-CEObjectValue $srv 'url' '')
         $declared = [string](Get-CEObjectValue $srv 'type' (Get-CEObjectValue $srv 'transport' ''))
-        $transport = if ($declared) { $declared.ToLowerInvariant() } elseif ($command) { 'stdio' } elseif ($url) { 'http' } else { 'unknown' }
+        $transport = if ($declared) { $declared.ToLowerInvariant() } elseif ($rawCommand) { 'stdio' } elseif ($url) { 'http' } else { 'unknown' }
+        $command = Get-CEMcpCommandName -Command $rawCommand -Patterns $Patterns
 
-        $srvArgs = @(Get-CEObjectValue $srv 'args' @())
+        # Each argument with the name it is given under: the flag before it (--api-key VALUE) or its own
+        # KEY= (KEY=VALUE, --key=VALUE), so a credential passed either way is classified and never shown.
+        $srvArgs = @(@(Get-CEObjectValue $srv 'args' @()) | ForEach-Object { [string]$_ })
+        $argItems = New-Object System.Collections.ArrayList
+        $flag = ''
+        foreach ($a in $srvArgs) {
+            $key = ''; $value = $a
+            if ($a -match '^-{1,2}([A-Za-z0-9][A-Za-z0-9_.-]*)=(.*)$' -or $a -match '^([A-Za-z_][A-Za-z0-9_.-]*)=(.*)$') { $key = $Matches[1]; $value = $Matches[2] }
+            elseif ($flag -and -not $a.StartsWith('-')) { $key = $flag }
+            [void]$argItems.Add([pscustomobject]@{ Text = $a; Key = $key; Value = $value; FlagValue = ($key -and $key -eq $flag) })
+            $flag = if ($a -match '^-{1,2}([A-Za-z0-9][A-Za-z0-9_.-]*)$') { $Matches[1] } else { '' }
+        }
         # The summary names the package a server runs, and must never carry the secret next to it:
         # "npx -y @scope/server sk-live-..." would otherwise put the token in status.json and the report.
-        # Anything the classifier recognises is redacted, as is anything shaped like a bare token
-        # (long, and without the separators a package name or a path would have).
-        $pkg = @($srvArgs |
-            Where-Object { $_ -and -not ([string]$_).StartsWith('-') } |
+        $pkg = @($argItems |
+            Where-Object { $_.Text -and -not $_.Text.StartsWith('-') } |
             Select-Object -First 2 |
-            ForEach-Object {
-                $a = [string]$_
-                if (Get-CECredentialClass -Key '(argument)' -Value $a -Patterns $Patterns) { '(redacted)' }
-                elseif ($a.Length -ge 20 -and $a -notmatch '[\\/@.:]') { '(redacted)' }
-                else { $a }
-            })
+            ForEach-Object { Get-CEMcpArgumentText -Text $_.Text -Key $(if ($_.FlagValue) { $_.Key } else { '' }) -Patterns $Patterns })
         $argsSummary = ($pkg -join ' ')
         # Keep scheme, host and port only. Userinfo is a credential, and a path segment is a common
         # place to put a session token, so neither is recorded.
         $endpoint = ''
         if ($url) {
+            $endpoint = Get-CEUrlEndpoint $url
             $parsed = $null
-            if ([Uri]::TryCreate($url, [UriKind]::Absolute, [ref]$parsed)) {
-                $endpoint = '{0}://{1}' -f $parsed.Scheme, $parsed.Host
-                if (-not $parsed.IsDefaultPort) { $endpoint += ':' + $parsed.Port }
-                if ($parsed.AbsolutePath -and $parsed.AbsolutePath -ne '/') { $endpoint += '/...' }
-            }
-            else { $endpoint = '(unreadable url)' }
+            if (-not $endpoint) { $endpoint = '(unreadable url)' }
+            elseif ([Uri]::TryCreate($url, [UriKind]::Absolute, [ref]$parsed) -and $parsed.AbsolutePath -and $parsed.AbsolutePath -ne '/') { $endpoint += '/...' }
         }
 
         $creds = New-Object System.Collections.ArrayList
@@ -212,9 +288,9 @@ function ConvertTo-CEMcpServers {
                 if ($cls) { [void]$creds.Add($cls) }
             }
         }
-        # argument values that are themselves credential-shaped
-        foreach ($a in $srvArgs) {
-            $cls = Get-CECredentialClass -Key '(argument)' -Value ([string]$a) -Patterns $Patterns
+        # argument values that are credentials: by their prefix, or by the flag or KEY= they are given under
+        foreach ($item in $argItems) {
+            $cls = Get-CEArgumentCredentialClass -Key $item.Key -Value $item.Value -Patterns $Patterns
             if ($cls) { [void]$creds.Add($cls) }
         }
 
@@ -229,17 +305,40 @@ function ConvertTo-CEMcpServers {
                 credentialCount = @($creds).Count
                 credentials     = @($creds)
                 configAclIssue  = $AclIssue
+                aclUnread       = $AclUnread
             })
     }
     return , $records.ToArray()
 }
 
+function Get-CEMcpConfigAcl {
+    <#
+        The permissions problems of an MCP config at Full, shown by its path relative to the profile
+        (Rel), never the absolute path. Unread is true when the permissions could not be read; then
+        Issue is '' (not "other users can modify it"), and no error text is kept.
+    #>
+    param([string]$Full, [string]$Rel)
+    $problems = @(Get-CEPathAclProblem -Path $Full)
+    $unread = [bool]@($problems | Where-Object { ([string]$_).StartsWith("$Full permissions could not be read", [StringComparison]::OrdinalIgnoreCase) }).Count
+    if ($unread) { return [pscustomobject]@{ Issue = ''; Unread = $true } }
+    $issue = (@($problems | ForEach-Object { ([string]$_).Replace($Full, $Rel) }) -join '; ')
+    return [pscustomobject]@{ Issue = $issue; Unread = $false }
+}
+
 function Get-CEMcpInventory {
     <#
         Per-user MCP inventory. In a machine / SYSTEM context, records presence,
-        path and ACL only (never opens a file). In the user's own session, parses
-        each config and classifies its credentials, storing nothing derived from
-        a credential value.
+        path and ACL only (never opens a file). Otherwise parses each config and
+        classifies its credentials, storing nothing derived from a credential value.
+        Configs are found and read through the profile read layer (15-ProfileReads.ps1).
+        mcpConfigsUnreadable lists what could not be read, never dropped: a config
+        found and not read (kind file-content: the file is a link, a junction is on
+        the way, it is stored online only, too large, unreadable or not parseable),
+        a config whose existence could not be checked (kind existence: a symbolic
+        link on the way, or a folder or file the audit may not look at, which is not
+        counted as found), and a missing or non-local
+        profile. Reasons are fixed strings, so no error text (which can quote a
+        credential) is ever recorded.
     #>
     [CmdletBinding()]
     param($Context)
@@ -249,45 +348,95 @@ function Get-CEMcpInventory {
     if ($script:CEMcpCache -and $script:CEMcpCache.Key -eq $cacheKey) { return $script:CEMcpCache.Value }
 
     $servers = New-Object System.Collections.ArrayList
-    $unreadable = New-Object System.Collections.ArrayList
+    $log = New-CENotReadLog
+    $meta = @{}
     $parsed = 0
     $found = 0
     $patterns = Get-CECredentialPatterns
     $profilePath = Get-CEUserProfilePath -Context $Context
     $machineContext = [bool]$Context.IsSystem
+    $above = Test-CEAboveUserRights -Context $Context
 
-    if ($profilePath) {
+    if (-not $profilePath) {
+        Add-CENotRead -Log $log -Location '%USERPROFILE%' -Kind 'existence' -Reason $script:CENotReadText.NoProfile -Topic 'profile' `
+            -Remedy 'Run the audit while the person who uses this device is signed in at the console.'
+    }
+    elseif (-not (Test-CEProfileReady $profilePath)) {
+        # One record for the profile, not one per catalog entry.
+        Add-CENotRead -Log $log -Location '%USERPROFILE%' -Kind 'folder-listing' -Reason $script:CENotReadText.NotLocal -Topic 'mcp' `
+            -Remedy 'Check the MCP client configs in this profile by hand.'
+    }
+    else {
         foreach ($entry in (Get-CEMcpConfigCatalogue)) {
             if (-not $entry.RelPath) { continue }
-            $full = Join-Path $profilePath $entry.RelPath
-            if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { continue }
+            $rel = [string]$entry.RelPath
+            $loc = Get-CEProfileLocation $rel
+            $meta[$loc] = @{ path = $rel; toolId = [string]$entry.ToolId }
+            if (-not (Test-CERelativePathText $rel)) {
+                Add-CENotRead -Log $log -Location $loc -Kind 'existence' -Reason $script:CENotReadText.Malformed -Topic 'mcp' -Remedy 'Fix the mcpConfigs path in ai-tools.json.'
+                continue
+            }
+            $full = [IO.Path]::Combine($profilePath, $rel)
+            $parent = Split-Path -Parent $rel
+            # Existence, as for a listing: a symbolic link on the way leaves it unknown (not counted as found);
+            # a junction that passes the check lets it be seen, but its contents are never read through it.
+            $viaJunction = $false
+            if ($parent) {
+                $why = Get-CEPathChainProblem -Base $profilePath -Relative $parent -Mode Listing -Log $log -Above $above
+                if ($why -eq 'missing') { continue }
+                if ($why) { Add-CEWayNotRead -Log $log -Location $loc -Kind 'existence' -Reason $why -Topic 'mcp'; continue }
+                $viaJunction = ($above -and (Get-CEPathChainProblem -Base $profilePath -Relative $parent -Mode Content -Log $log -Above $above) -ne '')
+            }
+            # Only what Windows says is not there is missing; a config the audit may not look at is recorded, not counted.
+            $fi = Get-CEItemPresence -Path $full
+            if ($fi.State -eq 'missing' -or ($fi.State -eq 'present' -and $fi.IsFolder)) { continue }
+            if ($fi.State -ne 'present') { Add-CEWayNotRead -Log $log -Location $loc -Kind 'existence' -Reason $fi.Reason -Topic 'mcp'; continue }
             $found++
-            $aclIssue = ((@(Get-CEPathAclProblem -Path $full)) -join '; ')
+            $kind = if ($above) { Get-CEReparseKind -Item $fi } else { 'none' }
+            if ($viaJunction -or @('junction', 'symlink', 'surrogate', 'unreadable') -contains $kind) {
+                $reason = if ($viaJunction) { $script:CENotReadText.LinkForContent } else { $script:CENotReadText.ItemIsLink }
+                Add-CENotRead -Log $log -Location $loc -Kind 'file-content' -Reason $reason -Topic 'mcp' -NeedsUserSession $true
+                continue
+            }
 
             if ($machineContext) {
-                # Presence, path and ACL only. Do not open the file.
+                # Presence, path and ACL only. Do not open the file (a file stored online only is not downloaded either).
+                $acl = Get-CEMcpConfigAcl -Full $full -Rel $rel
                 [void]$servers.Add([ordered]@{
-                        toolId = $entry.ToolId; configPath = $entry.RelPath; serverName = ''
+                        toolId = $entry.ToolId; configPath = $rel; serverName = ''
                         transport = 'not-read'; command = ''; argsSummary = ''; endpoint = ''
-                        credentialCount = 0; credentials = @(); configAclIssue = $aclIssue
+                        credentialCount = 0; credentials = @(); configAclIssue = $acl.Issue; aclUnread = $acl.Unread
                     })
                 continue
             }
 
-            try {
-                $raw = Get-Content -LiteralPath $full -Raw -ErrorAction Stop
-                $cfg = ConvertFrom-CEJsonc -Text $raw
-                $parsed++
-                foreach ($rec in (ConvertTo-CEMcpServers -Config $cfg -Root $entry.Root -ToolId $entry.ToolId -RelPath $entry.RelPath -AclIssue $aclIssue -Patterns $patterns)) {
-                    [void]$servers.Add($rec)
-                }
-            }
+            $raw = Read-CEProfileFile -ProfilePath $profilePath -Relative $rel -MaxBytes 16MB -Log $log -Above $above -Topic 'mcp' `
+                -FileRemedy 'Check that the config file can be read, then run the audit again.'
+            if ($null -eq $raw) { continue }
+            $cfg = $null
+            try { $cfg = ConvertFrom-CEJsonc -Text $raw }
             catch {
-                [void]$unreadable.Add([ordered]@{ path = $entry.RelPath; toolId = $entry.ToolId; reason = ([string]$_.Exception.Message) })
+                # The parser's message can quote the text it choked on, which may be a credential: only its type is kept.
+                Write-Verbose "An MCP config for $($entry.ToolId) could not be parsed ($(Get-CEErrorTypeName $_))"
+                Add-CENotRead -Log $log -Location $loc -Kind 'file-content' -Reason $script:CENotReadText.Parse -Topic 'mcp' `
+                    -Remedy 'Check that each config file named is valid JSON (the audit also accepts comments and trailing commas), then run the audit again.'
+                continue
+            }
+            $parsed++
+            $acl = Get-CEMcpConfigAcl -Full $full -Rel $rel
+            foreach ($rec in (ConvertTo-CEMcpServers -Config $cfg -Root $entry.Root -ToolId $entry.ToolId -RelPath $rel -AclIssue $acl.Issue -AclUnread $acl.Unread -Patterns $patterns)) {
+                [void]$servers.Add($rec)
             }
         }
     }
 
+    $unreadable = @(foreach ($r in (Get-CENotReadRecordArray $log)) {
+            $m = if ($meta.ContainsKey($r.Location)) { $meta[$r.Location] } else { @{ path = ''; toolId = '' } }
+            [ordered]@{
+                path = $m.path; toolId = $m.toolId; reason = $r.Reason; needsUserSession = [bool]$r.NeedsUserSession
+                location = $r.Location; kind = $r.Kind; remedy = $r.Remedy; topic = $r.Topic; count = [int]$r.Count
+            }
+        })
     $allCreds = @(@($servers) | ForEach-Object { @($_.credentials) })
     $bounds = if ($machineContext) { 'machine context: config contents not read; run per-user for parsing' }
     else { 'profile config files only; workspace .mcp.json / WSL configs not scanned' }

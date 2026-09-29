@@ -103,6 +103,10 @@ Describe 'Tool: <_>' -Tag Lab -Skip:(-not $script:lab) -ForEach $script:labToolL
         $script:install = Install-SandboxTool -Id $script:id
         $script:row.Install = if ($script:install.Installed) { $script:install.Method } else { "FAILED ($($script:install.Method)): $($script:install.Message)" }
         $script:ready = [bool]$script:install.Installed
+        # A tool may have no windows block (one found only by its browser extensions), so read it with care.
+        $winProp = if ($script:rule.Count) { $script:rule[0].PSObject.Properties['windows'] } else { $null }
+        $script:windows = if ($winProp -and $winProp.Value) { $winProp.Value } else { $null }
+        $script:ruleItems = { param([string]$Name) $p = if ($script:windows) { $script:windows.PSObject.Properties[$Name] } else { $null }; if ($p -and $null -ne $p.Value) { , @($p.Value) } else { , @() } }
     }
     AfterAll {
         Stop-SandboxTool -Id $script:id
@@ -126,7 +130,7 @@ Describe 'Tool: <_>' -Tag Lab -Skip:(-not $script:lab) -ForEach $script:labToolL
         $script:row.Detected = if ($signals.Count) { 'yes' } else { 'NO' }
         $script:row.Signal = if ($signals.Count) { [string]$signals[0] } else { '-' }
         Write-Host "    signals: $($signals -join ' | ')"
-        if ($signals.Count -eq 0 -and @($script:rule[0].windows.vscodeExtensions).Count) {
+        if ($signals.Count -eq 0 -and (& $script:ruleItems 'vscodeExtensions').Count) {
             # Say what is actually on disk for extension-based rules: user extensions and VS Code's built-ins.
             $userExt = @(Get-ChildItem -LiteralPath (Join-Path $env:USERPROFILE '.vscode\extensions') -Directory -ErrorAction SilentlyContinue | ForEach-Object Name)
             $builtIn = @(Get-ChildItem -LiteralPath (Join-Path $env:LOCALAPPDATA 'Programs\Microsoft VS Code') -Recurse -Depth 4 -Directory -Filter '*copilot*' -ErrorAction SilentlyContinue | ForEach-Object FullName)
@@ -146,6 +150,9 @@ Describe 'Tool: <_>' -Tag Lab -Skip:(-not $script:lab) -ForEach $script:labToolL
 
     It 'is seen running, and UA-10 flags it as elevated (layer 2)' {
         if (-not $script:ready) { Set-ItResult -Skipped -Because 'install failed'; return }
+        if ($script:rule.Count -and $script:rule[0].PSObject.Properties['browserExtensions'] -and (& $script:ruleItems 'processes').Count -eq 0) {
+            $script:row.Running = 'n/a (browser extension)'; Set-ItResult -Skipped -Because 'browser extension: nothing to run'; return
+        }
         $proc = Start-SandboxTool -Id $script:id
         if (-not $proc) { $script:row.Running = 'could not launch'; Set-ItResult -Skipped -Because 'executable not found after install'; return }
         $state = Get-LabToolState
@@ -162,8 +169,7 @@ Describe 'Tool: <_>' -Tag Lab -Skip:(-not $script:lab) -ForEach $script:labToolL
 
     It 'finds a seeded MCP config and classifies its credentials (layer 3)' {
         # ($null | ForEach-Object) still runs once, so test for the property before enumerating it.
-        $mcpProp = $script:rule[0].windows.PSObject.Properties['mcpConfigs']
-        $mcp = @(if ($mcpProp -and $null -ne $mcpProp.Value) { $mcpProp.Value } else { @() })
+        $mcp = & $script:ruleItems 'mcpConfigs'
         if ($mcp.Count -eq 0) { $script:row.Mcp = 'n/a (no config rule)'; Set-ItResult -Skipped -Because 'tool has no mcpConfigs rule'; return }
         $cfg = $mcp[0]
         $path = Join-Path $env:USERPROFILE ([string]$cfg.path)

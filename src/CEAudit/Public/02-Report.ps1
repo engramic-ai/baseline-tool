@@ -7,6 +7,12 @@
 # Set it to '' to leave it out of the report.
 $script:CEAIPaidTierNote = 'Recording which of these tools your organisation has approved, across all its devices, is part of the Engramic Baseline paid tier.'
 
+# How the AI section describes a tool found only in the profile folder of a browser that has been uninstalled.
+$script:CEAILeftoverText = 'only in the profile folder of a browser that is no longer installed'
+# Lead for 'browser-installed' records: they hide no AI tool, but whether a tool found in that browser's
+# profile is a leftover is unknown. The app's AI tab (Set-CEAiTab) uses the same words.
+$script:CEAIBrowserInstalledLead = 'Whether these browsers are still installed could not be checked, so the AI extensions found in their profiles are listed as installed, though they may be left over from a browser that was removed'
+
 $script:CEPlusTestCases = @(
     @{ Id = 'TC1'; Name = 'Remote vulnerability assessment'; Scope = 'Internet-facing services. Tested externally by the assessor; this device audit only covers local firewall exposure.' },
     @{ Id = 'TC2'; Name = 'Check patching (authenticated scan)'; Scope = 'OS and application fixes older than 14 days (CVSS >= 7, critical/high, or unrated).' },
@@ -179,9 +185,30 @@ function Export-CEMarkdown {
         & $w '## AI on this device'
         & $w ''
         & $w "**$(Get-CEAIToolCountText $ai.agentsFound)** - $(if ($ai.contained) { 'contained (none running as administrator, no root distribution)' } else { "$($ai.deviations) deviation(s)" })."
+        $shown = @($ai.notRead | Where-Object { $_.topic -ne 'extension-version' })
+        $browserShown = @($shown | Where-Object { $_.topic -eq 'browser-installed' })
+        $otherShown = @($shown | Where-Object { $_.topic -ne 'browser-installed' })
+        if ($otherShown.Count) {
+            & $w ''
+            # scanComplete is false only when a location not read could hide an AI tool.
+            & $w $(if (-not $ai.scanComplete) { 'Some locations were not read, so this list may be incomplete:' }
+                else { 'Some locations were not read. None of them could hide an AI tool, but what else they hold (such as a virtual machine or an MCP config) was not checked:' })
+            & $w ''
+            foreach ($r in $otherShown) { & $w "- $(Format-CENotRead $r)" }
+        }
+        if ($browserShown.Count) {
+            & $w ''
+            & $w "${script:CEAIBrowserInstalledLead}:"
+            & $w ''
+            foreach ($r in $browserShown) { & $w "- $(Format-CENotRead $r)" }
+        }
+        if ($shown.Count) {
+            & $w ''
+            & $w ((Get-CENotReadAdvice -Records $shown -Scope Machine) -join ' ')
+        }
         & $w ''
         foreach ($a in @($ai.agents)) {
-            $how = if ($a.elevated -or $a.asSystem) { '**running as administrator**' } elseif ($a.running) { 'running, standard user' } else { 'present' }
+            $how = if ($a.elevated -or $a.asSystem) { '**running as administrator**' } elseif ($a.running) { 'running, standard user' } elseif ($a.leftoverOnly) { $script:CEAILeftoverText } else { 'present' }
             & $w "- $($a.name) - $how"
         }
         foreach ($env in @($ai.environments)) {
@@ -189,7 +216,7 @@ function Export-CEMarkdown {
             else { & $w "- $($env.type): $($env.name)" }
         }
         & $w ''
-        & $w 'Baseline finds AI installed on this device. It can''t see AI used in a browser tab.'
+        & $w 'Baseline finds recognised AI apps and browser extensions installed on this device. It can''t see AI websites used in a browser tab.'
         if ($ai.agentsFound -gt 0 -and $script:CEAIPaidTierNote) {
             & $w ''
             & $w $script:CEAIPaidTierNote
@@ -382,7 +409,7 @@ function Export-CEHtml {
 
     $attn = @($checkMap.Keys | Where-Object { @('Fail', 'Warn', 'Error') -contains [string]$checkMap[$_].status }).Count
     $confirm = @($checkMap.Keys | Where-Object { [string]$checkMap[$_].status -eq 'Manual' }).Count
-    $aiMsg = if ($aiPosture.agentsFound -eq 0) { 'no AI tools detected' } elseif ($aiPosture.contained) { 'AI tools contained' } else { "$($aiPosture.deviations) AI deviation(s)" }
+    $aiMsg = if ($aiPosture.agentsFound -eq 0 -and -not $aiPosture.scanComplete) { 'no AI tools confirmed; scan incomplete' } elseif ($aiPosture.agentsFound -eq 0) { 'no AI tools detected' } elseif ($aiPosture.contained) { 'AI tools contained' } else { "$($aiPosture.deviations) AI deviation(s)" }
     $ctrlMsg = if ($attn) { "<span class='bad'>$attn control$(if ($attn -ne 1) { 's' }) need attention</span>" } else { 'No controls failing' }
     if ($confirm) { $ctrlMsg += " &middot; $confirm to confirm" }
     $msgHtml = if ($Summary.PartialRun) { "<div class='msg'>$(& $e $Summary.Verdict)</div>" } else { "<div class='msg'>$ctrlMsg. $aiMsg.</div>" }
@@ -402,7 +429,7 @@ function Export-CEHtml {
     }
 
     $agentsLi = (@($aiPosture.agents) | ForEach-Object {
-            $how = if ($_.elevated -or $_.asSystem) { "<span class='agent-admin'>running as administrator</span>" } elseif ($_.running) { 'running, standard user' } else { 'present' }
+            $how = if ($_.elevated -or $_.asSystem) { "<span class='agent-admin'>running as administrator</span>" } elseif ($_.running) { 'running, standard user' } elseif ($_.leftoverOnly) { $script:CEAILeftoverText } else { 'present' }
             "<li>$(& $e $_.name) &mdash; $how</li>"
         }) -join ''
     $envLi = (@($aiPosture.environments) | ForEach-Object {
@@ -423,9 +450,18 @@ function Export-CEHtml {
         }) -join ''
     $aiDevCls = if ($aiPosture.contained) { 'ok' } else { 'bad' }
     $aiDevTxt = if ($aiPosture.contained) { 'contained' } else { "$($aiPosture.deviations) deviation(s)" }
-    $aiEmpty = if ($aiPosture.agentsFound -eq 0) { "<p class='ref'>No AI tools detected in this session.$(if ($Context.IsSystem) { ' Shadow AI is collected per user; run as the signed-in user for the full picture.' })</p>" } else { '' }
+    $aiEmpty = if ($aiPosture.agentsFound -eq 0 -and -not $aiPosture.scanComplete) { "<p class='ref'>No AI tools confirmed; scan incomplete: some locations were not read (below).</p>" }
+    elseif ($aiPosture.agentsFound -eq 0) { "<p class='ref'>No AI tools detected in this session.$(if ($Context.IsSystem) { ' Shadow AI is collected per user; run as the signed-in user for the full picture.' })</p>" } else { '' }
+    $notReadShown = @(@($aiPosture.notRead) | Where-Object { $_.topic -ne 'extension-version' })
+    $notReadLi = (@($notReadShown | Where-Object { $_.topic -ne 'browser-installed' }) | ForEach-Object { "<li>$(& $e (Format-CENotRead $_))</li>" }) -join ''
+    $browserNotReadLi = (@($notReadShown | Where-Object { $_.topic -eq 'browser-installed' }) | ForEach-Object { "<li>$(& $e (Format-CENotRead $_))</li>" }) -join ''
+    $notReadLead = if (-not $aiPosture.scanComplete) { 'Not read, so the AI tools found may be incomplete.' } else { 'Not read. None of these could hide an AI tool, but what else they hold (such as a virtual machine or an MCP config) was not checked.' }
+    $aiNotRead = ''
+    if ($notReadLi) { $aiNotRead += "<div class='ref' style='margin-top:8px'>$notReadLead</div><ul>$notReadLi</ul>" }
+    if ($browserNotReadLi) { $aiNotRead += "<div class='ref' style='margin-top:8px'>$(& $e $script:CEAIBrowserInstalledLead).</div><ul>$browserNotReadLi</ul>" }
+    if ($aiNotRead) { $aiNotRead += "<div class='ref'>$(& $e ((Get-CENotReadAdvice -Records $notReadShown -Scope Machine) -join ' '))</div>" }
     $aiPaidHtml = if ($aiPosture.agentsFound -gt 0 -and $script:CEAIPaidTierNote) { "<p class='ref' style='margin:6px 0 0'>$(& $e $script:CEAIPaidTierNote)</p>" } else { '' }
-    $aiHtml = "<h2 id='ai'>AI on this device</h2><div class='aibox'><div class='h'><strong>$(Get-CEAIToolCountText $aiPosture.agentsFound)</strong><span class='dev0 $aiDevCls'>$aiDevTxt</span></div>$aiEmpty$(if ($agentsLi) { "<ul>$agentsLi</ul>" })$(if ($envLi) { "<div class='ref' style='margin-top:8px'>Where AI runs</div><ul>$envLi</ul>" })$(if ($mcpLi) { "<div class='ref' style='margin-top:8px'>MCP servers</div><ul>$mcpLi</ul>" })<p class='ref' style='margin:10px 0 0'>Baseline finds AI installed on this device. It can't see AI used in a browser tab.</p>$aiPaidHtml</div>"
+    $aiHtml = "<h2 id='ai'>AI on this device</h2><div class='aibox'><div class='h'><strong>$(Get-CEAIToolCountText $aiPosture.agentsFound)</strong><span class='dev0 $aiDevCls'>$aiDevTxt</span></div>$aiEmpty$(if ($agentsLi) { "<ul>$agentsLi</ul>" })$(if ($envLi) { "<div class='ref' style='margin-top:8px'>Where AI runs</div><ul>$envLi</ul>" })$(if ($mcpLi) { "<div class='ref' style='margin-top:8px'>MCP servers</div><ul>$mcpLi</ul>" })$aiNotRead<p class='ref' style='margin:10px 0 0'>Baseline finds recognised AI apps and browser extensions installed on this device. It can't see AI websites used in a browser tab.</p>$aiPaidHtml</div>"
 
     $applyCmd = & $e ".\app\Apply-CEChangeset.ps1 -Path '$ChangesetPath' -WhatIf"
 

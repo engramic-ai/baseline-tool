@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
-  "notes": "AI assistants and agents recognised on a device, by operating system (UA-07, SC-09, UA-10). Shared fields: id, name, vendor, service (the cloud account to attest MFA for; null when it varies or is local), canActOnDevice (the tool can run commands, edit files or control apps, so it is treated like a remote access tool) and sources. How to detect the tool is given per operating system: 'windows' now, with 'macos' and 'linux' to follow. A tool without a block for an operating system is not looked for there. Windows signals: programs (Add/Remove Programs name and optional publisher), uninstallKeys, appx (Store package name), processes (image, optional path and command line patterns), paths (under the user profile), vscodeExtensions (folder patterns under .vscode\\extensions) and mcpConfigs (MCP client configuration files). enabled: false in an operating system's block keeps the entry listed without detecting it there (e.g. apps preinstalled with Windows). Names were checked against vendor documentation, winget-pkgs manifests and npm; see sources. Candidate for hosting on the catalog service; schemaVersion changes when this shape does.",
-  "lastReviewed": "2026-09-21",
+  "notes": "AI assistants, agents, AI browsers and AI browser extensions recognised on a device, by operating system (UA-07, SC-09, UA-10). Shared fields: id, name, vendor, service (the cloud account to attest MFA for; null when it varies or is local), canActOnDevice (the tool can run commands, edit files or control apps, so it is treated like a remote access tool) and sources. browserExtensions (shared by every operating system): the tool's browser extension ids, each with its store: chrome (Chrome Web Store; also used by Edge, Brave, Vivaldi, Opera, Arc and Comet), edge (Edge Add-ons), opera (Opera add-ons) or firefox (addons.mozilla.org add-on id). Every Chromium browser profile is checked for every chrome, edge and opera id, and every Firefox profile for every firefox id. Where each browser keeps its profiles is in browser-profiles.json. A tool with browserExtensions is looked for on an operating system even without a block for it; enabled: false in that block turns this off too. How to detect the tool is given per operating system: 'windows' now, with 'macos' and 'linux' to follow. A tool with neither a block for an operating system nor browserExtensions is not looked for there. Windows signals: programs (Add/Remove Programs name and optional publisher), uninstallKeys, appx (Store package name), processes (image, optional path and command line patterns), paths (under the user profile), vscodeExtensions (folder patterns under .vscode\\extensions) and mcpConfigs (MCP client configuration files). enabled: false in an operating system's block keeps the entry listed without detecting it there (e.g. apps preinstalled with Windows). Names were checked against vendor documentation, winget-pkgs manifests, npm and the browser extension stores; see sources. Candidate for hosting on the catalog service. schemaVersion changes only when an older reader would misread the file; a new optional field does not change it.",
+  "lastReviewed": "2026-09-26",
   "tools": [
     {
       "id": "claude-desktop",
@@ -590,6 +590,656 @@
       },
       "sources": [
         "https://lmstudio.ai/docs/app/mcp"
+      ]
+    },
+    {
+      "id": "perplexity-comet",
+      "name": "Comet browser (Perplexity)",
+      "vendor": "Perplexity AI",
+      "service": "Perplexity",
+      "canActOnDevice": false,
+      "notes": "AI browser with a built-in assistant that acts on web pages for the person, on their Perplexity account. Its profiles are also checked for AI browser extensions.",
+      "windows": {
+        "programs": [
+          {
+            "name": "Comet",
+            "publisher": "The Comet Authors"
+          }
+        ],
+        "uninstallKeys": [
+          "Perplexity Comet"
+        ],
+        "appx": [],
+        "processes": [
+          {
+            "image": "comet.exe",
+            "path": "*\\Perplexity\\Comet\\*"
+          }
+        ],
+        "paths": [
+          "AppData\\Local\\Perplexity\\Comet\\Application"
+        ],
+        "vscodeExtensions": []
+      },
+      "sources": [
+        "https://github.com/microsoft/winget-pkgs/tree/master/manifests/p/Perplexity/Comet",
+        "https://apps.microsoft.com/detail/xpffvlpjrvqtkm",
+        "https://www.perplexity.ai/comet",
+        "https://github.com/stablyai/orca/issues/14295"
+      ]
+    },
+    {
+      "id": "opera-neon",
+      "name": "Opera Neon browser",
+      "vendor": "Opera",
+      "service": "Opera account",
+      "canActOnDevice": false,
+      "notes": "AI browser whose agents act on web pages for the person; outside agents can drive it through its MCP connector. Not the 2017 concept browser of the same name.",
+      "windows": {
+        "programs": [
+          {
+            "name": "Opera Neon*",
+            "publisher": "Opera*"
+          }
+        ],
+        "uninstallKeys": [],
+        "appx": [],
+        "processes": [
+          {
+            "image": "opera.exe",
+            "path": "*\\Opera Neon\\*"
+          },
+          {
+            "image": "opera.exe",
+            "path": "*\\Opera Neon Developer\\*"
+          }
+        ],
+        "paths": [
+          "AppData\\Local\\Programs\\Opera Neon",
+          "AppData\\Local\\Programs\\Opera Neon Developer"
+        ],
+        "vscodeExtensions": []
+      },
+      "sources": [
+        "https://github.com/operasoftware/opera-browser-cli/blob/main/src/detect.ts",
+        "https://github.com/operasoftware/opera-browser-cli/blob/main/src/profile.ts",
+        "https://press.opera.com/2025/12/11/opera-opens-public-access-to-opera-neon-its-experimental-agentic-ai-browser/",
+        "https://blogs.opera.com/news/2026/08/your-ai-agents-can-use-opera-neon-free-of-charge/"
+      ]
+    },
+    {
+      "id": "genspark-browser",
+      "name": "Genspark AI browser",
+      "vendor": "Genspark (MainFunc Inc.)",
+      "service": "Genspark",
+      "canActOnDevice": false,
+      "notes": "AI browser whose Super Agent navigates and acts on websites for the person. Bundles a local model runtime.",
+      "windows": {
+        "programs": [
+          {
+            "name": "Genspark",
+            "publisher": "Genspark Software*"
+          },
+          {
+            "name": "Genspark Browser",
+            "publisher": "Genspark Software*"
+          }
+        ],
+        "uninstallKeys": [],
+        "appx": [],
+        "processes": [
+          {
+            "image": "genspark.exe",
+            "path": "*\\GensparkSoftware\\Genspark-Browser\\*"
+          }
+        ],
+        "paths": [
+          "AppData\\Local\\GensparkSoftware\\Genspark-Browser\\Application"
+        ],
+        "vscodeExtensions": []
+      },
+      "sources": [
+        "https://www.genspark.ai/api/browser/appcast?os=windows",
+        "https://www.genspark.ai/browser",
+        "https://www.genspark.ai/blog/genspark-ai-browser",
+        "https://www.advanceduninstaller.com/Genspark-Browser-5ddb7e342852a8c68efd0cdb85d4c823-application.htm"
+      ]
+    },
+    {
+      "id": "claude-in-chrome",
+      "name": "Claude in Chrome",
+      "vendor": "Anthropic",
+      "service": "Anthropic (Claude)",
+      "canActOnDevice": false,
+      "notes": "Browser extension that acts on web pages for the person (reads pages, clicks, types, fills forms) with their signed-in sessions. The Claude desktop app and Claude Code can drive it. The store listing says Chrome only; Claude Code's documentation says it also works in Edge.",
+      "browserExtensions": [
+        {
+          "store": "chrome",
+          "id": "fcoeoabgfenejglbffodgkkbkcdhcgfn"
+        }
+      ],
+      "sources": [
+        "https://chromewebstore.google.com/detail/fcoeoabgfenejglbffodgkkbkcdhcgfn",
+        "https://code.claude.com/docs/en/chrome"
+      ]
+    },
+    {
+      "id": "chatgpt-extension",
+      "name": "ChatGPT browser extension",
+      "vendor": "OpenAI",
+      "service": "OpenAI (ChatGPT)",
+      "canActOnDevice": false,
+      "notes": "Can drive the browser to carry out tasks, and lets the ChatGPT desktop app control the browser. The \"OpenAi & ChatGpt\" sidebar on Edge Add-ons is a third party's, not this.",
+      "browserExtensions": [
+        {
+          "store": "chrome",
+          "id": "hehggadaopoacecdllhhajmbjkdcmajg"
+        },
+        {
+          "store": "edge",
+          "id": "odlomjlbamekndcpllcnffbgeohgkmjh"
+        }
+      ],
+      "sources": [
+        "https://chromewebstore.google.com/detail/hehggadaopoacecdllhhajmbjkdcmajg",
+        "https://microsoftedge.microsoft.com/addons/detail/odlomjlbamekndcpllcnffbgeohgkmjh",
+        "https://learn.chatgpt.com/docs/chrome-extension"
+      ]
+    },
+    {
+      "id": "chatgpt-search-extension",
+      "name": "ChatGPT search browser extension",
+      "vendor": "OpenAI",
+      "service": "OpenAI (ChatGPT)",
+      "canActOnDevice": false,
+      "notes": "Makes ChatGPT the browser's search engine, so what is typed in the address bar goes to the signed-in ChatGPT account.",
+      "browserExtensions": [
+        {
+          "store": "chrome",
+          "id": "ejcfepkfckglbgocfkanmcdngdijcgld"
+        }
+      ],
+      "sources": [
+        "https://chromewebstore.google.com/detail/ejcfepkfckglbgocfkanmcdngdijcgld",
+        "https://chromewebstore.google.com/publisher/openai/u33f3849923dbb9495ad540f8634ab579"
+      ]
+    },
+    {
+      "id": "perplexity-extension",
+      "name": "Perplexity AI Companion browser extension",
+      "vendor": "Perplexity AI",
+      "service": "Perplexity",
+      "canActOnDevice": false,
+      "notes": "Sends the page the person is on to Perplexity when they ask. Published by the owner of perplexity.ai.",
+      "browserExtensions": [
+        {
+          "store": "chrome",
+          "id": "hlgbcneanomplepojfcnclggenpcoldo"
+        }
+      ],
+      "sources": [
+        "https://chromewebstore.google.com/detail/hlgbcneanomplepojfcnclggenpcoldo"
+      ]
+    },
+    {
+      "id": "sider-extension",
+      "name": "Sider browser extension",
+      "vendor": "Vidline Inc.",
+      "service": "Sider",
+      "canActOnDevice": false,
+      "notes": "AI sidebar using several models. Its agents act on web pages with the person's signed-in sessions; Sider Operator (the second Chrome id) is the companion extension that clicks and types for them.",
+      "browserExtensions": [
+        {
+          "store": "chrome",
+          "id": "difoiogjjojoaoomphldepapgpbgkhkb"
+        },
+        {
+          "store": "edge",
+          "id": "dhoenijjpgpeimemopealfcbiecgceod"
+        },
+        {
+          "store": "chrome",
+          "id": "mokiolnliafiddobcgmmnmhbmimpccon"
+        }
+      ],
+      "sources": [
+        "https://chromewebstore.google.com/detail/difoiogjjojoaoomphldepapgpbgkhkb",
+        "https://microsoftedge.microsoft.com/addons/detail/dhoenijjpgpeimemopealfcbiecgceod",
+        "https://chromewebstore.google.com/detail/mokiolnliafiddobcgmmnmhbmimpccon",
+        "https://sider.ai/en/agents/hand"
+      ]
+    },
+    {
+      "id": "monica-extension",
+      "name": "Monica browser extension",
+      "vendor": "Butterfly Effect Pte. Ltd.",
+      "service": "Monica",
+      "canActOnDevice": false,
+      "notes": "AI sidebar with a Browser Operator that controls the browser to carry out tasks across websites.",
+      "browserExtensions": [
+        {
+          "store": "chrome",
+          "id": "ofpnmcalabcbjgholdjcjblkibolbppb"
+        },
+        {
+          "store": "edge",
+          "id": "fhimbbbmdjiifimnepkibjfjbppnjble"
+        }
+      ],
+      "sources": [
+        "https://chromewebstore.google.com/detail/ofpnmcalabcbjgholdjcjblkibolbppb",
+        "https://microsoftedge.microsoft.com/addons/detail/fhimbbbmdjiifimnepkibjfjbppnjble",
+        "https://monica.im/"
+      ]
+    },
+    {
+      "id": "merlin-extension",
+      "name": "Merlin AI browser extension",
+      "vendor": "Foyer Tech",
+      "service": "Merlin",
+      "canActOnDevice": false,
+      "notes": "Chat with and summaries of web pages, videos and documents.",
+      "browserExtensions": [
+        {
+          "store": "chrome",
+          "id": "camppjleccjaphfdbohjdohecfnoikec"
+        }
+      ],
+      "sources": [
+        "https://chromewebstore.google.com/detail/camppjleccjaphfdbohjdohecfnoikec",
+        "https://www.getmerlin.in/"
+      ]
+    },
+    {
+      "id": "maxai-extension",
+      "name": "MaxAI browser extension",
+      "vendor": "MaxAI",
+      "service": "MaxAI",
+      "canActOnDevice": false,
+      "notes": "AI sidebar and menu for the page the person is on.",
+      "browserExtensions": [
+        {
+          "store": "chrome",
+          "id": "mhnlakgilnojmhinhkckjpncpbhabphi"
+        },
+        {
+          "store": "edge",
+          "id": "ngphehpfehdmjellohmlojkplilekadg"
+        }
+      ],
+      "sources": [
+        "https://chromewebstore.google.com/detail/mhnlakgilnojmhinhkckjpncpbhabphi",
+        "https://microsoftedge.microsoft.com/addons/detail/ngphehpfehdmjellohmlojkplilekadg",
+        "https://www.maxai.co/"
+      ]
+    },
+    {
+      "id": "harpa-extension",
+      "name": "HARPA AI browser extension",
+      "vendor": "HARPA AI Technologies Oy",
+      "service": "HARPA AI",
+      "canActOnDevice": false,
+      "notes": "AI browser automation: fills in and scrapes web pages and runs routine tasks. Can use the person's ChatGPT, Claude or Gemini account, or an API key.",
+      "browserExtensions": [
+        {
+          "store": "chrome",
+          "id": "eanggfilgoajaocelnaflolkadkeghjp"
+        }
+      ],
+      "sources": [
+        "https://chromewebstore.google.com/detail/eanggfilgoajaocelnaflolkadkeghjp",
+        "https://harpa.ai/"
+      ]
+    },
+    {
+      "id": "aitopia-extension",
+      "name": "AITOPIA browser extension",
+      "vendor": "AITOPIA",
+      "service": "AITOPIA",
+      "canActOnDevice": false,
+      "notes": "AI sidebar for chat, writing and email drafts.",
+      "browserExtensions": [
+        {
+          "store": "chrome",
+          "id": "becfinhbfclcgokjlobojlnldbfillpf"
+        }
+      ],
+      "sources": [
+        "https://chromewebstore.google.com/detail/becfinhbfclcgokjlobojlnldbfillpf",
+        "https://www.aitopia.ai/"
+      ]
+    },
+    {
+      "id": "aiprm-extension",
+      "name": "AIPRM for ChatGPT browser extension",
+      "vendor": "AIPRM, Corp.",
+      "service": "AIPRM",
+      "canActOnDevice": false,
+      "notes": "Prompt library added to ChatGPT; needs an AIPRM account.",
+      "browserExtensions": [
+        {
+          "store": "chrome",
+          "id": "ojnbohmppadfgpejeebfnmnknjdlckgj"
+        },
+        {
+          "store": "edge",
+          "id": "nkiohniccbickhccicgbedaibabialda"
+        }
+      ],
+      "sources": [
+        "https://chromewebstore.google.com/detail/ojnbohmppadfgpejeebfnmnknjdlckgj",
+        "https://microsoftedge.microsoft.com/addons/detail/nkiohniccbickhccicgbedaibabialda",
+        "https://www.aiprm.com/"
+      ]
+    },
+    {
+      "id": "glasp-extension",
+      "name": "Glasp YouTube Summary browser extension",
+      "vendor": "Glasp Inc.",
+      "service": null,
+      "canActOnDevice": false,
+      "notes": "Sends YouTube transcripts to the AI chat the person picks (ChatGPT, Claude, Gemini or Mistral); needs no Glasp account.",
+      "browserExtensions": [
+        {
+          "store": "chrome",
+          "id": "nmmicjeknamkfloonkhhcjmomieiodli"
+        },
+        {
+          "store": "edge",
+          "id": "cfmilchfgimokpfjlhabjiaenaldahih"
+        },
+        {
+          "store": "firefox",
+          "id": "{33790bb6-386a-4cab-a9d0-c760b5a467ab}"
+        }
+      ],
+      "sources": [
+        "https://chromewebstore.google.com/detail/nmmicjeknamkfloonkhhcjmomieiodli",
+        "https://microsoftedge.microsoft.com/addons/detail/cfmilchfgimokpfjlhabjiaenaldahih",
+        "https://addons.mozilla.org/api/v5/addons/addon/youtube-summary-with-chatgpt/",
+        "https://glasp.co/youtube-summary"
+      ]
+    },
+    {
+      "id": "jetwriter-extension",
+      "name": "Jetwriter AI browser extension",
+      "vendor": "Jetwriter AI",
+      "service": "Jetwriter AI",
+      "canActOnDevice": false,
+      "notes": "Writing and email reply assistant, formerly ChatGPT Writer.",
+      "browserExtensions": [
+        {
+          "store": "chrome",
+          "id": "pdnenlnelpdomajfejgapbdpmjkfpjkp"
+        },
+        {
+          "store": "edge",
+          "id": "gocnmcailiollkkaaieichicbfobepae"
+        }
+      ],
+      "sources": [
+        "https://chromewebstore.google.com/detail/pdnenlnelpdomajfejgapbdpmjkfpjkp",
+        "https://microsoftedge.microsoft.com/addons/detail/gocnmcailiollkkaaieichicbfobepae",
+        "https://jetwriter.ai/"
+      ]
+    },
+    {
+      "id": "quillbot-extension",
+      "name": "QuillBot browser extension",
+      "vendor": "QuillBot (Learneo)",
+      "service": "QuillBot",
+      "canActOnDevice": false,
+      "notes": "AI writing assistant: paraphrasing, grammar, AI chat and AI detection.",
+      "browserExtensions": [
+        {
+          "store": "chrome",
+          "id": "iidnbdjijdkbmajdffnidomddglmieko"
+        },
+        {
+          "store": "edge",
+          "id": "cphpplikchcioccedpjacdanfibnimmh"
+        }
+      ],
+      "sources": [
+        "https://chromewebstore.google.com/detail/iidnbdjijdkbmajdffnidomddglmieko",
+        "https://microsoftedge.microsoft.com/addons/detail/cphpplikchcioccedpjacdanfibnimmh"
+      ]
+    },
+    {
+      "id": "wordtune-extension",
+      "name": "Wordtune browser extension",
+      "vendor": "AI21 Labs",
+      "service": "Wordtune",
+      "canActOnDevice": false,
+      "notes": "AI writing assistant: rewrites, translates and fixes grammar.",
+      "browserExtensions": [
+        {
+          "store": "chrome",
+          "id": "nllcnknpjnininklegdoijpljgdjkijc"
+        },
+        {
+          "store": "edge",
+          "id": "fgngodlaekdlibajobmkaklibdggemdd"
+        },
+        {
+          "store": "firefox",
+          "id": "support@wordtune.com"
+        }
+      ],
+      "sources": [
+        "https://chromewebstore.google.com/detail/nllcnknpjnininklegdoijpljgdjkijc",
+        "https://microsoftedge.microsoft.com/addons/detail/fgngodlaekdlibajobmkaklibdggemdd",
+        "https://addons.mozilla.org/api/v5/addons/addon/wordtune-ai-writing-assistant/"
+      ]
+    },
+    {
+      "id": "deepsider-extension",
+      "name": "DeepSider browser extension",
+      "vendor": "DeepSider",
+      "service": "DeepSider",
+      "canActOnDevice": false,
+      "notes": "AI sidebar using several models. The publisher gives no company name.",
+      "browserExtensions": [
+        {
+          "store": "chrome",
+          "id": "dfbnddndcmilnhdfmmaolepiaefacnpo"
+        },
+        {
+          "store": "edge",
+          "id": "minfmdkpoboejckenbchpjbjjkbdebdm"
+        }
+      ],
+      "sources": [
+        "https://chromewebstore.google.com/detail/dfbnddndcmilnhdfmmaolepiaefacnpo",
+        "https://microsoftedge.microsoft.com/addons/detail/minfmdkpoboejckenbchpjbjjkbdebdm",
+        "https://deepsider.ai/"
+      ]
+    },
+    {
+      "id": "liner-extension",
+      "name": "Liner browser extension",
+      "vendor": "LINER, Inc.",
+      "service": "Liner",
+      "canActOnDevice": false,
+      "notes": "AI research assistant for web pages, YouTube and PDFs.",
+      "browserExtensions": [
+        {
+          "store": "chrome",
+          "id": "bmhcbmnbenmcecpmpepghooflbehcack"
+        },
+        {
+          "store": "edge",
+          "id": "kmhegedbanhfblnoboomoeafpmojfdlp"
+        }
+      ],
+      "sources": [
+        "https://chromewebstore.google.com/detail/bmhcbmnbenmcecpmpepghooflbehcack",
+        "https://microsoftedge.microsoft.com/addons/detail/kmhegedbanhfblnoboomoeafpmojfdlp",
+        "https://liner.com/"
+      ]
+    },
+    {
+      "id": "notegpt-extension",
+      "name": "NoteGPT browser extension",
+      "vendor": "NoteGPT",
+      "service": "NoteGPT",
+      "canActOnDevice": false,
+      "notes": "Summaries of YouTube videos and web pages, and AI chat. Neither store names NoteGPT as the publisher; notegpt.io links both listings.",
+      "browserExtensions": [
+        {
+          "store": "chrome",
+          "id": "baecjmoceaobpnffgnlkloccenkoibbb"
+        },
+        {
+          "store": "edge",
+          "id": "mnnmpdiaiikcakickjaihekjeggflebl"
+        }
+      ],
+      "sources": [
+        "https://chromewebstore.google.com/detail/baecjmoceaobpnffgnlkloccenkoibbb",
+        "https://microsoftedge.microsoft.com/addons/detail/mnnmpdiaiikcakickjaihekjeggflebl",
+        "https://notegpt.io/"
+      ]
+    },
+    {
+      "id": "chathub-extension",
+      "name": "ChatHub browser extension",
+      "vendor": "Jike HK Limited",
+      "service": "ChatHub",
+      "canActOnDevice": false,
+      "notes": "Chats with several AI services side by side, using the person's signed-in ChatGPT and Claude sessions or a ChatHub subscription.",
+      "browserExtensions": [
+        {
+          "store": "chrome",
+          "id": "iaakpnchhognanibcahlpcplchdfmgma"
+        },
+        {
+          "store": "edge",
+          "id": "kdlmggoacmfoombiokflpeompajfljga"
+        }
+      ],
+      "sources": [
+        "https://chromewebstore.google.com/detail/iaakpnchhognanibcahlpcplchdfmgma",
+        "https://microsoftedge.microsoft.com/addons/detail/kdlmggoacmfoombiokflpeompajfljga",
+        "https://chathub.gg/"
+      ]
+    },
+    {
+      "id": "compose-ai-extension",
+      "name": "Compose AI browser extension",
+      "vendor": "Compose AI",
+      "service": "Compose AI",
+      "canActOnDevice": false,
+      "notes": "AI writing and email reply assistant.",
+      "browserExtensions": [
+        {
+          "store": "chrome",
+          "id": "ddlbpiadoechcolndfeaonajmngmhblj"
+        }
+      ],
+      "sources": [
+        "https://chromewebstore.google.com/detail/ddlbpiadoechcolndfeaonajmngmhblj",
+        "https://compose.ai/"
+      ]
+    },
+    {
+      "id": "manus-extension",
+      "name": "Manus Browser Operator extension",
+      "vendor": "Butterfly Effect Pte. Ltd. (Manus)",
+      "service": "Manus",
+      "canActOnDevice": false,
+      "notes": "Lets Manus act in the browser with the person's signed-in accounts, for example Gmail, Google Calendar and Notion.",
+      "browserExtensions": [
+        {
+          "store": "chrome",
+          "id": "cecngibhkljoiafhjfmcgbmikfogdiko"
+        }
+      ],
+      "sources": [
+        "https://chromewebstore.google.com/detail/cecngibhkljoiafhjfmcgbmikfogdiko",
+        "https://manus.im/"
+      ]
+    },
+    {
+      "id": "bardeen-extension",
+      "name": "Bardeen browser extension",
+      "vendor": "Bardeen Inc",
+      "service": "Bardeen",
+      "canActOnDevice": false,
+      "notes": "AI browser automation: builds and runs automations and scrapes web pages.",
+      "browserExtensions": [
+        {
+          "store": "chrome",
+          "id": "ihhkmalpkhkoedlmcnilbbhhbhnicjga"
+        }
+      ],
+      "sources": [
+        "https://chromewebstore.google.com/detail/ihhkmalpkhkoedlmcnilbbhhbhnicjga",
+        "https://bardeen.ai/"
+      ]
+    },
+    {
+      "id": "brisk-teaching-extension",
+      "name": "Brisk Teaching browser extension",
+      "vendor": "Brisk Teaching",
+      "service": "Brisk Teaching",
+      "canActOnDevice": false,
+      "notes": "AI assistant for teachers that writes feedback into Google Docs and other pages.",
+      "browserExtensions": [
+        {
+          "store": "chrome",
+          "id": "pcblbflgdkdfdjpjifeppkljdnaekohj"
+        },
+        {
+          "store": "edge",
+          "id": "eaceefkmcencfdifikmhnopcdknkiong"
+        }
+      ],
+      "sources": [
+        "https://chromewebstore.google.com/detail/pcblbflgdkdfdjpjifeppkljdnaekohj",
+        "https://microsoftedge.microsoft.com/addons/detail/eaceefkmcencfdifikmhnopcdknkiong",
+        "https://www.briskteaching.com/"
+      ]
+    },
+    {
+      "id": "tactiq-extension",
+      "name": "Tactiq browser extension",
+      "vendor": "Tactiq HQ Pty Ltd",
+      "service": "Tactiq",
+      "canActOnDevice": false,
+      "notes": "AI meeting notes: transcribes Google Meet, Zoom and Teams calls in the browser.",
+      "browserExtensions": [
+        {
+          "store": "chrome",
+          "id": "fggkaccpbmombhnjkjokndojfgagejfb"
+        },
+        {
+          "store": "edge",
+          "id": "ldihbakgcndcoojkibjniljbadkanaic"
+        }
+      ],
+      "sources": [
+        "https://chromewebstore.google.com/detail/fggkaccpbmombhnjkjokndojfgagejfb",
+        "https://microsoftedge.microsoft.com/addons/detail/ldihbakgcndcoojkibjniljbadkanaic",
+        "https://tactiq.io/"
+      ]
+    },
+    {
+      "id": "fathom-extension",
+      "name": "Fathom AI Note Taker browser extension",
+      "vendor": "Fathom Video Inc.",
+      "service": "Fathom",
+      "canActOnDevice": false,
+      "notes": "Records, transcribes and summarises Google Meet calls.",
+      "browserExtensions": [
+        {
+          "store": "chrome",
+          "id": "nhocmlminaplaendbabmoemehbpgdemn"
+        }
+      ],
+      "sources": [
+        "https://chromewebstore.google.com/detail/nhocmlminaplaendbabmoemehbpgdemn",
+        "https://fathom.video/"
       ]
     }
   ]

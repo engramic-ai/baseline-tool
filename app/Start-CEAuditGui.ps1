@@ -452,7 +452,7 @@ $script:OutputRoot = $OutputRoot
               <StackPanel x:Name="AiEnvs" Margin="0,2,0,8"/>
               <TextBlock Margin="0,14,0,0"><Hyperlink x:Name="AiControlsLink">AI-related controls in Controls &#8594;</Hyperlink></TextBlock>
               <TextBlock Margin="0,18,0,0" FontSize="11.5" Foreground="{StaticResource Muted}" TextWrapping="Wrap"
-                         Text="The agents, WSL distributions and MCP servers you use live in your session. This is your posture; other users are audited in their own sessions, and SYSTEM never sees shadow AI. Credential values are never read or recorded, only where and how they are stored. Baseline finds AI installed on this device; it can't see AI used in a browser tab."/>
+                         Text="The agents, WSL distributions and MCP servers you use live in your session. This is your posture; other users are audited in their own sessions, and an audit run as SYSTEM sees only some of it (the signed-in user's browser extensions and profile folders). Credential values are never read or recorded, only where and how they are stored. Baseline finds recognised AI apps and browser extensions installed on this device; it can't see AI websites used in a browser tab."/>
             </StackPanel>
           </ScrollViewer>
         </TabItem>
@@ -1316,10 +1316,15 @@ function Set-CEAiTab {
         $rights = if ($asSystem) { 'SYSTEM' } elseif ($elevated) { 'administrator' } elseif ($running) { 'standard user' } else { '' }
         $id = [string](Get-UiField $a 'id' '')
         $count = @($mcp | Where-Object { [string](Get-UiField $_ 'toolId' '') -eq $id }).Count
-        [void]$at.Rows.Add([string](Get-UiField $a 'name' ''), $(if ($running) { 'running' } else { 'present' }), $rights,
+        $state = if ($running) { 'running' } elseif ([bool](Get-UiField $a 'leftoverOnly' $false)) { 'leftover profile' } else { 'present' }
+        [void]$at.Rows.Add([string](Get-UiField $a 'name' ''), $state, $rights,
             $(if ([bool](Get-UiField $a 'canActOnDevice' $false)) { 'yes' } else { 'no' }), $(if ($count) { [string]$count } else { '-' }), '', ($elevated -or $asSystem))
     }
     $ui.AiAgentsGrid.ItemsSource = $at.DefaultView
+    # Saved results from before scanComplete existed count as complete.
+    $scanComplete = [bool](Get-UiField $Ai 'scanComplete' $true)
+    $notRead = @(Get-UiField $Ai 'notRead' @() | Where-Object { [string](Get-UiField $_ 'topic' '') -ne 'extension-version' })
+    $ui.AiAgentsEmpty.Text = if ($scanComplete) { 'No recognised AI tools found in this session.' } else { 'No AI tools confirmed: the scan is incomplete, as some locations were not read (see below).' }
     $ui.AiAgentsEmpty.Visibility = if ($agents.Count) { 'Collapsed' } else { 'Visible' }
     $ui.AiAgentsGrid.Visibility = if ($agents.Count) { 'Visible' } else { 'Collapsed' }
 
@@ -1345,7 +1350,7 @@ function Set-CEAiTab {
     $unreadable = @(Get-UiField $Ai 'mcpConfigsUnreadable' @()).Count
     $dot = ' ' + [char]0xB7 + ' '
     $meta = "$found config file$(if ($found -ne 1) { 's' }) found$dot$parsed parsed"
-    if ($unreadable) { $meta += "$dot$unreadable unreadable" }
+    if ($unreadable) { $meta += "$dot$unreadable not read" }
     $bounds = [string](Get-UiField $Ai 'scanBounds' '')
     if ($bounds) { $meta += "$dot$bounds" }
     $ui.AiMcpMeta.Text = $meta
@@ -1360,7 +1365,38 @@ function Set-CEAiTab {
         }
         else { [void]$ui.AiEnvs.Children.Add((New-CEAiLine -Text "$(Get-UiField $env 'type' ''): $(Get-UiField $env 'name' '')")) }
     }
-    if (@(Get-UiField $Ai 'environments' @()).Count -eq 0) { [void]$ui.AiEnvs.Children.Add((New-CEAiLine -Text 'No VMs, WSL distributions or containers found.')) }
+    # scanComplete is about AI tools only: a virtual machine can be hidden only by the profile or its virtual
+    # machine settings not being read (or by a record with no topic, from an older version).
+    $vmUnread = @($notRead | Where-Object { @('', 'profile', 'vm-inventory', 'vm-file') -contains [string](Get-UiField $_ 'topic' '') }).Count
+    if (@(Get-UiField $Ai 'environments' @()).Count -eq 0 -and -not $vmUnread) { [void]$ui.AiEnvs.Children.Add((New-CEAiLine -Text 'No VMs, WSL distributions or containers found.')) }
+    if ($notRead.Count) {
+        $describe = {
+            param($r)
+            $count = [int](Get-UiField $r 'count' 1)
+            "$(Get-UiField $r 'location' '') ($(Get-UiField $r 'kind' '')$(if ($count -gt 1) { ", $count times" })): $(Get-UiField $r 'reason' '')"
+        }
+        # A browser whose installed marker could not be checked hides no AI tool; what is unknown is whether a
+        # tool in its profile is a leftover. Same words as $script:CEAIBrowserInstalledLead in the report.
+        $browserLines = @($notRead | Where-Object { [string](Get-UiField $_ 'topic' '') -eq 'browser-installed' } | ForEach-Object { & $describe $_ })
+        $lines = @($notRead | Where-Object { [string](Get-UiField $_ 'topic' '') -ne 'browser-installed' } | ForEach-Object { & $describe $_ })
+        # The same advice as the report: why links were skipped, and the user's session, only where a record needs them; then each record's own fix.
+        $linkReasons = @('a symbolic link on the way', 'a junction on the way', 'a junction or symbolic link', 'it is a junction or symbolic link', 'it is stored online only', 'a reparse point of a kind')
+        $advice = @()
+        if (@($notRead | Where-Object { $reason = [string](Get-UiField $_ 'reason' ''); @($linkReasons | Where-Object { $reason.StartsWith($_) }).Count }).Count) {
+            $advice += "An elevated or SYSTEM audit does not follow the user's symbolic links (or junctions whose target it can't verify), never reads a file's contents through a junction or symbolic link, and does not download files stored online only."
+        }
+        $user = @($notRead | Where-Object { [bool](Get-UiField $_ 'needsUserSession' $false) }).Count
+        $toRead = 'run the audit without elevation while signed in as that user (not with Restart as administrator)'
+        if ($user -and $user -eq $notRead.Count) { $advice += "To read these, $toRead." }
+        elseif ($user) { $advice += "To read those skipped because the audit ran with more rights than the user, $toRead." }
+        $advice += @($notRead | ForEach-Object { [string](Get-UiField $_ 'remedy' '') } | Where-Object { $_ } | Select-Object -Unique)
+        $lead = if ($scanComplete) { 'Not read (none of these could hide an AI tool, but what else they hold, such as a virtual machine or an MCP config, was not checked)' } else { 'Not read, so the AI tools found may be incomplete' }
+        $parts = @()
+        if ($lines.Count) { $parts += "${lead}: $($lines -join '; ')." }
+        if ($browserLines.Count) { $parts += "Whether these browsers are still installed could not be checked, so the AI extensions found in their profiles are listed as installed, though they may be left over from a browser that was removed: $($browserLines -join '; ')." }
+        $text = "$($parts -join ' ') $($advice -join ' ')".TrimEnd()
+        [void]$ui.AiEnvs.Children.Add((New-CEAiLine -Text $text -Bad))
+    }
 
     $userChecks = @($Findings | Where-Object { [string](Get-UiField $_ 'Scope' 'Machine') -eq 'User' } | ForEach-Object { $_.CheckId } | Sort-Object -Unique).Count
     Set-UiRichText -Block $ui.AiControlsLink -Parts @(@{ Text = "$userChecks AI-related control$(if ($userChecks -ne 1) { 's' }) in Controls " + [char]0x2192 })

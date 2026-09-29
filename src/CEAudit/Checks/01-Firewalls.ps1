@@ -157,8 +157,15 @@ Register-CECheck -Id 'FW-07' -Category 'Firewalls' -Severity 'Medium' `
     -Test {
         param($ctx)
         $st = Get-CEVirtualisationState -Context $ctx
+        # What could not be read in the user's profile, and Hyper-V virtual machines that could not be
+        # listed: either may hide a bridged VM. .wslconfig matters only when there are WSL distributions
+        # for its networking mode to apply to.
+        $topics = @('profile', 'vm-inventory', 'vm-file', 'hyperv')
+        if (@($st.Wsl).Count -gt 0) { $topics += 'wslconfig' }
+        $notRead = Select-CENotRead -Records @(Get-CEObjectValue $st 'NotRead' @()) -Topics $topics   # assign first: it returns ,array
+        $expected = 'No bridged networking or ports published to the network'
         $any = @($st.HyperV.Machines).Count + @($st.VMware).Count + @($st.VirtualBox).Count + @($st.Wsl).Count + @($st.Containers).Count + @($st.Listeners).Count
-        if ($any -eq 0 -and -not $st.WslNetworking) {
+        if ($any -eq 0 -and -not $st.WslNetworking -and $notRead.Count -eq 0) {
             return New-CEResult -Status 'NotApplicable' -Actual 'No virtual machines, WSL distributions or containers found'
         }
 
@@ -174,12 +181,17 @@ Register-CECheck -Id 'FW-07' -Category 'Firewalls' -Severity 'Medium' `
         $published += @($st.HyperV.NatMappings | Where-Object { $_ -match ' (0\.0\.0\.0|::):' } | ForEach-Object { "Hyper-V NAT mapping $_" })
         $published += @($st.Containers | Where-Object { $_.Ports -match '(0\.0\.0\.0|\[::\]|:::):\d+' } | ForEach-Object { "Container '$($_.Name)' publishes $($_.Ports)" })
 
-        $evidence = @($st.Listeners | ForEach-Object { "Listener: $($_.Product) ($($_.Process)) $($_.Address):$($_.Port)" }) + @($st.Notes)
+        $evidence = @($st.Listeners | ForEach-Object { "Listener: $($_.Product) ($($_.Process)) $($_.Address):$($_.Port)" }) + @($st.Notes) + @($notRead | ForEach-Object { Format-CENotRead $_ })
         if ($st.WslNetworking) { $evidence += "WSL networkingMode=$($st.WslNetworking)" }
+        # A VM that was not read may be bridged, so it is never a Pass (and CE+ TC1 shows Check).
+        $notReadResult = if ($notRead.Count) {
+            New-CENotReadResult -Records $notRead -Scope Machine -Expected $expected -Consequence 'a virtual machine that was not read may use bridged networking or publish ports'
+        }
 
         if ($bridged.Count -eq 0 -and $published.Count -eq 0) {
+            if ($notRead.Count) { return $notReadResult }
             $unchecked = if (@($st.Notes).Count) { " (not checked: $(@($st.Notes) -join '; '))" } else { '' }
-            return New-CEResult -Status 'Pass' -Expected 'No bridged networking or ports published to the network' -Actual "Virtual machines and containers are not exposed to the network$unchecked" -Evidence $evidence
+            return New-CEResult -Status 'Pass' -Expected $expected -Actual "Virtual machines and containers are not exposed to the network$unchecked" -Evidence $evidence
         }
         if ($bridged.Count) {
             New-CEResult -Status 'Warn' -Subject 'Bridged networking' -Expected 'Virtual machines use NAT or host-only networking unless they must be reachable' `
@@ -191,4 +203,5 @@ Register-CECheck -Id 'FW-07' -Category 'Firewalls' -Severity 'Medium' `
                 -Actual ($published -join '; ') -Evidence $evidence `
                 -Recommendation 'Publish ports to 127.0.0.1 unless other devices need them (for example "docker run -p 127.0.0.1:8080:80", or host IP 127.0.0.1 in VirtualBox port forwarding). If a port must be reachable, document why and restrict it with a firewall rule (FW-03).'
         }
+        if ($notRead.Count) { $notReadResult }
     }

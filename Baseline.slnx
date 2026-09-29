@@ -18,6 +18,7 @@
     <Project Path="src/Engramic.Baseline.Windows/Engramic.Baseline.Windows.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/AotCanary/AotCanary.csproj" />
     <Project Path="tests/Engramic.Baseline.Controls.Tests/Engramic.Baseline.Controls.Tests.csproj" />
     <Project Path="tests/Engramic.Baseline.Engine.Tests/Engramic.Baseline.Engine.Tests.csproj" />
     <Project Path="tests/Engramic.Baseline.Invariants.Tests/Engramic.Baseline.Invariants.Tests.csproj" />

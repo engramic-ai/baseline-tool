@@ -13,14 +13,15 @@ This note covers the layout, the rules the build enforces, and how to build and 
 | `Directory.Build.props` | Settings for every project, including the one version of the product. |
 | `Directory.Packages.props` | The version of every package, set once. |
 | `src/Engramic.Baseline.Model` | Contracts: the status files, findings, changesets and config, and how they are written. |
-| `src/Engramic.Baseline.Platform` | The interfaces and records of the primitives: registry, files, processes, tokens and so on. |
+| `src/Engramic.Baseline.Platform` | The interfaces and records of the primitives (registry, files, processes, tokens and so on), and the trust rules of the data folder. |
 | `src/Engramic.Baseline.Engine` | The check and fix contracts, the runner, the framework rollups, changesets and undo. |
 | `src/Engramic.Baseline.Controls` | The checks, the fixes, the readers that interpret what the primitives return, and the shipped config. |
-| `src/Engramic.Baseline.Windows` | The Windows primitives, calling Win32 through code that CsWin32 generates from `NativeMethods.txt`. |
+| `src/Engramic.Baseline.Windows` | The Windows primitives, calling Win32 through code that CsWin32 generates from `NativeMethods.txt`, including SecureStore and the audit mutex. |
 | `src/Engramic.Baseline.Cli` | `baseline.exe`, the command line. |
-| `tests/Engramic.Baseline.*.Tests` | xUnit v3 tests: one project for each library. |
+| `tests/Engramic.Baseline.*.Tests` | xUnit v3 tests: one project for each library, and one for the command line. |
 | `tests/Engramic.Baseline.Invariants.Tests` | Tests of the repository's own rules, described below. |
 | `tests/Engramic.Baseline.Testing` | Fakes and recorded responses that the tests share. |
+| `tests/Engramic.Baseline.Testing.Windows` | Windows fixtures: folders under the temp folder with the security descriptors a test gives, junctions, hard links and other reparse points, and mutexes of the tests' own. |
 | `tests/AotCanary` | Compiles the AOT-clean libraries with Native AOT and calls into each one. |
 | `tools/parity` | Compares the ported checks with the PowerShell module on a device (below). |
 
@@ -161,6 +162,13 @@ Native AOT links with the C++ build tools of Visual Studio. Without them, adding
 `-p:IlcUseEnvironmentalTools=true` still runs the AOT compiler over all four libraries, and only the
 final link fails.
 
+Some tests need an elevated administrator, as CI's Windows runner is: those that make folders owned by
+Administrators, as the installer does, or a symbolic link, or that open the audit mutex as an
+administrator. Run without elevation, they skip and say why. No test touches the real data folder, its
+registry key, a scheduled task or the product's mutex: folders are made under the temp folder with unique
+names and deleted by that exact path, the seal is read from a registry in memory, and mutexes have names
+of the tests' own.
+
 The hygiene check needs a clone that git can read:
 
 ```
@@ -172,13 +180,110 @@ pwsh -NoProfile -File tools/hygiene/Test-Hygiene.ps1
 `baseline.exe audit` runs the ported checks on this device, read-only, and prints the findings. With
 `--json findings` or `--json status` it writes findings.json or status.json to standard output instead,
 byte for byte as the file is written (UTF-8 with a byte order mark), to redirect into a file from cmd or
-PowerShell 7.4 and later. It writes no file itself: files go only into the secure data folder, which the
-scheduled audit brings.
+PowerShell 7.4 and later. It writes no file itself: files go only into the machine data folder, through
+SecureStore, which the scheduled audit writes. It has no option to name an output folder: SecureStore
+accepts only the sealed data folder, and a folder named on the command line may be one a standard user
+controls, or once did, which nothing in its state now can rule out.
 
 ```
 baseline.exe audit --id SU-01
 baseline.exe audit --id SU-01 --json status > status.json
 ```
+
+## The data folder: SecureStore
+
+`SecureStore`, in `Engramic.Baseline.Windows`, is the machine data folder, `%ProgramData%\EngramicBaseline`,
+checked through handles and held open while in use. It is the one file on `src/BannedApiExemptions.txt`
+that opens, creates, renames or deletes files, and product code writes files only through it
+(`ISecureStore`; the tests share a fake). This first version checks a data folder that exists and writes
+files in it: it creates nothing, repairs nothing and moves nothing aside.
+
+**Opening** it:
+
+1. ProgramData comes from the known-folder API, which builds it as `%SystemDrive%\ProgramData` from the
+   process environment: a process started with `SystemDrive` changed is told another folder. So the
+   answer must be `ProgramData` on the drive Windows is installed on (`GetSystemWindowsDirectoryW`,
+   which comes from the kernel), or SecureStore refuses. A ProgramData folder moved elsewhere is not
+   supported.
+2. ProgramData is opened by path with `FILE_FLAG_OPEN_REPARSE_POINT`, so a link is opened as itself and
+   seen, and `GetFinalPathNameByHandleW` must give back the path that was opened, so no folder on the
+   way is a link. It must be a folder, not a reparse point, owned by SYSTEM, Administrators or
+   TrustedInstaller. Its access list is not judged: standard users may create folders in it, by design.
+3. The data folder is opened in it the same way, must pass the trust rules below, and must carry the
+   install's seal: the text value `DataRootSealed` under `HKLM\SOFTWARE\EngramicBaseline.DataRoot`
+   (64-bit view), which the installer writes when it makes the folder locked. A folder that looks locked
+   but was never sealed is refused: a handle a user opened while they owned a folder, or could change its
+   permissions, keeps that access after any later lock, and nothing in the folder's state shows that
+   never happened.
+4. Both handles are held until the store is disposed, without `FILE_SHARE_DELETE` and with the right to
+   list, which the sharing check counts (it ignores a handle that may only read attributes or
+   permissions), so neither folder can be renamed, replaced or deleted while held, and their paths keep
+   naming the folders that were checked.
+
+Whether to open each folder relative to its parent's handle (`NtCreateFile` with `RootDirectory`)
+instead is left to a later spike. This way never follows a link either: every open names the item
+itself with `FILE_FLAG_OPEN_REPARSE_POINT`, inside folders already held, and each is confirmed by its
+final path.
+
+**Trust rules** (`DataFolderTrust` in Platform, as the module's `Get-CEDataPathProblem` and the Intune
+scripts judge): an item is trusted when it is not a reparse point and not stored online only; is owned by
+SYSTEM, Administrators or TrustedInstaller; has an access list; gives no other account `FILE_WRITE_DATA`,
+`FILE_APPEND_DATA`, `FILE_WRITE_EA`, `FILE_DELETE_CHILD`, `FILE_WRITE_ATTRIBUTES`, `DELETE`, `WRITE_DAC`,
+`WRITE_OWNER`, `GENERIC_WRITE` or `GENERIC_ALL` in any entry, inherited and inherit-only ones included;
+and denies a trusted account nothing. Rights to read are fine for anyone, and so is CREATOR OWNER. Unlike
+the module, whose `Get-Acl` drops entries it does not recognise, an entry of an unknown kind fails.
+
+**Writing** a file replaces it atomically, so a reader sees the old file or the new one:
+
+1. Whatever is at the target's name is opened as itself: it must be nothing, or an ordinary file with one
+   name that is not read-only. A link, a folder or a file with other names (hard links) is refused and
+   left as it is.
+2. A new file, `<name>.<32 random hex digits>.tmp` as the module names its own, is created with
+   `CREATE_NEW`, no sharing and `FILE_FLAG_OPEN_REPARSE_POINT` (a link already at that name is a
+   collision, never followed), owned by Administrators, which SYSTEM and an elevated administrator may
+   name, and taking the folder's access list. Its final path, its facts and its security are checked
+   through its handle.
+3. It is written, flushed and renamed over the target through its handle (`FILE_RENAME_INFO` with
+   replace). The rename replaces the target's name and never writes into or through it: a hard link or
+   symbolic link swapped in after step 1 is replaced as a name, and a junction or folder makes the
+   rename fail. The rename reads a relative name against the current directory and refuses
+   `RootDirectory`, so it is given the target's full path, which the held folders keep inside the data
+   folder, and the file's final path is checked afterwards.
+4. While another process, such as a reader or an antivirus scan, has the target open, the rename fails;
+   it is tried six times over about three seconds, by the store's clock. A write that fails deletes its
+   new file through its handle.
+
+Tests give the ProgramData path, the seal's location and the clock (`SecureStoreOptions`). Still to come:
+creating the data folder and its subfolders locked, moving an untrusted one aside, scratch and undo
+folders, reading administrators' config overrides, and the attack suite run as SYSTEM.
+
+## The scheduled audit
+
+`baseline.exe scheduled-audit` is the unattended audit for the scheduled task, as
+`app/Invoke-CEScheduledAudit.ps1` runs it, with what has been ported so far. The scheduled task that the
+installer registers still runs the module's script.
+
+1. It runs only as SYSTEM, and refuses anyone else with a message.
+2. It takes the audit mutex, `Global\EngramicBaselineAudit`, which the module's scheduled audit and
+   installer take too, waiting up to 30 minutes. It is created with `MutexAcl` and an access list
+   granting SYSTEM and Administrators alone. One that exists already and does not let this account in,
+   as a standard user could make it first to stop audits, fails as access denied, and the run counts as
+   failed.
+3. It opens the data folder through SecureStore. A refusal is reported with SecureStore's reason, and
+   nothing is written.
+4. It runs the machine checks (SU-01 so far) and writes status.json, UTF-8 with a byte order mark, with
+   SecureStore's atomic write. A failed run leaves the old status.json, whose age then keeps growing, as
+   in the module.
+
+| Exit code | Meaning |
+|---|---|
+| 0 | The audit ran and status.json was written. |
+| 1 | It failed, or refused to run: not SYSTEM, the mutex could not be taken, or the data folder was refused. |
+| 2 | Another audit, or an install, held the mutex for 30 minutes. |
+
+Not ported yet: counting failed runs in last-error.json (only into a data folder that was opened and
+checked, as the module does), the report folder and its retention, the log, events 1000 to 1003, and
+`excludeCheckIds` from an administrator's config.
 
 ## Comparing with the PowerShell module
 

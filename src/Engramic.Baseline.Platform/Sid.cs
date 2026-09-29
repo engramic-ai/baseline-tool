@@ -31,6 +31,12 @@ public sealed record Sid
     /// <summary>Gets the TrustedInstaller service, which owns most of the Windows folder.</summary>
     public static Sid TrustedInstaller { get; } = new("S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464");
 
+    /// <summary>
+    /// Gets CREATOR OWNER, S-1-3-0: a placeholder in an inheritable access entry, which Windows replaces
+    /// with the owner of each new item the entry reaches.
+    /// </summary>
+    public static Sid CreatorOwner { get; } = new("S-1-3-0");
+
     /// <summary>Gets the identifier in its string form, starting with an upper-case S.</summary>
     public string Value { get; }
 

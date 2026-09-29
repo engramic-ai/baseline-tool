@@ -1,6 +1,53 @@
 #nullable enable
+const Engramic.Baseline.Platform.DataFolderTrust.WriteRights = 1343029590 -> uint
+Engramic.Baseline.Platform.AccessEntry
+Engramic.Baseline.Platform.AccessEntry.<Clone>$() -> Engramic.Baseline.Platform.AccessEntry!
+Engramic.Baseline.Platform.AccessEntry.AccessEntry(Engramic.Baseline.Platform.AccessEntryType Type, Engramic.Baseline.Platform.Sid? Trustee, uint Mask) -> void
+Engramic.Baseline.Platform.AccessEntry.Deconstruct(out Engramic.Baseline.Platform.AccessEntryType Type, out Engramic.Baseline.Platform.Sid? Trustee, out uint Mask) -> void
+Engramic.Baseline.Platform.AccessEntry.Equals(Engramic.Baseline.Platform.AccessEntry? other) -> bool
+Engramic.Baseline.Platform.AccessEntry.Mask.get -> uint
+Engramic.Baseline.Platform.AccessEntry.Mask.init -> void
+Engramic.Baseline.Platform.AccessEntry.Trustee.get -> Engramic.Baseline.Platform.Sid?
+Engramic.Baseline.Platform.AccessEntry.Trustee.init -> void
+Engramic.Baseline.Platform.AccessEntry.Type.get -> Engramic.Baseline.Platform.AccessEntryType
+Engramic.Baseline.Platform.AccessEntry.Type.init -> void
+Engramic.Baseline.Platform.AccessEntryType
+Engramic.Baseline.Platform.AccessEntryType.Allow = 0 -> Engramic.Baseline.Platform.AccessEntryType
+Engramic.Baseline.Platform.AccessEntryType.Deny = 1 -> Engramic.Baseline.Platform.AccessEntryType
+Engramic.Baseline.Platform.AccessEntryType.Other = 2 -> Engramic.Baseline.Platform.AccessEntryType
+Engramic.Baseline.Platform.DataFolderTrust
+Engramic.Baseline.Platform.DataFolderTrust.DataFolderTrust(System.Collections.Generic.IEnumerable<Engramic.Baseline.Platform.Sid!>! trusted) -> void
+Engramic.Baseline.Platform.DataFolderTrust.FindDataFolderProblem(string! path, Engramic.Baseline.Platform.FileFacts! facts, Engramic.Baseline.Platform.ItemSecurity! security, bool isSealed) -> string?
+Engramic.Baseline.Platform.DataFolderTrust.FindNewFileProblem(string! path, Engramic.Baseline.Platform.FileFacts! facts, Engramic.Baseline.Platform.ItemSecurity! security) -> string?
+Engramic.Baseline.Platform.DataFolderTrust.FindProgramDataProblem(string! path, Engramic.Baseline.Platform.FileFacts! facts, Engramic.Baseline.Platform.Sid? owner) -> string?
+Engramic.Baseline.Platform.DataFolderTrust.FindSecurityProblem(string! path, Engramic.Baseline.Platform.ItemSecurity! security) -> string?
+Engramic.Baseline.Platform.DataFolderTrust.IsTrusted(Engramic.Baseline.Platform.Sid? sid) -> bool
+Engramic.Baseline.Platform.DataFolderTrust.Trusted.get -> System.Collections.Generic.IReadOnlyCollection<Engramic.Baseline.Platform.Sid!>!
+Engramic.Baseline.Platform.FileFacts
+Engramic.Baseline.Platform.FileFacts.<Clone>$() -> Engramic.Baseline.Platform.FileFacts!
+Engramic.Baseline.Platform.FileFacts.Equals(Engramic.Baseline.Platform.FileFacts? other) -> bool
+Engramic.Baseline.Platform.FileFacts.FileFacts() -> void
+Engramic.Baseline.Platform.FileFacts.IsDirectory.get -> bool
+Engramic.Baseline.Platform.FileFacts.IsDirectory.init -> void
+Engramic.Baseline.Platform.FileFacts.IsOnlineOnly.get -> bool
+Engramic.Baseline.Platform.FileFacts.IsOnlineOnly.init -> void
+Engramic.Baseline.Platform.FileFacts.IsReadOnly.get -> bool
+Engramic.Baseline.Platform.FileFacts.IsReadOnly.init -> void
+Engramic.Baseline.Platform.FileFacts.IsReparsePoint.get -> bool
+Engramic.Baseline.Platform.FileFacts.IsReparsePoint.init -> void
+Engramic.Baseline.Platform.FileFacts.LinkCount.get -> uint
+Engramic.Baseline.Platform.FileFacts.LinkCount.init -> void
 Engramic.Baseline.Platform.IRegistry
 Engramic.Baseline.Platform.IRegistry.GetValue(Engramic.Baseline.Platform.RegistryHive hive, Engramic.Baseline.Platform.RegistryView view, string! keyPath, string! valueName) -> Engramic.Baseline.Platform.RegistryValue?
+Engramic.Baseline.Platform.ItemSecurity
+Engramic.Baseline.Platform.ItemSecurity.<Clone>$() -> Engramic.Baseline.Platform.ItemSecurity!
+Engramic.Baseline.Platform.ItemSecurity.Dacl.get -> System.Collections.Generic.IReadOnlyList<Engramic.Baseline.Platform.AccessEntry!>?
+Engramic.Baseline.Platform.ItemSecurity.Dacl.init -> void
+Engramic.Baseline.Platform.ItemSecurity.Deconstruct(out Engramic.Baseline.Platform.Sid? Owner, out System.Collections.Generic.IReadOnlyList<Engramic.Baseline.Platform.AccessEntry!>? Dacl) -> void
+Engramic.Baseline.Platform.ItemSecurity.Equals(Engramic.Baseline.Platform.ItemSecurity? other) -> bool
+Engramic.Baseline.Platform.ItemSecurity.ItemSecurity(Engramic.Baseline.Platform.Sid? Owner, System.Collections.Generic.IReadOnlyList<Engramic.Baseline.Platform.AccessEntry!>? Dacl) -> void
+Engramic.Baseline.Platform.ItemSecurity.Owner.get -> Engramic.Baseline.Platform.Sid?
+Engramic.Baseline.Platform.ItemSecurity.Owner.init -> void
 Engramic.Baseline.Platform.ProcessAccount
 Engramic.Baseline.Platform.ProcessAccount.<Clone>$() -> Engramic.Baseline.Platform.ProcessAccount!
 Engramic.Baseline.Platform.ProcessAccount.Deconstruct(out string! Name, out bool IsAdministrator, out bool IsLocalSystem) -> void
@@ -37,6 +84,15 @@ Engramic.Baseline.Platform.Sid
 Engramic.Baseline.Platform.Sid.<Clone>$() -> Engramic.Baseline.Platform.Sid!
 Engramic.Baseline.Platform.Sid.Equals(Engramic.Baseline.Platform.Sid? other) -> bool
 Engramic.Baseline.Platform.Sid.Value.get -> string!
+override Engramic.Baseline.Platform.AccessEntry.Equals(object? obj) -> bool
+override Engramic.Baseline.Platform.AccessEntry.GetHashCode() -> int
+override Engramic.Baseline.Platform.AccessEntry.ToString() -> string!
+override Engramic.Baseline.Platform.FileFacts.Equals(object? obj) -> bool
+override Engramic.Baseline.Platform.FileFacts.GetHashCode() -> int
+override Engramic.Baseline.Platform.FileFacts.ToString() -> string!
+override Engramic.Baseline.Platform.ItemSecurity.Equals(object? obj) -> bool
+override Engramic.Baseline.Platform.ItemSecurity.GetHashCode() -> int
+override Engramic.Baseline.Platform.ItemSecurity.ToString() -> string!
 override Engramic.Baseline.Platform.ProcessAccount.Equals(object? obj) -> bool
 override Engramic.Baseline.Platform.ProcessAccount.GetHashCode() -> int
 override Engramic.Baseline.Platform.ProcessAccount.ToString() -> string!
@@ -46,6 +102,14 @@ override Engramic.Baseline.Platform.RegistryValue.ToString() -> string!
 override Engramic.Baseline.Platform.Sid.Equals(object? obj) -> bool
 override Engramic.Baseline.Platform.Sid.GetHashCode() -> int
 override Engramic.Baseline.Platform.Sid.ToString() -> string!
+static Engramic.Baseline.Platform.AccessEntry.operator !=(Engramic.Baseline.Platform.AccessEntry? left, Engramic.Baseline.Platform.AccessEntry? right) -> bool
+static Engramic.Baseline.Platform.AccessEntry.operator ==(Engramic.Baseline.Platform.AccessEntry? left, Engramic.Baseline.Platform.AccessEntry? right) -> bool
+static Engramic.Baseline.Platform.DataFolderTrust.FindReplaceProblem(string! path, Engramic.Baseline.Platform.FileFacts! facts) -> string?
+static Engramic.Baseline.Platform.DataFolderTrust.Machine.get -> Engramic.Baseline.Platform.DataFolderTrust!
+static Engramic.Baseline.Platform.FileFacts.operator !=(Engramic.Baseline.Platform.FileFacts? left, Engramic.Baseline.Platform.FileFacts? right) -> bool
+static Engramic.Baseline.Platform.FileFacts.operator ==(Engramic.Baseline.Platform.FileFacts? left, Engramic.Baseline.Platform.FileFacts? right) -> bool
+static Engramic.Baseline.Platform.ItemSecurity.operator !=(Engramic.Baseline.Platform.ItemSecurity? left, Engramic.Baseline.Platform.ItemSecurity? right) -> bool
+static Engramic.Baseline.Platform.ItemSecurity.operator ==(Engramic.Baseline.Platform.ItemSecurity? left, Engramic.Baseline.Platform.ItemSecurity? right) -> bool
 static Engramic.Baseline.Platform.ProcessAccount.operator !=(Engramic.Baseline.Platform.ProcessAccount? left, Engramic.Baseline.Platform.ProcessAccount? right) -> bool
 static Engramic.Baseline.Platform.ProcessAccount.operator ==(Engramic.Baseline.Platform.ProcessAccount? left, Engramic.Baseline.Platform.ProcessAccount? right) -> bool
 static Engramic.Baseline.Platform.RegistryValue.FromBinary(System.ReadOnlySpan<byte> bytes) -> Engramic.Baseline.Platform.RegistryValue!
@@ -56,6 +120,7 @@ static Engramic.Baseline.Platform.RegistryValue.FromOther(System.ReadOnlySpan<by
 static Engramic.Baseline.Platform.RegistryValue.FromQWord(ulong number) -> Engramic.Baseline.Platform.RegistryValue!
 static Engramic.Baseline.Platform.RegistryValue.FromText(string! text) -> Engramic.Baseline.Platform.RegistryValue!
 static Engramic.Baseline.Platform.Sid.Administrators.get -> Engramic.Baseline.Platform.Sid!
+static Engramic.Baseline.Platform.Sid.CreatorOwner.get -> Engramic.Baseline.Platform.Sid!
 static Engramic.Baseline.Platform.Sid.LocalSystem.get -> Engramic.Baseline.Platform.Sid!
 static Engramic.Baseline.Platform.Sid.operator !=(Engramic.Baseline.Platform.Sid? left, Engramic.Baseline.Platform.Sid? right) -> bool
 static Engramic.Baseline.Platform.Sid.operator ==(Engramic.Baseline.Platform.Sid? left, Engramic.Baseline.Platform.Sid? right) -> bool

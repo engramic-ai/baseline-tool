@@ -1,0 +1,114 @@
+name: .NET
+
+# The .NET solution beside the PowerShell module: build, tests on Windows and Linux, the published
+# baseline.exe, the AOT canary, and the hygiene checks. docs/DOTNET.md explains each job.
+# The PowerShell module's own jobs are in ci.yml.
+
+on:
+  push:
+    branches: [main, feat/dotnet-port]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_NOLOGO: 'true'
+  DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
+  TESTINGPLATFORM_TELEMETRY_OPTOUT: '1'
+  NUGET_XMLDOC_MODE: skip
+
+jobs:
+  build:
+    name: Build and test (.NET)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the .NET SDK that global.json names
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        env:
+          # A folder of its own, so the SDK in global.json is the only one there. The lock files record
+          # packages whose versions follow the SDK, which a newer SDK already on the image would not match.
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
+        with:
+          global-json-file: global.json
+
+      - name: Restore (locked)
+        run: dotnet restore Baseline.slnx --locked-mode
+
+      - name: Build (warnings as errors)
+        run: dotnet build Baseline.slnx --configuration Release --no-restore -warnaserror
+
+      - name: Test
+        run: dotnet test --solution Baseline.slnx --configuration Release --no-build
+
+      - name: Publish baseline.exe (self-contained win-x64, ReadyToRun)
+        run: dotnet publish src/Engramic.Baseline.Cli/Engramic.Baseline.Cli.csproj --configuration Release --runtime win-x64 --no-restore --output "$env:RUNNER_TEMP/baseline"
+
+      - name: Run the published baseline.exe
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'baseline'
+          # Self-contained, and not single-file: the runtime and the app's own assemblies sit beside the exe.
+          foreach ($file in 'coreclr.dll', 'baseline.dll', 'Engramic.Baseline.Windows.dll') {
+              if (-not (Test-Path -LiteralPath (Join-Path $dir $file))) { throw "$file is missing from the published folder" }
+          }
+          $expected = dotnet msbuild src/Engramic.Baseline.Cli/Engramic.Baseline.Cli.csproj -getProperty:Version
+          $actual = & (Join-Path $dir 'baseline.exe') --version
+          if ($LASTEXITCODE -ne 0) { throw "baseline.exe --version exited with $LASTEXITCODE" }
+          if ($actual -ne $expected) { throw "baseline.exe --version printed '$actual', but Directory.Build.props says '$expected'" }
+          "baseline.exe --version: $actual"
+
+      - name: Publish the AOT canary (Native AOT, warnings as errors)
+        run: dotnet publish tests/AotCanary/AotCanary.csproj --configuration Release --runtime win-x64 --no-restore --output "$env:RUNNER_TEMP/aot-canary"
+
+      - name: Run the AOT canary
+        run: |
+          & (Join-Path $env:RUNNER_TEMP 'aot-canary/AotCanary.exe')
+          if ($LASTEXITCODE -ne 0) { throw "The AOT canary exited with $LASTEXITCODE" }
+
+  linux:
+    name: Unit tests (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the .NET SDK that global.json names
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        env:
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
+        with:
+          global-json-file: global.json
+
+      # Baseline.Portable.slnf lists the projects that target net10.0 and their tests.
+      - name: Restore the portable projects (locked)
+        run: dotnet restore Baseline.Portable.slnf --locked-mode
+
+      - name: Build (warnings as errors)
+        run: dotnet build Baseline.Portable.slnf --configuration Release --no-restore -warnaserror
+
+      - name: Test
+        run: dotnet test --solution Baseline.Portable.slnf --configuration Release --no-build
+
+  hygiene:
+    name: Hygiene
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: ASCII text, and only public hosts and repository names
+        shell: pwsh
+        run: ./tools/hygiene/Test-Hygiene.ps1

@@ -1,0 +1,53 @@
+# The public allowlist for Test-Hygiene.ps1, which the Hygiene job in .github/workflows/dotnet.yml runs.
+#
+# This repository is public. Nothing in it may name a private repository, a private service or an
+# internal endpoint: not code, comments, docs, tests or commit messages. A list of private names would
+# publish them, so the check works the other way round and allows only the names written here.
+#
+# Product copy is allowed: the product and tier names customers see (Engramic Baseline and its paid
+# tier) are not checked. Plumbing is not: a repository, host or endpoint appears here only once it is
+# public, such as the firmware catalog at baseline.engramic.ai.
+#
+# Sections:
+#   [hosts]      URL hosts allowed in src/, tests/, tools/ and docs/. An entry that starts with a dot
+#                allows that domain and every name under it (documentation domains such as .example).
+#   [engramic]   engramic-ai/<repository> references and engramic.ai names allowed in any tracked file.
+#   [non-ascii]  tracked text files allowed to hold non-ASCII bytes: the path, a semicolon, the reason.
+#
+# One entry per line; # starts a comment.
+
+[hosts]
+# Documentation and test names (RFC 2606 and 6761, and Microsoft's example domain).
+.example
+.example.com
+.example.net
+.example.org
+.test
+.invalid
+.contoso.com
+localhost
+# Test data that stands for a host on a private network, a bad actor or a placeholder.
+cache.internal
+db.internal
+evil
+x
+# Public services the tool and its tests use.
+aka.ms
+baseline.engramic.ai
+fonts.googleapis.com
+fonts.gstatic.com
+github.com
+secure.eicar.org
+timestamp.acs.microsoft.com
+timestamp.digicert.com
+www.virtualbox.org
+
+[engramic]
+engramic-ai/baseline-tool
+baseline.engramic.ai
+engramic.ai
+www.engramic.ai
+
+[non-ascii]
+docs/CONTROL-MAPPING.md; tools/Export-ControlMapping.ps1 writes it with a UTF-8 byte order mark
+docs/INTUNE.md; the deployment diagram draws its tree with box-drawing characters and arrows

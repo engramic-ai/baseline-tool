@@ -353,6 +353,49 @@ Describe 'Sign-Release.ps1 with .exe and .dll: only what this repository built' 
     }
 }
 
+Describe 'Test-ReleaseTag.ps1: a tag is v and the version it releases' {
+    BeforeAll {
+        $script:TagCheck = Join-Path $script:Tools 'Test-ReleaseTag.ps1'
+        function global:New-TestRepository {
+            param([string]$Path, [string]$ModuleVersion = '0.3.2', [string]$Props)
+            New-Item -ItemType Directory -Path (Join-Path $Path 'src\CEAudit') -Force | Out-Null
+            Set-Content -LiteralPath (Join-Path $Path 'src\CEAudit\CEAudit.psd1') -Value "@{ ModuleVersion = '$ModuleVersion' }"
+            if ($Props) { Set-Content -LiteralPath (Join-Path $Path 'Directory.Build.props') -Value $Props }
+            return $Path
+        }
+        $script:WithDotNet = '<Project><PropertyGroup><VersionPrefix>1.0.0</VersionPrefix><VersionSuffix>alpha.0</VersionSuffix></PropertyGroup></Project>'
+    }
+
+    It 'passes a tag for the module as it always has, with or without the .NET solution' {
+        $bare = New-TestRepository -Path (Join-Path $TestDrive 'bare')
+        & $script:TagCheck -Tag 'v0.3.2' -Root $bare 6>$null | Should -Be 'module'
+        { & $script:TagCheck -Tag 'v0.3.3' -Root $bare 6>$null } | Should -Throw "*module's 0.3.2*"
+        $both = New-TestRepository -Path (Join-Path $TestDrive 'both') -Props $script:WithDotNet
+        & $script:TagCheck -Tag 'v0.3.2' -Root $both 6>$null | Should -Be 'module'
+    }
+
+    It 'passes a tag for baseline.exe only with the prefix and the suffix, exactly' {
+        $repo = New-TestRepository -Path (Join-Path $TestDrive 'dotnet') -Props $script:WithDotNet
+        & $script:TagCheck -Tag 'v1.0.0-alpha.0' -Root $repo 6>$null | Should -Be 'baseline.exe'
+        { & $script:TagCheck -Tag 'v1.0.0' -Root $repo 6>$null } | Should -Throw "*baseline.exe's 1.0.0-alpha.0*"
+        { & $script:TagCheck -Tag 'v1.0.0-ALPHA.0' -Root $repo 6>$null } | Should -Throw
+        { & $script:TagCheck -Tag '1.0.0-alpha.0' -Root $repo 6>$null } | Should -Throw
+    }
+
+    It 'fails a tag for baseline.exe when Directory.Build.props writes the version in a way it cannot trust, and never one for the module' {
+        $repo = New-TestRepository -Path (Join-Path $TestDrive 'twice') -Props '<Project><PropertyGroup><VersionPrefix>1.0.0</VersionPrefix></PropertyGroup><PropertyGroup><VersionPrefix>1.0.1</VersionPrefix></PropertyGroup></Project>'
+        { & $script:TagCheck -Tag 'v1.0.0' -Root $repo 6>$null } | Should -Throw '*cannot be read*exactly once*'
+        & $script:TagCheck -Tag 'v0.3.2' -Root $repo 6>$null | Should -Be 'module'
+    }
+
+    It 'is what the release workflow runs on every v* tag, for this repository''s own props' {
+        $workflow = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.github\workflows\release.yml') -Raw
+        $workflow | Should -Match ([regex]::Escape('run: ./tools/Test-ReleaseTag.ps1 -Tag $env:GITHUB_REF_NAME'))
+        $version = Get-ReleaseDotNetVersion -Path (Join-Path $script:RepoRoot 'Directory.Build.props')
+        & $script:TagCheck -Tag "v$version" 6>$null | Should -Be 'baseline.exe'
+    }
+}
+
 Describe 'New-SignedRelease.ps1 -DotNet' {
     It 'checks the unsigned build, signs only .exe and .dll, and checks every PE file before packing' {
         $text = Get-Content -LiteralPath (Join-Path $script:Tools 'New-SignedRelease.ps1') -Raw

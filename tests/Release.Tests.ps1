@@ -1,0 +1,255 @@
+#Requires -Modules Pester
+<#
+    The release tools in tools/: which PE files of a published folder this repository built, signing only
+    those, the checks of signatures and tags, and the steps of the release, the pre-flight and the sandbox.
+
+    Nothing is signed and no certificate store is read: Get-AuthenticodeSignature, Set-AuthenticodeSignature,
+    Get-PfxCertificate and signtool are mocked, and the files are PE headers made up under TestDrive.
+
+    Run:  Invoke-Pester -Path .\tests\Release.Tests.ps1 -Output Detailed
+#>
+
+BeforeAll {
+    $script:RepoRoot = Split-Path -Parent $PSScriptRoot
+    $script:Tools = Join-Path $script:RepoRoot 'tools'
+    # Stand-ins where the Security module is missing (pwsh on Linux), so the commands can be mocked.
+    foreach ($name in @('Get-AuthenticodeSignature', 'Set-AuthenticodeSignature', 'Get-PfxCertificate')) {
+        if (-not (Get-Command $name -ErrorAction SilentlyContinue)) {
+            Set-Item -Path "function:global:$name" -Value { param($LiteralPath, $FilePath, $Certificate, [Parameter(ValueFromRemainingArguments)]$Rest) }
+        }
+    }
+    Import-Module (Join-Path $script:Tools 'Release.psm1') -Force
+
+    $global:ReleaseTestMicrosoft = 'CN=.NET, O=Microsoft Corporation, L=Redmond, S=Washington, C=US'
+    $global:ReleaseTestMicrosoftCA = 'CN=Microsoft Code Signing PCA 2024, O=Microsoft Corporation, C=US'
+    $global:ReleaseTestOurs = 'CN=Engramic Ltd, O=Engramic Ltd, C=GB'
+    $global:ReleaseTestOursCA = 'CN=Microsoft ID Verified CS EOC CA 01, O=Microsoft Corporation, C=US'
+    $global:ReleaseTestOurThumbprint = 'AA11BB22CC33DD44EE55FF6677889900AABBCCDD'
+
+    function global:New-TestPEFile {
+        # The smallest file with a PE header: "MZ", the offset of the header at 0x3C, and "PE" and two zeros there.
+        param([string]$Path)
+        $bytes = New-Object byte[] 512
+        $bytes[0] = 0x4D
+        $bytes[1] = 0x5A
+        $bytes[0x3C] = 0x80
+        $bytes[0x80] = 0x50
+        $bytes[0x81] = 0x45
+        [IO.File]::WriteAllBytes($Path, $bytes)
+    }
+
+    function global:New-TestPayload {
+        # A published folder in miniature: the launcher and two assemblies of ours, which baseline.deps.json
+        # names as projects, a package assembly, three runtime files and a file of data.
+        param([string]$Path)
+        New-Item -ItemType Directory -Path $Path -Force | Out-Null
+        foreach ($file in @('baseline.exe', 'baseline.dll', 'Engramic.Baseline.Model.dll', 'System.CommandLine.dll', 'coreclr.dll', 'createdump.exe', 'hostfxr.dll')) {
+            New-TestPEFile -Path (Join-Path $Path $file)
+        }
+        Set-Content -LiteralPath (Join-Path $Path 'baseline.runtimeconfig.json') -Value '{}' -Encoding ASCII
+        $target = '.NETCoreApp,Version=v10.0/win-x64'
+        $deps = [ordered]@{
+            runtimeTarget = [ordered]@{ name = $target; signature = '' }
+            targets       = [ordered]@{
+                $target = [ordered]@{
+                    'baseline/1.0.0-alpha.0'                                   = [ordered]@{ runtime = [ordered]@{ 'baseline.dll' = @{} } }
+                    'runtimepack.Microsoft.NETCore.App.Runtime.win-x64/10.0.12' = [ordered]@{
+                        runtime = [ordered]@{ 'System.Runtime.dll' = @{} }
+                        native  = [ordered]@{ 'coreclr.dll' = @{}; 'createdump.exe' = @{}; 'hostfxr.dll' = @{} }
+                    }
+                    'System.CommandLine/2.0.12'                                = [ordered]@{ runtime = [ordered]@{ 'lib/net8.0/System.CommandLine.dll' = @{} } }
+                    'Engramic.Baseline.Model/1.0.0-alpha.0'                    = [ordered]@{ runtime = [ordered]@{ 'Engramic.Baseline.Model.dll' = @{} } }
+                }
+            }
+            libraries     = [ordered]@{
+                'baseline/1.0.0-alpha.0'                                   = @{ type = 'project' }
+                'runtimepack.Microsoft.NETCore.App.Runtime.win-x64/10.0.12' = @{ type = 'runtimepack' }
+                'System.CommandLine/2.0.12'                                = @{ type = 'package' }
+                'Engramic.Baseline.Model/1.0.0-alpha.0'                    = @{ type = 'project' }
+            }
+        }
+        $deps | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $Path 'baseline.deps.json') -Encoding ASCII
+        return $Path
+    }
+
+    function global:New-TestSignature {
+        # What the mocked Get-AuthenticodeSignature returns: the properties the release tools read.
+        param([string]$Status = 'Valid', [string]$Subject = '', [string]$Issuer = '', [string]$Thumbprint = '', [switch]$NoTimestamp, [string]$Type = 'Authenticode')
+        $signer = $null
+        if ($Subject) { $signer = [pscustomobject]@{ Subject = $Subject; Issuer = $Issuer; Thumbprint = $Thumbprint } }
+        $stamper = $null
+        if ($Subject -and -not $NoTimestamp) { $stamper = [pscustomobject]@{ Subject = 'CN=Test Time-Stamp Service' } }
+        [pscustomobject]@{
+            Status                 = $Status
+            StatusMessage          = "status $Status"
+            SignatureType          = $Type
+            SignerCertificate      = $signer
+            TimeStamperCertificate = $stamper
+        }
+    }
+    function global:New-TestOurSignature { param([switch]$NoTimestamp, [string]$Status = 'Valid') New-TestSignature -Status $Status -Subject $global:ReleaseTestOurs -Issuer $global:ReleaseTestOursCA -Thumbprint $global:ReleaseTestOurThumbprint -NoTimestamp:$NoTimestamp }
+    function global:New-TestMicrosoftSignature { New-TestSignature -Subject $global:ReleaseTestMicrosoft -Issuer $global:ReleaseTestMicrosoftCA -Thumbprint '1234567890ABCDEF1234567890ABCDEF12345678' }
+
+    # The signature of each file by its name, as the mocked Get-AuthenticodeSignature reports it. No entry is NotSigned.
+    $global:ReleaseTestSignatures = @{}
+    function global:Get-TestSignature {
+        param([string]$Path)
+        $name = Split-Path -Leaf $Path
+        if ($global:ReleaseTestSignatures.ContainsKey($name)) { return $global:ReleaseTestSignatures[$name] }
+        return (New-TestSignature -Status 'NotSigned' -Type 'None')
+    }
+    function global:Set-TestReleaseSigned {
+        # Ours signed by us, the runtime and the package by Microsoft: a build as a release leaves it.
+        $global:ReleaseTestSignatures = @{}
+        foreach ($name in @('baseline.exe', 'baseline.dll', 'Engramic.Baseline.Model.dll')) { $global:ReleaseTestSignatures[$name] = New-TestOurSignature }
+        foreach ($name in @('System.CommandLine.dll', 'coreclr.dll', 'createdump.exe', 'hostfxr.dll')) { $global:ReleaseTestSignatures[$name] = New-TestMicrosoftSignature }
+    }
+    function global:Set-TestReleaseUnsigned {
+        # As dotnet publish leaves it: nothing of ours signed, everything else Microsoft's.
+        Set-TestReleaseSigned
+        foreach ($name in @('baseline.exe', 'baseline.dll', 'Engramic.Baseline.Model.dll')) { $global:ReleaseTestSignatures.Remove($name) }
+    }
+}
+
+AfterAll {
+    Remove-Module Release -ErrorAction SilentlyContinue
+}
+
+Describe 'Release module: which PE files this repository built' {
+    It 'names the launcher and the assemblies of its own projects, from the publish''s .deps.json, and nothing of the runtime or packages' {
+        $payload = New-TestPayload -Path (Join-Path $TestDrive 'own')
+        $own = @(Get-ReleaseOwnFile -Path $payload | ForEach-Object { Split-Path -Leaf $_ } | Sort-Object)
+        $own | Should -Be @('baseline.dll', 'baseline.exe', 'Engramic.Baseline.Model.dll')
+    }
+
+    It 'finds every PE file, whatever its extension, and nothing else' {
+        $payload = New-TestPayload -Path (Join-Path $TestDrive 'pe')
+        New-TestPEFile -Path (Join-Path $payload 'addon.node')
+        [IO.File]::WriteAllBytes((Join-Path $payload 'notes.txt'), [byte[]](0x4D, 0x5A, 0x20, 0x20))
+        $found = @(Get-ReleasePEFile -Path $payload | ForEach-Object { $_.Name } | Sort-Object)
+        $found | Should -Contain 'addon.node' -Because 'a PE file with another extension is still code'
+        $found | Should -Not -Contain 'notes.txt' -Because '"MZ" alone does not make a PE file'
+        $found | Should -Not -Contain 'baseline.deps.json'
+        $found.Count | Should -Be 8
+    }
+
+    It 'refuses a folder without a .deps.json, so nothing is signed or judged on a guess' {
+        $folder = Join-Path $TestDrive 'no-manifest'
+        New-Item -ItemType Directory -Path $folder | Out-Null
+        New-TestPEFile -Path (Join-Path $folder 'baseline.exe')
+        { Get-ReleaseOwnFile -Path $folder } | Should -Throw '*no .deps.json*'
+    }
+
+    It 'refuses a manifest that names a file which is not there, or one outside the folder' {
+        $payload = New-TestPayload -Path (Join-Path $TestDrive 'missing')
+        Remove-Item -LiteralPath (Join-Path $payload 'Engramic.Baseline.Model.dll')
+        { Get-ReleaseOwnFile -Path $payload } | Should -Throw '*Engramic.Baseline.Model.dll*not in*'
+
+        $escape = New-TestPayload -Path (Join-Path $TestDrive 'escape\payload')
+        New-TestPEFile -Path (Join-Path $TestDrive 'escape\outside.dll')
+        $manifest = Join-Path $escape 'baseline.deps.json'
+        (Get-Content -LiteralPath $manifest -Raw).Replace('"baseline.dll"', '"../outside.dll"') | Set-Content -LiteralPath $manifest -Encoding ASCII
+        { Get-ReleaseOwnFile -Path $escape } | Should -Throw '*outside*'
+    }
+
+    It 'reads an attribute of a certificate subject, and a quoted value cannot pose as another' {
+        Get-ReleaseNamePart -Name $global:ReleaseTestMicrosoft -Attribute 'O' | Should -Be 'Microsoft Corporation'
+        Get-ReleaseNamePart -Name $global:ReleaseTestMicrosoft -Attribute 'CN' | Should -Be '.NET'
+        Get-ReleaseNamePart -Name 'CN="Evil, O=Microsoft Corporation", O=Evil Ltd' -Attribute 'O' | Should -Be 'Evil Ltd'
+        Get-ReleaseNamePart -Name 'CN=Test, OU=Unit' -Attribute 'O' | Should -Be ''
+    }
+
+    It 'reads the version of baseline.exe from Directory.Build.props, prefix and suffix' {
+        $props = Join-Path $TestDrive 'Directory.Build.props'
+        Set-Content -LiteralPath $props -Value '<Project><PropertyGroup><VersionPrefix>1.0.0</VersionPrefix><VersionSuffix>alpha.0</VersionSuffix></PropertyGroup></Project>'
+        Get-ReleaseDotNetVersion -Path $props | Should -Be '1.0.0-alpha.0'
+        Set-Content -LiteralPath $props -Value '<Project><PropertyGroup><VersionPrefix>1.2.3</VersionPrefix></PropertyGroup></Project>'
+        Get-ReleaseDotNetVersion -Path $props | Should -Be '1.2.3'
+        Set-Content -LiteralPath $props -Value '<Project><PropertyGroup><VersionPrefix>1.2.3</VersionPrefix><VersionSuffix></VersionSuffix></PropertyGroup></Project>'
+        Get-ReleaseDotNetVersion -Path $props | Should -Be '1.2.3'
+    }
+
+    It 'refuses a version written twice, under a condition, or not as plain numbers and a label' {
+        $props = Join-Path $TestDrive 'Directory.Build.props'
+        Set-Content -LiteralPath $props -Value '<Project><PropertyGroup><VersionPrefix>1.0.0</VersionPrefix><VersionPrefix>2.0.0</VersionPrefix></PropertyGroup></Project>'
+        { Get-ReleaseDotNetVersion -Path $props } | Should -Throw '*VersionPrefix exactly once*'
+        Set-Content -LiteralPath $props -Value '<Project><PropertyGroup Condition="''$(CI)'' == ''true''"><VersionPrefix>1.0.0</VersionPrefix></PropertyGroup></Project>'
+        { Get-ReleaseDotNetVersion -Path $props } | Should -Throw '*under a condition*'
+        Set-Content -LiteralPath $props -Value '<Project><PropertyGroup><VersionPrefix>1.0.0</VersionPrefix><VersionSuffix Condition="true">beta</VersionSuffix></PropertyGroup></Project>'
+        { Get-ReleaseDotNetVersion -Path $props } | Should -Throw '*under a condition*'
+        Set-Content -LiteralPath $props -Value '<Project><PropertyGroup><VersionPrefix>$(Major).0.0</VersionPrefix></PropertyGroup></Project>'
+        { Get-ReleaseDotNetVersion -Path $props } | Should -Throw '*not three numbers*'
+        Set-Content -LiteralPath $props -Value '<Project><PropertyGroup><VersionPrefix>1.0.0</VersionPrefix><VersionSuffix>alpha 0</VersionSuffix></PropertyGroup></Project>'
+        { Get-ReleaseDotNetVersion -Path $props } | Should -Throw '*not a prerelease label*'
+    }
+}
+
+Describe 'Test-ReleaseSignatures.ps1: every PE file signed and timestamped, ours or Microsoft''s' {
+    BeforeAll {
+        $script:Check = Join-Path $script:Tools 'Test-ReleaseSignatures.ps1'
+        Mock -ModuleName Release Get-AuthenticodeSignature { Get-TestSignature -Path ([string]@($LiteralPath)[0]) }
+    }
+
+    BeforeEach {
+        $script:Payload = New-TestPayload -Path (Join-Path $TestDrive ([guid]::NewGuid().ToString('N')))
+        Set-TestReleaseSigned
+    }
+
+    It 'passes when ours carry our signature and every other PE file Microsoft''s, all valid and timestamped' {
+        $rows = @(& $script:Check -Path $script:Payload -Publisher 'Engramic Ltd' -PassThru 6>$null)
+        $rows.Count | Should -Be 7
+        @($rows | Where-Object { $_.Owner -eq 'ours' }).Count | Should -Be 3
+        @($rows | Where-Object { $_.Problems.Count }).Count | Should -Be 0
+    }
+
+    It 'reports every problem, file by file, and then fails' {
+        $global:ReleaseTestSignatures.Remove('baseline.dll')
+        $global:ReleaseTestSignatures['Engramic.Baseline.Model.dll'] = New-TestSignature -Subject 'CN=Someone, O=Someone Else' -Issuer 'CN=Some CA, O=Some CA' -Thumbprint '11'
+        $global:ReleaseTestSignatures['baseline.exe'] = New-TestOurSignature -NoTimestamp
+        $global:ReleaseTestSignatures.Remove('System.CommandLine.dll')
+        $global:ReleaseTestSignatures['coreclr.dll'] = New-TestOurSignature
+        $global:ReleaseTestSignatures['createdump.exe'] = New-TestSignature -Status 'HashMismatch' -Subject $global:ReleaseTestMicrosoft -Issuer $global:ReleaseTestMicrosoftCA -Thumbprint '12'
+        $global:ReleaseTestSignatures['hostfxr.dll'] = New-TestSignature -Subject $global:ReleaseTestMicrosoft -Issuer $global:ReleaseTestMicrosoftCA -Thumbprint '12' -Type 'Catalog'
+        $problems = @{}
+        { & $script:Check -Path $script:Payload -Publisher 'Engramic Ltd' -PassThru 6>$null | ForEach-Object { $problems[$_.File] = ($_.Problems -join ' | ') } } |
+            Should -Throw '*7 of 7 PE file(s)*'
+        $problems['baseline.dll'] | Should -Be 'not signed'
+        $problems['Engramic.Baseline.Model.dll'] | Should -Match 'signed by CN=Someone, O=Someone Else, not Engramic Ltd'
+        $problems['baseline.exe'] | Should -Match 'not timestamped'
+        $problems['System.CommandLine.dll'] | Should -Match 'PublishReadyToRunExclude' -Because 'an unsigned package assembly is most likely one ReadyToRun rewrote'
+        $problems['coreclr.dll'] | Should -Match 'signed by us .* this repository did not build it'
+        $problems['createdump.exe'] | Should -Match 'changed since it was signed'
+        $problems['hostfxr.dll'] | Should -Match 'catalog'
+    }
+
+    It 'accepts an untrusted chain on our files only when told to, and never on Microsoft''s' {
+        foreach ($name in @('baseline.exe', 'baseline.dll', 'Engramic.Baseline.Model.dll')) { $global:ReleaseTestSignatures[$name] = New-TestOurSignature -Status 'UnknownError' }
+        { & $script:Check -Path $script:Payload -Publisher 'Engramic Ltd' 6>$null } | Should -Throw
+        { & $script:Check -Path $script:Payload -Publisher 'Engramic Ltd' -AllowUntrustedChain 6>$null 3>$null } | Should -Not -Throw
+        $global:ReleaseTestSignatures['coreclr.dll'] = New-TestSignature -Status 'NotTrusted' -Subject $global:ReleaseTestMicrosoft -Issuer $global:ReleaseTestMicrosoftCA -Thumbprint '12'
+        { & $script:Check -Path $script:Payload -Publisher 'Engramic Ltd' -AllowUntrustedChain 6>$null 3>$null } | Should -Throw
+    }
+
+    It 'takes our certificate by thumbprint, written in any case or with spaces' {
+        $spaced = ($global:ReleaseTestOurThumbprint.ToLowerInvariant() -split '(.{8})' | Where-Object { $_ }) -join ' '
+        { & $script:Check -Path $script:Payload -Thumbprint $spaced 6>$null } | Should -Not -Throw
+        { & $script:Check -Path $script:Payload -Thumbprint 'FFFF' 6>$null } | Should -Throw
+    }
+
+    It 'wants none of ours signed before a release, and every other PE file already Microsoft''s' {
+        Set-TestReleaseUnsigned
+        { & $script:Check -Path $script:Payload -Unsigned 6>$null } | Should -Not -Throw
+        $global:ReleaseTestSignatures['baseline.dll'] = New-TestOurSignature
+        { & $script:Check -Path $script:Payload -Unsigned 6>$null } | Should -Throw
+        Set-TestReleaseUnsigned
+        $global:ReleaseTestSignatures.Remove('System.CommandLine.dll')
+        { & $script:Check -Path $script:Payload -Unsigned 6>$null } | Should -Throw
+    }
+
+    It 'fails a folder that is not a published one' {
+        $empty = Join-Path $TestDrive 'empty'
+        New-Item -ItemType Directory -Path $empty | Out-Null
+        { & $script:Check -Path $empty -Unsigned 6>$null } | Should -Throw
+        { & $script:Check -Path (Join-Path $TestDrive 'nowhere') -Unsigned 6>$null } | Should -Throw '*no folder*'
+    }
+}

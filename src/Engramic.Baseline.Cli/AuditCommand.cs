@@ -1,6 +1,5 @@
 using System.CommandLine;
 using System.Globalization;
-using System.Reflection;
 using Engramic.Baseline.Controls;
 using Engramic.Baseline.Engine;
 using Engramic.Baseline.Model;
@@ -14,7 +13,7 @@ namespace Engramic.Baseline.Cli;
 /// </summary>
 /// <remarks>
 /// For development and for comparing the tool with the PowerShell module. It writes no file itself: files
-/// are written only into the secure data folder, which the scheduled audit brings.
+/// are written only into the machine data folder, through SecureStore, by the scheduled audit.
 /// </remarks>
 internal static class AuditCommand
 {
@@ -95,13 +94,13 @@ internal static class AuditCommand
         switch (request.Json)
         {
             case StatusFormat:
-                await WriteStandardOutputAsync(StatusFile.ToBytes(StatusBuilder.Build(findings, catalog, device, ToolVersion())), cancel).ConfigureAwait(false);
+                await WriteStandardOutputAsync(StatusFile.ToBytes(StatusBuilder.Build(findings, catalog, device, ToolVersion.Current)), cancel).ConfigureAwait(false);
                 break;
             case FindingsFormat:
                 await WriteStandardOutputAsync(FindingsFile.ToBytes(new FindingsDocument { Findings = findings }), cancel).ConfigureAwait(false);
                 break;
             default:
-                await Console.Out.WriteAsync(Summary(device, findings, StatusBuilder.Build(findings, catalog, device, ToolVersion()))).ConfigureAwait(false);
+                await Console.Out.WriteAsync(Summary(device, findings, StatusBuilder.Build(findings, catalog, device, ToolVersion.Current))).ConfigureAwait(false);
                 break;
         }
 
@@ -150,11 +149,6 @@ internal static class AuditCommand
             await stdout.WriteAsync(bytes, cancel).ConfigureAwait(false);
             await stdout.FlushAsync(cancel).ConfigureAwait(false);
         }
-    }
-
-    private static string ToolVersion()
-    {
-        return typeof(AuditCommand).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "0.0.0";
     }
 
     /// <summary>The summary a person reads, as the PowerShell tool's Invoke-CEAudit.ps1 prints it.</summary>

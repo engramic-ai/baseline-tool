@@ -26,7 +26,7 @@ public sealed class AuditMutexTests
     [Fact]
     public void Takes_a_free_mutex_and_releases_it_when_disposed()
     {
-        var name = TestName();
+        var name = TestMutexes.NewName();
 
         using (var held = AuditMutex.TryAcquire(name, Short))
         {
@@ -42,10 +42,10 @@ public sealed class AuditMutexTests
     {
         // The creator's own handle has every right; anyone else is judged by the access list.
         Assert.SkipWhen(Elevation.IsElevated, "An elevated administrator is in the access list.");
-        var name = TestName();
+        var name = TestMutexes.NewName();
         using var held = AuditMutex.TryAcquire(name, Short);
 
-        var e = Assert.Throws<UnauthorizedAccessException>(() => OnOtherThread(() => Mutex.OpenExisting(name).Dispose()));
+        var e = Assert.Throws<UnauthorizedAccessException>(() => Mutex.OpenExisting(name).Dispose());
 
         Assert.Contains(name, e.Message, StringComparison.Ordinal);
     }
@@ -54,10 +54,10 @@ public sealed class AuditMutexTests
     public void Lets_an_administrator_open_the_mutex_it_created_and_read_its_access_list()
     {
         Assert.SkipUnless(Elevation.IsElevated, Elevation.NeedsElevation);
-        var name = TestName();
+        var name = TestMutexes.NewName();
         using var held = AuditMutex.TryAcquire(name, Short);
 
-        var sddl = OnOtherThread(() =>
+        var sddl = TestMutexes.OnOtherThread(() =>
         {
             using var opened = Mutex.OpenExisting(name);
             return opened.GetAccessControl().GetSecurityDescriptorSddlForm(AccessControlSections.Access);
@@ -69,12 +69,12 @@ public sealed class AuditMutexTests
     [Fact]
     public void Gives_up_when_another_holder_keeps_it_for_the_whole_time()
     {
-        var name = TestName();
+        var name = TestMutexes.NewName();
         using var release = new ManualResetEventSlim();
         using var taken = new ManualResetEventSlim();
         var holder = new Thread(() =>
         {
-            using var mutex = OpenableByTheTests(name);
+            using var mutex = TestMutexes.OpenableByTheTests(name);
             mutex.WaitOne();
             taken.Set();
             release.Wait();
@@ -97,9 +97,9 @@ public sealed class AuditMutexTests
     [Fact]
     public void Takes_a_mutex_its_last_holder_abandoned()
     {
-        var name = TestName();
-        using var creator = OpenableByTheTests(name);
-        var holder = new Thread(() => OpenableByTheTests(name).WaitOne());
+        var name = TestMutexes.NewName();
+        using var creator = TestMutexes.OpenableByTheTests(name);
+        var holder = new Thread(() => TestMutexes.OpenableByTheTests(name).WaitOne());
         holder.Start();
         holder.Join();
 
@@ -113,18 +113,16 @@ public sealed class AuditMutexTests
     {
         // As a standard user could make it first, to block audits: only SYSTEM may use it.
         Assert.SkipWhen(Elevation.IsSystem, "SYSTEM is in the access list.");
-        var name = TestName();
-        var systemOnly = new MutexSecurity();
-        systemOnly.SetSecurityDescriptorSddlForm("D:P(A;;0x1f0001;;;SY)");
-        using var planted = MutexAcl.Create(initiallyOwned: false, name, out _, systemOnly);
+        var name = TestMutexes.NewName();
+        using var planted = TestMutexes.Create(name, "D:P(A;;0x1f0001;;;SY)");
 
-        Assert.Throws<UnauthorizedAccessException>(() => OnOtherThread(() => AuditMutex.TryAcquire(name, Short)));
+        Assert.Throws<UnauthorizedAccessException>(() => TestMutexes.OnOtherThread(() => AuditMutex.TryAcquire(name, Short)));
     }
 
     [Fact]
     public void Refuses_a_name_that_something_other_than_a_mutex_has()
     {
-        var name = TestName();
+        var name = TestMutexes.NewName();
         using var planted = new EventWaitHandle(false, EventResetMode.ManualReset, name);
 
         Assert.Throws<WaitHandleCannotBeOpenedException>(() => AuditMutex.TryAcquire(name, Short));
@@ -133,46 +131,9 @@ public sealed class AuditMutexTests
     [Fact]
     public void Disposing_twice_releases_once()
     {
-        var held = AuditMutex.TryAcquire(TestName(), Short)!;
+        var held = AuditMutex.TryAcquire(TestMutexes.NewName(), Short)!;
 
         held.Dispose();
         held.Dispose();
     }
-
-    /// <summary>A unique name in the global namespace, never the product's.</summary>
-    internal static string TestName() => @"Global\Engramic.Baseline.Tests." + Guid.NewGuid().ToString("n");
-
-    /// <summary>A mutex the account running the tests may open again, made by that account.</summary>
-    internal static Mutex OpenableByTheTests(string name)
-    {
-        var security = new MutexSecurity();
-        security.SetSecurityDescriptorSddlForm($"D:P(A;;0x1f0001;;;SY)(A;;0x1f0001;;;BA)(A;;0x1f0001;;;{Elevation.CurrentUser})");
-        return MutexAcl.Create(initiallyOwned: false, name, out _, security);
-    }
-
-    private static T OnOtherThread<T>(Func<T> action)
-    {
-        T? result = default;
-        Exception? error = null;
-        var thread = new Thread(() =>
-        {
-            try
-            {
-                result = action();
-            }
-            catch (Exception e)
-            {
-                error = e;
-            }
-        });
-        thread.Start();
-        thread.Join();
-        return error is null ? result! : throw error;
-    }
-
-    private static void OnOtherThread(Action action) => OnOtherThread(() =>
-    {
-        action();
-        return true;
-    });
 }

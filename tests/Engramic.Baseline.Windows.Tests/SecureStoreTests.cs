@@ -495,6 +495,29 @@ public sealed class SecureStoreTests : IDisposable
     }
 
     [Fact]
+    public void Another_kind_of_reparse_point_swapped_in_after_the_check_is_replaced_as_a_name()
+    {
+        // What a standard user can make on a file without a privilege: the rename replaces it as it would a
+        // symbolic link, which needs one (the next test).
+        File.WriteAllText(_fixture.StatusJson, "old");
+        using var store = _fixture.Open(new SecureStoreHooks
+        {
+            BeforeRename = (target, attempt) =>
+            {
+                File.Delete(target);
+                File.WriteAllText(target, "planted");
+                Links.MakeThirdPartyReparsePoint(target);
+            },
+        });
+
+        store.WriteFile("status.json", "new"u8);
+
+        Assert.Equal("new", File.ReadAllText(_fixture.StatusJson));
+        Assert.False(File.GetAttributes(_fixture.StatusJson).HasFlag(FileAttributes.ReparsePoint));
+        Assert.Equal(["status.json"], _fixture.Entries);
+    }
+
+    [Fact]
     public void A_symbolic_link_swapped_in_after_the_check_is_replaced_as_a_name_not_followed()
     {
         File.WriteAllText(_fixture.StatusJson, "old");

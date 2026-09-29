@@ -80,7 +80,7 @@ public sealed class SecureStoreElevatedTests : IDisposable
         var programData = _tree.Folder("ProgramData", Descriptors.ProgramDataLike);
         var dataFolder = _tree.Folder(@"ProgramData\EngramicBaseline", Descriptors.InstallerLocked);
         var outside = _tree.File("outside.json", "outside");
-        File.CreateSymbolicLink(Path.Combine(dataFolder, "status.json"), outside);
+        Assert.SkipUnless(Links.TryCreateFileSymbolicLink(Path.Combine(dataFolder, "status.json"), outside), "This account may not make a symbolic link.");
         using var store = SecureStore.Open(new SecureStoreOptions { ProgramDataPath = programData, Registry = DataFolderFixture.Sealed() });
 
         Assert.Throws<SecureStoreException>(() => store.WriteFile("status.json", "{}"u8));

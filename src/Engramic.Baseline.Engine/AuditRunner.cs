@@ -13,11 +13,13 @@ namespace Engramic.Baseline.Engine;
 /// <item>An admin-only check is Skipped when the audit is not elevated, with the PowerShell tool's words.</item>
 /// <item>A check that does not apply to the device is NotApplicable, with its reason. If deciding that
 /// throws, it is NotApplicable too, with the error.</item>
-/// <item>Otherwise it runs, on a thread pool thread. An exception, no result at all, or running longer
+/// <item>Otherwise it runs, on a thread of its own. An exception, no result at all, or running longer
 /// than the time allowed (new in this tool), counted from when it starts, whether it yields or blocks,
-/// makes an Error finding instead of its results.</item>
+/// makes an Error finding instead of its results. A check that runs out of time is told to stop through
+/// its token, and the audit goes on without waiting for it.</item>
 /// </list>
-/// Stopping the audit through its cancellation token stops the run; nothing else does.
+/// Stopping the audit through its cancellation token stops the run, and tells the running check to stop;
+/// nothing else stops the run.
 /// </remarks>
 public sealed class AuditRunner
 {
@@ -94,6 +96,37 @@ public sealed class AuditRunner
         }
     }
 
+    // Starts a check on a thread of its own rather than a thread pool thread. The time allowed then covers what the
+    // check does before it first yields, such as blocking on a registry, CIM or process call, and a check that never
+    // returns holds only that thread, leaving the pool to the timers, the callbacks and the checks after it. The check
+    // is called even if its time has run out before its thread starts, and its token then tells it to stop.
+    private static Task<IReadOnlyList<CheckResult>> Start(Check check, CheckContext context, CancellationToken stop)
+    {
+        return Task.Factory.StartNew(
+            () => check.RunAsync(context, stop).AsTask(),
+            CancellationToken.None,
+            TaskCreationOptions.LongRunning | TaskCreationOptions.DenyChildAttach,
+            TaskScheduler.Default).Unwrap();
+    }
+
+    // Tells a check to stop without waiting for it: the token is cancelled at once, and the check's callbacks run on
+    // the thread pool, as one that blocks must not hold up the audit, and one that throws is not the audit's concern.
+    private static void Stop(CancellationTokenSource stop)
+    {
+        try
+        {
+            _ = stop.CancelAsync().ContinueWith(
+                static stopping => { _ = stopping.Exception; },
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
+        catch (ObjectDisposedException)
+        {
+            // The check finished as its time ran out, and its token went with it: there is nothing to stop.
+        }
+    }
+
     private async Task<IReadOnlyList<Finding>> RunCheckAsync(Check check, CheckContext context, CancellationToken cancel)
     {
         var info = check.Info;
@@ -117,13 +150,24 @@ public sealed class AuditRunner
             return One(info, new CheckResult(FindingStatus.NotApplicable) { Actual = applies.Reason });
         }
 
-        using var stop = CancellationTokenSource.CreateLinkedTokenSource(cancel);
+        // The check's token, cancelled when the audit stops or the check runs out of time. It lasts as long as the
+        // check does, which can be longer than the runner waits for it, so the check always hears that it should stop.
+        var stop = CancellationTokenSource.CreateLinkedTokenSource(cancel);
+        var running = Start(check, context, stop.Token);
+        _ = running.ContinueWith(
+            static (ran, source) =>
+            {
+                // Observed here, as a check that was left behind can still fail once nothing is waiting for it.
+                _ = ran.Exception;
+                ((CancellationTokenSource)source!).Dispose();
+            },
+            stop,
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
         try
         {
-            // Off this thread, so the time allowed covers what a check does before it first yields, such as
-            // blocking on a registry, CIM or process call, and a check that never yields cannot hold up the audit.
-            var run = Task.Run(() => check.RunAsync(context, stop.Token).AsTask(), stop.Token);
-            var results = await run.WaitAsync(_options.CheckTimeout, context.Time, cancel).ConfigureAwait(false);
+            var results = await running.WaitAsync(_options.CheckTimeout, context.Time, cancel).ConfigureAwait(false);
             var findings = (results ?? []).Where(r => r is not null).Select(r => FindingFactory.Create(info, r)).ToArray();
             return findings.Length > 0 ? findings : One(info, new CheckResult(FindingStatus.Error) { Actual = NoResultActual });
         }
@@ -131,10 +175,11 @@ public sealed class AuditRunner
         {
             throw;
         }
-        catch (TimeoutException)
+        catch (TimeoutException timeout) when (running.Exception?.InnerException != timeout)
         {
-            // Tell the check to stop. One that ignores the token is left to finish on its own; its result is not used.
-            await stop.CancelAsync().ConfigureAwait(false);
+            // The time ran out, as opposed to the check throwing a TimeoutException of its own. Tell the check to stop
+            // and go on: one that ignores its token is left to finish on its own, and its result is not used.
+            Stop(stop);
             return One(info, new CheckResult(FindingStatus.Error)
             {
                 Actual = $"Check failed: it did not finish within {Describe(_options.CheckTimeout)}, so it was stopped.",

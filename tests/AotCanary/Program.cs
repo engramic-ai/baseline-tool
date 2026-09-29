@@ -13,6 +13,9 @@ Expect("Engine", CheckIds.IsWellFormed("SU-01") && !CheckIds.IsWellFormed("SU-1"
 Expect("Engine: runner and rollups", await EngineRun());
 Expect("Windows", ConsoleSession.GetActiveSessionId() is null or > 0);
 Expect("Windows: registry and account", WindowsReads());
+Expect("Platform: data folder trust", TrustRules());
+Expect("Windows: SecureStore", SecureStoreRefusesAMissingFolder());
+Expect("Windows: audit mutex", AuditMutexTurns());
 
 Console.WriteLine(failures == 0 ? "AOT canary: all libraries ran." : $"AOT canary: {failures} failed.");
 return failures == 0 ? 0 : 1;
@@ -78,6 +81,39 @@ static bool WindowsReads()
 {
     var build = new WindowsRegistry().GetValue(RegistryHive.LocalMachine, RegistryView.Registry64, @"SOFTWARE\Microsoft\Windows NT\CurrentVersion", "CurrentBuildNumber");
     return build is { Kind: RegistryValueKind.Text } && CurrentProcess.ReadAccount().Name.Length > 0;
+}
+
+static bool TrustRules()
+{
+    var locked = new ItemSecurity(Sid.Administrators, [new AccessEntry(AccessEntryType.Allow, Sid.LocalSystem, 0x1F01FF), new AccessEntry(AccessEntryType.Allow, Sid.Administrators, 0x1F01FF)]);
+    var writable = locked with { Dacl = [.. locked.Dacl!, new AccessEntry(AccessEntryType.Allow, Sid.Users, 0x2)] };
+    var folder = new FileFacts { IsDirectory = true };
+    return DataFolderTrust.Machine.FindDataFolderProblem("C:\\ProgramData\\EngramicBaseline", folder, locked, isSealed: true) is null
+        && DataFolderTrust.Machine.FindDataFolderProblem("C:\\ProgramData\\EngramicBaseline", folder, writable, isSealed: true) is not null;
+}
+
+static bool SecureStoreRefusesAMissingFolder()
+{
+    // The machine's ProgramData from the known-folder API, then a folder that does not exist: nothing is touched.
+    var machine = SecureStoreOptions.ForMachine(new WindowsRegistry(), TimeProvider.System);
+    var missing = machine with { ProgramDataPath = Path.Combine(Path.GetTempPath().TrimEnd('\\'), "baseline-canary-" + Guid.NewGuid().ToString("n")) };
+    try
+    {
+        SecureStore.Open(missing).Dispose();
+        return false;
+    }
+    catch (SecureStoreException e)
+    {
+        return machine.ProgramDataPath.EndsWith(":\\ProgramData", StringComparison.OrdinalIgnoreCase) && e.Message.Contains("does not exist", StringComparison.Ordinal);
+    }
+}
+
+static bool AuditMutexTurns()
+{
+    // A name of the canary's own, never the product's audit mutex.
+    var name = "Global\\Engramic.Baseline.Canary." + Guid.NewGuid().ToString("n");
+    using var held = AuditMutex.TryAcquire(name, TimeSpan.FromSeconds(5));
+    return held is not null;
 }
 
 /// <summary>A check that passes, to run the engine end to end.</summary>

@@ -18,4 +18,21 @@
       <_Parameter1>windows$(BaselineMinimumWindowsVersion)</_Parameter1>
     </AssemblyAttribute>
   </ItemGroup>
+
+  <!--
+    Product code (every project under src/) must build with the banned-API analyser, its list and the
+    rule at full strength: a project that lost any of them fails here rather than building quietly.
+  -->
+  <PropertyGroup>
+    <_BaselineProjectPath>$([MSBuild]::MakeRelative('$(MSBuildThisFileDirectory)', '$(MSBuildProjectDirectory)').Replace('\', '/'))</_BaselineProjectPath>
+  </PropertyGroup>
+
+  <Target Name="_BaselineRequireBannedApiAnalyser" BeforeTargets="CoreCompile" Condition="$(_BaselineProjectPath.StartsWith('src/'))">
+    <Error Condition="'@(Analyzer->AnyHaveMetadataValue('NuGetPackageId', 'Microsoft.CodeAnalysis.BannedApiAnalyzers'))' != 'true'"
+           Text="$(MSBuildProjectName) is product code but does not run the banned-API analyser (src/Directory.Build.props)." />
+    <Error Condition="'@(AdditionalFiles->AnyHaveMetadataValue('Filename', 'BannedSymbols'))' != 'true'"
+           Text="$(MSBuildProjectName) is product code but does not read src/BannedSymbols.txt (src/Directory.Build.props)." />
+    <Error Condition="$(NoWarn.Contains('RS0030')) or $(WarningsNotAsErrors.Contains('RS0030'))"
+           Text="$(MSBuildProjectName) turns the banned-API rule RS0030 down; use an exemption instead (src/BannedApiExemptions.txt)." />
+  </Target>
 </Project>

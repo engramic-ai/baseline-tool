@@ -8,6 +8,7 @@
       "src\\Engramic.Baseline.Platform\\Engramic.Baseline.Platform.csproj",
       "tests\\Engramic.Baseline.Controls.Tests\\Engramic.Baseline.Controls.Tests.csproj",
       "tests\\Engramic.Baseline.Engine.Tests\\Engramic.Baseline.Engine.Tests.csproj",
+      "tests\\Engramic.Baseline.Invariants.Tests\\Engramic.Baseline.Invariants.Tests.csproj",
       "tests\\Engramic.Baseline.Model.Tests\\Engramic.Baseline.Model.Tests.csproj",
       "tests\\Engramic.Baseline.Platform.Tests\\Engramic.Baseline.Platform.Tests.csproj",
       "tests\\Engramic.Baseline.Testing\\Engramic.Baseline.Testing.csproj"

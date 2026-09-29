@@ -21,6 +21,9 @@ indent_size = 4
 # not reach an API newer than their minimum Windows version (Directory.Build.targets) unguarded.
 dotnet_diagnostic.CA1416.severity = error
 
+# Banned APIs (src/BannedSymbols.txt): an error even where warnings are not, such as in an IDE.
+dotnet_diagnostic.RS0030.severity = error
+
 #### Code style enforced in the build (EnforceCodeStyleInBuild) ####
 
 # Usings: outside the namespace, System first, none unused.

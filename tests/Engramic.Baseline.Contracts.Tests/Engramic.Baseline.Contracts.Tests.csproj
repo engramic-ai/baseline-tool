@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    The status.json contract (docs/DOTNET.md): golden files of its exact bytes, and the Intune scripts already
+    deployed in tenants run on it in 64-bit and 32-bit Windows PowerShell 5.1. Portable, so the golden tests
+    run on Linux too; the Intune-reader tests run only on Windows.
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Engramic.Baseline.Model\Engramic.Baseline.Model.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The exact bytes of status.json for each sample document in ContractSamples. -->
+    <EmbeddedResource Include="Golden\*.json" LogicalName="Golden/%(Filename)%(Extension)" />
+  </ItemGroup>
+</Project>

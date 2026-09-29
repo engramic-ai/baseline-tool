@@ -359,7 +359,11 @@ runner, installs with `intune/Install-CEChecker.ps1` and shows, step by step, th
    as for the status.json that the installed module then writes for SU-01 in the same folder as SYSTEM
    (`tools/contracts/Write-ModuleStatus.ps1`), apart from the tool version, which the ledger (below) ignores
    (`tools/contracts/Compare-IntuneReaders.ps1`);
-9. with Users given write access to the data folder, `scheduled-audit` refuses it and leaves status.json alone.
+9. with Users given write access to the data folder, `scheduled-audit` refuses it and leaves status.json alone;
+10. with a junction in the data folder's place, leading to an empty folder only SYSTEM and Administrators can
+    change, `scheduled-audit` opens the junction as itself, refuses it and writes nothing where it leads.
+
+Each step that takes something away puts it back, and the data folder is left as the install made it.
 
 It changes the machine, so it refuses to run unless elevated, and where the tool is installed or its data
 folder exists unless given `-Force`. Runs as SYSTEM go through `tools/ci/Invoke-AsSystem.ps1`: a temporary

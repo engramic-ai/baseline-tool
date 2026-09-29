@@ -28,6 +28,9 @@
          tests\parity\divergences.json, ignores: the tool version (tools\contracts\Compare-IntuneReaders.ps1).
       9. With Users given write access to the data folder, scheduled-audit as SYSTEM refuses it and leaves
          status.json alone; the access is taken away again.
+     10. With a junction in the data folder's place, leading to an empty folder only SYSTEM and Administrators can
+         change, scheduled-audit as SYSTEM sees the junction itself, through the handle it opens, refuses it and
+         writes nothing where it leads; the data folder is put back.
 
     Runs as SYSTEM go through tools\ci\Invoke-AsSystem.ps1, a temporary scheduled task, from -WorkPath, which is
     made so that only SYSTEM and Administrators can change it. Every file the steps make is kept there: both
@@ -200,6 +203,18 @@ function Get-DataFolderLock {
     return ''
 }
 
+function Move-Folder {
+    <# Renames a folder, trying again for a few seconds while another process, such as a scanner, has a file in it open. #>
+    param([string]$From, [string]$To)
+    for ($attempt = 1; ; $attempt++) {
+        try { [IO.Directory]::Move($From, $To); return }
+        catch {
+            if ($attempt -ge 10) { throw }
+            Start-Sleep -Milliseconds (200 * $attempt)
+        }
+    }
+}
+
 function Test-Refused {
     <# A scheduled-audit run as SYSTEM that must refuse: exit 1, SecureStore's reason, and status.json as it was. #>
     param([string]$Name, [string]$Reason)
@@ -217,6 +232,9 @@ Write-Host "  baseline.exe $version; working in $WorkPath"
 $savedSeal = $null
 $sealTaken = $false
 $usersGranted = $false
+$aside = "$dataRoot.contract-aside"
+$movedAside = $false
+$junctionMade = $false
 $icacls = Join-Path $system32 'icacls.exe'
 try {
     # 1. Nothing installed: SecureStore refuses the missing folder, and scheduled-audit creates nothing.
@@ -341,17 +359,40 @@ try {
     & $icacls $dataRoot /grant '*S-1-5-32-545:(W)' /Q | Out-Null
     $usersGranted = $LASTEXITCODE -eq 0
     Test-Refused -Name '9. scheduled-audit as SYSTEM refuses a data folder Users can write to, and leaves status.json alone' -Reason 'can be changed by S-1-5-32-545'
+    & $icacls $dataRoot /remove:g '*S-1-5-32-545' /Q | Out-Null
+    $usersGranted = $false
+    $lock = Get-DataFolderLock
+    Add-Step '9. The data folder is locked again afterwards' (-not $lock) $lock
+
+    # 10. A junction in the data folder's place is opened as itself and refused, even where it leads to a folder
+    # only SYSTEM and Administrators can change: nothing is written there.
+    $kept = Get-Hash ([IO.File]::ReadAllBytes($statusPath))
+    $decoy = Join-Path $WorkPath 'decoy'
+    New-Item -ItemType Directory -Path $decoy | Out-Null
+    Move-Folder -From $dataRoot -To $aside
+    $movedAside = $true
+    New-Item -ItemType Junction -Path $dataRoot -Target $decoy | Out-Null
+    $junctionMade = $true
+    Test-Refused -Name '10. scheduled-audit as SYSTEM refuses a junction in the data folder''s place' -Reason 'junction, symbolic link or other reparse point'
+    $written = @(Get-ChildItem -LiteralPath $decoy -Force | ForEach-Object { $_.Name })
+    Add-Step '10. ...and writes nothing where the junction leads' ($written.Count -eq 0) ($written -join ', ')
+    [IO.Directory]::Delete($dataRoot, $false)
+    $junctionMade = $false
+    Move-Folder -From $aside -To $dataRoot
+    $movedAside = $false
+    $lock = Get-DataFolderLock
+    $back = (Test-Path -LiteralPath $statusPath) -and (Get-Hash ([IO.File]::ReadAllBytes($statusPath))) -eq $kept
+    Add-Step '10. The data folder is back as it was' (-not $lock -and $back) $lock
 }
 catch {
     Add-Step 'Unexpected error' $false $_.Exception.Message
 }
 finally {
+    # Whatever failed, put the data folder back as the install left it.
+    if ($junctionMade) { [IO.Directory]::Delete($dataRoot, $false) }
+    if ($movedAside) { Move-Folder -From $aside -To $dataRoot }
+    if ($usersGranted) { & $icacls $dataRoot /remove:g '*S-1-5-32-545' /Q | Out-Null }
     if ($sealTaken -and $savedSeal) { New-ItemProperty -LiteralPath $sealKey -Name 'DataRootSealed' -Value $savedSeal -PropertyType String -Force | Out-Null }
-    if ($usersGranted) {
-        & $icacls $dataRoot /remove:g '*S-1-5-32-545' /Q | Out-Null
-        $lock = Get-DataFolderLock
-        Add-Step '9. The data folder is locked again afterwards' (-not $lock) $lock
-    }
 }
 
 $failed = @($steps | Where-Object { $_.Result -eq 'FAIL' })

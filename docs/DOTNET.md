@@ -81,10 +81,17 @@ a banned API, and only like this:
    around as few lines as possible.
 
 Adding a file to the list, or a use to a listed file, needs the maintainer's review. Nothing else may turn
-the rule down: `Directory.Build.targets` fails the build of a product project that lost the analyser,
-the list or the rule's full strength, and `Engramic.Baseline.Invariants.Tests` fails on an unlisted
-suppression, a pragma without a reason or restore, a bare `#pragma warning disable`, a `SuppressMessage`
-or a build setting that names RS0030. The same tests check that every line of `BannedSymbols.txt` names
+the rule down:
+
+- `Directory.Build.targets` fails the build of a product project that does not reference the analyser,
+  skips the analysers (`RunAnalyzers` or `RunAnalyzersDuringBuild` set to false, or
+  `OptimizeImplicitlyTriggeredBuild`), reads a banned-API list other than `src/BannedSymbols.txt` or
+  names RS0030 in `NoWarn` or `WarningsNotAsErrors`.
+- `Engramic.Baseline.Invariants.Tests` fails on an unlisted suppression, a pragma without a reason or
+  restore, a bare `#pragma warning disable`, a `SuppressMessage`, a build setting that names RS0030, and
+  what the build cannot see in itself: a product project that stops importing the shared build files,
+  switches the analysers off, removes an analyser or additional file, or brings its own
+  `Directory.Build.*` or other build settings under `src/`. The same tests check that every line of `BannedSymbols.txt` names
 an API that exists and that every overload of what it bans is listed, so an overload .NET adds later
 fails them.
 

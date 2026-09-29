@@ -137,6 +137,46 @@ public sealed partial class BannedApiExemptionTests
         Assert.True(offenders.Count == 0, $"Only .editorconfig (as an error) and Directory.Build.targets may name {Rule}:\n" + string.Join('\n', offenders));
     }
 
+    [Fact]
+    public void Product_projects_keep_the_analysers_and_the_build_rules_that_check_them()
+    {
+        // Directory.Build.targets fails a product build that skips the analysers or swaps the list, but it
+        // cannot see a project that stopped importing it, so the project files are read here instead.
+        var offenders = new List<string>();
+        foreach (var file in Repository.FilesUnder("src", "*").Where(IsBuildSetting))
+        {
+            var path = Repository.RelativePathOf(file);
+            if (Path.GetExtension(file) != ".csproj" && path != "src/Directory.Build.props")
+            {
+                offenders.Add($"{path}: product build settings live in src/Directory.Build.props and the project files only");
+                continue;
+            }
+
+            var lines = File.ReadAllLines(file);
+            for (var i = 0; i < lines.Length; i++)
+            {
+                if (AnalyserSwitch().IsMatch(lines[i]))
+                {
+                    offenders.Add($"{path}({i + 1}): {lines[i].Trim()}");
+                }
+            }
+        }
+
+        foreach (var file in new[] { "Directory.Build.props", "Directory.Packages.props" })
+        {
+            var lines = File.ReadAllLines(Repository.PathOf(file));
+            for (var i = 0; i < lines.Length; i++)
+            {
+                if (AnalyserSwitch().IsMatch(lines[i]))
+                {
+                    offenders.Add($"{file}({i + 1}): {lines[i].Trim()}");
+                }
+            }
+        }
+
+        Assert.True(offenders.Count == 0, "Product code must run the analysers with the shared banned-API list:\n" + string.Join('\n', offenders));
+    }
+
     private static bool IsBuildSetting(string file)
     {
         var name = Path.GetFileName(file);
@@ -152,6 +192,13 @@ public sealed partial class BannedApiExemptionTests
             yield return (Repository.RelativePathOf(file), text, text.ReplaceLineEndings("\n").Split('\n'));
         }
     }
+
+    /// <summary>
+    /// A setting that stops the analysers running, stops the shared build rules being imported, or removes
+    /// an analyser or an additional file (such as the banned-API list) that src/Directory.Build.props adds.
+    /// </summary>
+    [GeneratedRegex(@"RunAnalyzers|RunAnalyzersDuringBuild|OptimizeImplicitlyTriggeredBuild|ImportDirectoryBuild(Props|Targets)|ImportDirectoryPackagesProps|<(Analyzer|AdditionalFiles)\s[^>]*\bRemove\s*=")]
+    private static partial Regex AnalyserSwitch();
 
     [GeneratedRegex(@"^\s*#pragma\s+warning\s+disable\s*(//.*)?$")]
     private static partial Regex BareDisable();

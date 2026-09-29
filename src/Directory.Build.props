@@ -8,7 +8,8 @@
     - The public API tracked in PublicAPI.Shipped.txt and PublicAPI.Unshipped.txt, so any change to
       what other code can call shows in the diff.
     - The banned APIs in BannedSymbols.txt, allowed only in the files BannedApiExemptions.txt names.
-      Directory.Build.targets fails the build of a project here that lost the analyser or the list.
+      Directory.Build.targets fails the build of a project here that lost the analyser or the list, or
+      skips the analysers.
     - Internals visible to the project's own tests and nothing else.
   -->
   <PropertyGroup>

@@ -15,6 +15,13 @@
     A release is only publishable when every signature verifies as Valid. An Artifact Signing
     Public Trust Test profile cannot reach that, by design, so -AllowUntrustedChain produces a
     build marked DO-NOT-PUBLISH and refuses to print a publish command.
+
+    With -DotNet it releases baseline.exe, the .NET port, instead: it publishes it self-contained
+    from this commit, checks that none of our files is signed yet and every other PE file carries
+    Microsoft's signature, signs only the .exe and .dll files this repository built (never the
+    runtime's), and fails unless every PE file then carries a valid, timestamped signature, ours or
+    Microsoft's (tools\Test-ReleaseSignatures.ps1). The signed folder is left in build\release-dotnet,
+    where the sign-test sandbox finds it and runs the slice from it.
 .PARAMETER AzureMetadata
     The Artifact Signing metadata JSON naming the account, region endpoint and certificate
     profile. Keep it out of the repository; it identifies the signing setup.
@@ -25,10 +32,17 @@
     Skip lint and tests. Only for iterating on this script itself.
 .PARAMETER ModulePath
     A folder holding Pester and PSScriptAnalyzer, passed to Invoke-PreFlight.ps1.
+.PARAMETER DotNet
+    Release baseline.exe, whose version is the one in Directory.Build.props, instead of the
+    PowerShell module.
+.PARAMETER Publisher
+    With -DotNet: who our files must be signed by, the organisation in the signing certificate.
 .EXAMPLE
     .\tools\New-SignedRelease.ps1 -AzureMetadata C:\keys\artifact-signing.json -ModulePath C:\modules
 .EXAMPLE
     .\tools\New-SignedRelease.ps1 -AzureMetadata .\build\test-profile.json -AllowUntrustedChain
+.EXAMPLE
+    .\tools\New-SignedRelease.ps1 -AzureMetadata C:\keys\artifact-signing.json -DotNet -ModulePath C:\modules
 #>
 [CmdletBinding()]
 param(
@@ -41,19 +55,23 @@ param(
     [string]$ModulePath,
     [string]$PesterVersion,
     [switch]$AllowDirtyTree,
-    [switch]$SkipInstaller
+    [switch]$SkipInstaller,
+    [switch]$DotNet,
+    [string]$Publisher = 'Engramic Ltd'
 )
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 Set-Location $repo
-if (-not $OutputPath) { $OutputPath = Join-Path $repo 'build\release' }
+Import-Module (Join-Path $repo 'tools\Release.psm1')
+if (-not $OutputPath) { $OutputPath = Join-Path $repo $(if ($DotNet) { 'build\release-dotnet' } else { 'build\release' }) }
 if (-not (Test-Path -LiteralPath $AzureMetadata)) { throw "Artifact Signing metadata not found: $AzureMetadata" }
 $AzureMetadata = (Resolve-Path -LiteralPath $AzureMetadata).Path
 
 function Write-Step { param([string]$Text) Write-Host ''; Write-Host "==> $Text" -ForegroundColor Cyan }
 
 # --- what exactly is being released ---------------------------------------------------------
-$version = (Import-PowerShellDataFile (Join-Path $repo 'src\CEAudit\CEAudit.psd1')).ModuleVersion
+$version = if ($DotNet) { Get-ReleaseDotNetVersion -Path (Join-Path $repo 'Directory.Build.props') }
+else { (Import-PowerShellDataFile (Join-Path $repo 'src\CEAudit\CEAudit.psd1')).ModuleVersion }
 $commit = (& git rev-parse --short HEAD 2>$null)
 $dirty = @(& git status --porcelain 2>$null | Where-Object { $_ })
 if ($dirty.Count -and -not $AllowDirtyTree) {
@@ -62,9 +80,10 @@ if ($dirty.Count -and -not $AllowDirtyTree) {
 }
 # data\config holds config overrides an organisation stages for its own package (docs/INTUNE.md),
 # which the build would pack. A release must never carry them, not even a throwaway one.
-if (@(Get-ChildItem -LiteralPath (Join-Path $repo 'data') -Recurse -File -Force -ErrorAction SilentlyContinue).Count) {
+if (-not $DotNet -and @(Get-ChildItem -LiteralPath (Join-Path $repo 'data') -Recurse -File -Force -ErrorAction SilentlyContinue).Count) {
     throw 'The data folder holds files (config overrides staged for a package), which the build would ship. Move them out of the tree before building a release.'
 }
+Write-Host ("Product   : {0}" -f $(if ($DotNet) { 'baseline.exe (Directory.Build.props)' } else { 'the PowerShell module' }))
 Write-Host ("Version   : {0}" -f $version)
 Write-Host ("Commit    : {0}{1}" -f $commit, $(if ($dirty.Count) { ' (DIRTY)' } else { '' }))
 Write-Host ("Signing   : {0}" -f $AzureMetadata)
@@ -84,6 +103,103 @@ if (-not $SkipPreFlight) {
     if ($PesterVersion) { $preFlightArgs['PesterVersion'] = $PesterVersion }
     & (Join-Path $repo 'tools\Invoke-PreFlight.ps1') @preFlightArgs
     if ($LASTEXITCODE -ne 0) { throw 'Pre-flight failed, so nothing was built. Fix that before releasing.' }
+}
+
+if ($DotNet) {
+    # --- baseline.exe, published from this commit ---------------------------------------------------
+    # CI is to publish and attest this folder, and this script to verify the attestation before signing
+    # it. Until CI attests anything, the folder is published here from the committed tree, with the SDK
+    # global.json names and the locked packages, as CI publishes it.
+    Write-Step 'Publish baseline.exe'
+    if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) { throw 'dotnet is not on PATH. Install the SDK that global.json names.' }
+    $sdk = [string](Get-Content -LiteralPath (Join-Path $repo 'global.json') -Raw | ConvertFrom-Json).sdk.version
+    $actualSdk = [string](& dotnet --version)
+    if ($actualSdk.Trim() -ne $sdk) { throw "dotnet --version is '$actualSdk', but global.json names $sdk. Install that SDK, as CI does." }
+    if (Test-Path -LiteralPath $OutputPath) { Remove-Item -LiteralPath $OutputPath -Recurse -Force }
+    $payload = Join-Path $OutputPath 'payload'
+    & dotnet restore (Join-Path $repo 'Baseline.slnx') --locked-mode | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw "The locked restore failed with exit code $LASTEXITCODE, so nothing was built." }
+    & dotnet publish (Join-Path $repo 'src\Engramic.Baseline.Cli\Engramic.Baseline.Cli.csproj') --configuration Release --runtime win-x64 `
+        --no-restore --output $payload | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXITCODE." }
+
+    # Before one signature is spent: nothing of ours is signed yet, and every other PE file carries
+    # Microsoft's signature already, so signing ours is all this release needs.
+    Write-Step 'Check the unsigned build'
+    & (Join-Path $repo 'tools\Test-ReleaseSignatures.ps1') -Path $payload -Unsigned
+
+    Write-Step 'Sign the .exe and .dll files this repository built'
+    $signArgs = @{ Path = $payload; AzureMetadata = $AzureMetadata; IncludeExtensions = @('.exe', '.dll') }
+    if ($AllowUntrustedChain) { $signArgs['AllowUntrustedChain'] = $true }
+    & (Join-Path $repo 'tools\Sign-Release.ps1') @signArgs | Out-Host
+
+    # Every PE file, not only the ones just signed: ours by the publisher, the rest by Microsoft, all
+    # valid and timestamped.
+    Write-Step 'Verify every PE file'
+    $checkArgs = @{ Path = $payload; Publisher = $Publisher; PassThru = $true }
+    if ($AllowUntrustedChain) { $checkArgs['AllowUntrustedChain'] = $true }
+    $rows = @(& (Join-Path $repo 'tools\Test-ReleaseSignatures.ps1') @checkArgs)
+    $ours = @($rows | Where-Object { $_.Owner -eq 'ours' })
+    $publishable = -not @($ours | Where-Object { $_.Status -ne 'Valid' }).Count
+    if (-not $publishable -and -not $AllowUntrustedChain) { throw 'Not every file of ours verifies as Valid, so this build is not releasable.' }
+
+    # The signed build starts, and reports the version it was built as.
+    $printed = [string](& (Join-Path $payload 'baseline.exe') --version)
+    if ($LASTEXITCODE -ne 0 -or $printed.Trim() -ne $version) {
+        throw "The signed baseline.exe --version printed '$printed' with exit code $LASTEXITCODE, not $version."
+    }
+    Write-Host ("  baseline.exe --version: {0}" -f $printed.Trim())
+
+    Write-Step 'Artefacts'
+    $zip = Join-Path $OutputPath "EngramicBaseline-$version-win-x64.zip"
+    Compress-Archive -Path (Join-Path $payload '*') -DestinationPath $zip -Force
+    $zipHash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash
+    Set-Content -LiteralPath (Join-Path $OutputPath 'SHA256SUMS.txt') -Value ('{0}  {1}' -f $zipHash, (Split-Path -Leaf $zip)) -Encoding ASCII
+    Write-Host ("  {0,-42} {1,10:N0} bytes" -f (Split-Path -Leaf $zip), (Get-Item -LiteralPath $zip).Length)
+    $signer = [string]$ours[0].Signer
+    $org = if ($signer -match 'O=([^,]+)') { $matches[1].Trim() } else { $signer }
+    # What the sign-test sandbox reads to check this build on a clean Windows and run it there.
+    [ordered]@{
+        product        = 'baseline.exe'
+        version        = $version
+        commit         = [string]$commit
+        publisher      = $Publisher
+        untrustedChain = (-not $publishable)
+        payload        = 'payload'
+    } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $OutputPath 'release.json') -Encoding ASCII
+    $notes = @("# Engramic Baseline $version (baseline.exe)", '',
+        'baseline.exe is the .NET port of Engramic Baseline, released for testing beside the PowerShell module,',
+        'which stays the one to deploy. It audits only the checks ported so far.', '',
+        '## Verifying what you downloaded', '',
+        "Every one of the $($rows.Count) .exe and .dll files in the zip is Authenticode signed and timestamped: the",
+        "$($ours.Count) this repository built by **$org**, and the .NET runtime and package files by Microsoft, as",
+        'Microsoft signed them.', '',
+        '```powershell',
+        'Get-AuthenticodeSignature .\baseline.exe | Format-List Status, SignerCertificate',
+        '```', '',
+        '## Checksums', '', '```', ('{0}  {1}' -f $zipHash, (Split-Path -Leaf $zip)), '```', '',
+        "Built from commit $commit on $(Get-Date -Format 'yyyy-MM-dd').")
+    if (-not $publishable) {
+        $notes += @('', '## DO NOT PUBLISH', '',
+            'Signed with a certificate whose chain does not reach a trusted root. This build proves the pipeline;',
+            'it is not a release.')
+    }
+    Set-Content -LiteralPath (Join-Path $OutputPath 'RELEASE-NOTES.md') -Value ($notes -join "`r`n") -Encoding ASCII
+
+    Write-Host ''
+    Write-Host 'To check this build on a clean Windows and run baseline.exe audit --id SU-01 from it:' -ForegroundColor Cyan
+    Write-Host '  .\tools\sandbox\New-SandboxRun.ps1 -Environment sign-test'
+    Write-Host ''
+    if (-not $publishable) {
+        Write-Host 'DO NOT PUBLISH: signed by an untrusted chain (a test profile).' -ForegroundColor Yellow
+        return
+    }
+    Write-Host ("Signed build ready in {0}. Nothing has been published. To publish it:" -f $OutputPath) -ForegroundColor Green
+    Write-Host ("  git tag v$version")
+    Write-Host ("  git push origin v$version")
+    Write-Host ("  gh release create v$version{0} --title `"Engramic Baseline $version (baseline.exe)`" --notes-file `"$OutputPath\RELEASE-NOTES.md`" ``" -f $(if ($version -match '-') { ' --prerelease' } else { '' }))
+    Write-Host ("      `"$zip`" `"$OutputPath\SHA256SUMS.txt`"")
+    return
 }
 
 # --- build, signing the payload before anything wraps it ---------------------------------------

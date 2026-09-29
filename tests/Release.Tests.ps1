@@ -352,3 +352,27 @@ Describe 'Sign-Release.ps1 with .exe and .dll: only what this repository built' 
         { & $script:Sign -Path $script:Payload -VerifyOnly -IncludeExtensions '.exe', '.dll' 6>$null 3>$null } | Should -Throw '*without a timestamp*'
     }
 }
+
+Describe 'New-SignedRelease.ps1 -DotNet' {
+    It 'checks the unsigned build, signs only .exe and .dll, and checks every PE file before packing' {
+        $text = Get-Content -LiteralPath (Join-Path $script:Tools 'New-SignedRelease.ps1') -Raw
+        $start = $text.IndexOf('if ($DotNet) {')
+        $start | Should -BeGreaterThan 0
+        $block = $text.Substring($start)
+        $order = @(
+            "--locked-mode",
+            "Test-ReleaseSignatures.ps1') -Path `$payload -Unsigned",
+            "IncludeExtensions = @('.exe', '.dll')",
+            "Sign-Release.ps1') @signArgs",
+            "Test-ReleaseSignatures.ps1') @checkArgs",
+            "--version",
+            'Compress-Archive')
+        $at = -1
+        foreach ($step in $order) {
+            $next = $block.IndexOf($step, [Math]::Max($at, 0))
+            $next | Should -BeGreaterThan $at -Because "'$step' comes next in the .NET release"
+            $at = $next
+        }
+        $block.IndexOf('return') | Should -BeLessThan $block.IndexOf('Build-IntunePackage.ps1') -Because 'the PowerShell release is untouched by -DotNet'
+    }
+}

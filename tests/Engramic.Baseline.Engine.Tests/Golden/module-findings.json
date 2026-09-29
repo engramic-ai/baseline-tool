@@ -1,0 +1,288 @@
+{
+  "Findings": [
+    {
+      "FindingId": "FW-01",
+      "CheckId": "FW-01",
+      "Title": "Software firewall enabled on every network profile",
+      "Subject": "",
+      "Category": "Firewalls",
+      "Frameworks": [
+        "CE v3.3",
+        "NCSC"
+      ],
+      "Reference": "CE v3.3 Firewalls: \"protect every device in scope with a correctly configured firewall\"; software firewalls on devices used on untrusted networks.",
+      "Scope": "Machine",
+      "Status": "Pass",
+      "Severity": "Info",
+      "AutoFail": false,
+      "Expected": "e",
+      "Actual": "a",
+      "Recommendation": "",
+      "Evidence": [],
+      "Remediation": null,
+      "Pack": null
+    },
+    {
+      "FindingId": "FW-02",
+      "CheckId": "FW-02",
+      "Title": "Unauthenticated inbound connections blocked by default",
+      "Subject": "",
+      "Category": "Firewalls",
+      "Frameworks": [
+        "CE v3.3",
+        "CE+ TC1"
+      ],
+      "Reference": "CE v3.3 Firewalls: \"block unauthenticated inbound connections by default\".",
+      "Scope": "Machine",
+      "Status": "Fail",
+      "Severity": "High",
+      "AutoFail": false,
+      "Expected": "e",
+      "Actual": "a",
+      "Recommendation": "",
+      "Evidence": [],
+      "Remediation": null,
+      "Pack": null
+    },
+    {
+      "FindingId": "SU-01:Lifecycle-data",
+      "CheckId": "SU-01",
+      "Title": "Operating system is licensed and supported by Microsoft",
+      "Subject": "Lifecycle data",
+      "Category": "SecurityUpdateManagement",
+      "Frameworks": [
+        "CE v3.3",
+        "CE+ TC2"
+      ],
+      "Reference": "CE v3.3 Security update management: all software must be licensed and supported, and removed when it becomes unsupported.",
+      "Scope": "Machine",
+      "Status": "Warn",
+      "Severity": "Low",
+      "AutoFail": false,
+      "Expected": "e",
+      "Actual": "a",
+      "Recommendation": "",
+      "Evidence": [],
+      "Remediation": null,
+      "Pack": null
+    },
+    {
+      "FindingId": "SU-01",
+      "CheckId": "SU-01",
+      "Title": "Operating system is licensed and supported by Microsoft",
+      "Subject": "",
+      "Category": "SecurityUpdateManagement",
+      "Frameworks": [
+        "CE v3.3",
+        "CE+ TC2"
+      ],
+      "Reference": "CE v3.3 Security update management: all software must be licensed and supported, and removed when it becomes unsupported.",
+      "Scope": "Machine",
+      "Status": "Pass",
+      "Severity": "Info",
+      "AutoFail": false,
+      "Expected": "e",
+      "Actual": "a",
+      "Recommendation": "",
+      "Evidence": [],
+      "Remediation": null,
+      "Pack": null
+    },
+    {
+      "FindingId": "SU-03:Overdue",
+      "CheckId": "SU-03",
+      "Title": "No Windows security updates outstanding for more than 14 days",
+      "Subject": "Overdue",
+      "Category": "SecurityUpdateManagement",
+      "Frameworks": [
+        "CE v3.3",
+        "CE+ TC2"
+      ],
+      "Reference": "CE v3.3 A6.4 (auto-fail): critical/high-risk (CVSS v3 >= 7) or unrated OS updates installed within 14 days of release. CE+ TC2 fails on any such missing fix older than 14 days.",
+      "Scope": "Machine",
+      "Status": "Fail",
+      "Severity": "Critical",
+      "AutoFail": true,
+      "Expected": "e",
+      "Actual": "a",
+      "Recommendation": "",
+      "Evidence": [],
+      "Remediation": null,
+      "Pack": null
+    },
+    {
+      "FindingId": "SU-05",
+      "CheckId": "SU-05",
+      "Title": "Applications are up to date (winget)",
+      "Subject": "",
+      "Category": "SecurityUpdateManagement",
+      "Frameworks": [
+        "CE v3.3",
+        "CE+ TC2"
+      ],
+      "Reference": "CE v3.3 A6.5 (auto-fail): application updates fixing critical/high-risk or unrated vulnerabilities installed within 14 days of release.",
+      "Scope": "Machine",
+      "Status": "Error",
+      "Severity": "High",
+      "AutoFail": false,
+      "Expected": "e",
+      "Actual": "a",
+      "Recommendation": "",
+      "Evidence": [],
+      "Remediation": null,
+      "Pack": null
+    },
+    {
+      "FindingId": "UA-07:Microsoft-365-Entra-ID",
+      "CheckId": "UA-07",
+      "Title": "MFA enforced on every cloud service (attestation)",
+      "Subject": "Microsoft 365 / Entra ID",
+      "Category": "UserAccessControl",
+      "Frameworks": [
+        "CE v3.3",
+        "CE+ TC4"
+      ],
+      "Reference": "CE v3.3 (auto-fail): \"authentication to cloud services must always use MFA\" where available; cloud services cannot be excluded from scope. CE+ TC4 tests user and admin accounts for an MFA prompt.",
+      "Scope": "Machine",
+      "Status": "Manual",
+      "Severity": "Critical",
+      "AutoFail": false,
+      "Expected": "e",
+      "Actual": "a",
+      "Recommendation": "",
+      "Evidence": [],
+      "Remediation": null,
+      "Pack": null
+    },
+    {
+      "FindingId": "UA-01",
+      "CheckId": "UA-01",
+      "Title": "Everyday account is a standard user (separate admin account)",
+      "Subject": "",
+      "Category": "UserAccessControl",
+      "Frameworks": [
+        "CE v3.3",
+        "CE+ TC5",
+        "NCSC"
+      ],
+      "Reference": "CE v3.3 User access control: \"use separate accounts to perform administrative activities only\". CE+ TC5: an admin action from the user account must prompt for separate admin credentials.",
+      "Scope": "Machine",
+      "Status": "Pass",
+      "Severity": "Info",
+      "AutoFail": false,
+      "Expected": "e",
+      "Actual": "a",
+      "Recommendation": "",
+      "Evidence": [],
+      "Remediation": null,
+      "Pack": null
+    },
+    {
+      "FindingId": "MP-01",
+      "CheckId": "MP-01",
+      "Title": "Anti-malware software installed, enabled and up to date",
+      "Subject": "",
+      "Category": "MalwareProtection",
+      "Frameworks": [
+        "CE v3.3",
+        "CE+ TC3"
+      ],
+      "Reference": "CE v3.3 Malware protection: \"make sure that a malware protection mechanism is active on all devices in scope\". CE+ TC3.1.3: anti-malware installed, operational and updated.",
+      "Scope": "Machine",
+      "Status": "Pass",
+      "Severity": "Info",
+      "AutoFail": false,
+      "Expected": "e",
+      "Actual": "a",
+      "Recommendation": "",
+      "Evidence": [],
+      "Remediation": null,
+      "Pack": null
+    },
+    {
+      "FindingId": "NC-04",
+      "CheckId": "NC-04",
+      "Title": "Credential theft mitigations (LSA protection, WDigest off, no LM hashes)",
+      "Subject": "",
+      "Category": "NCSCHardening",
+      "Frameworks": [
+        "NCSC"
+      ],
+      "Reference": "NCSC Windows device guidance: protect credentials in memory; disable legacy authentication.",
+      "Scope": "Machine",
+      "Status": "NotApplicable",
+      "Severity": "Info",
+      "AutoFail": false,
+      "Expected": "e",
+      "Actual": "a",
+      "Recommendation": "",
+      "Evidence": [],
+      "Remediation": null,
+      "Pack": null
+    },
+    {
+      "FindingId": "NC-01",
+      "CheckId": "NC-01",
+      "Title": "System drive encrypted with BitLocker",
+      "Subject": "",
+      "Category": "NCSCHardening",
+      "Frameworks": [
+        "NCSC"
+      ],
+      "Reference": "NCSC Windows device guidance: enable full disk encryption (BitLocker), with a TPM and PIN for pre-boot authentication.",
+      "Scope": "Machine",
+      "Status": "Skipped",
+      "Severity": "High",
+      "AutoFail": false,
+      "Expected": "e",
+      "Actual": "a",
+      "Recommendation": "",
+      "Evidence": [],
+      "Remediation": null,
+      "Pack": null
+    },
+    {
+      "FindingId": "NC-03",
+      "CheckId": "NC-03",
+      "Title": "Virtualisation-based security: Memory Integrity (HVCI) and Credential Guard",
+      "Subject": "",
+      "Category": "NCSCHardening",
+      "Frameworks": [
+        "NCSC"
+      ],
+      "Reference": "NCSC Windows device guidance: enable virtualisation-based security features including HVCI and Credential Guard.",
+      "Scope": "Machine",
+      "Status": "Info",
+      "Severity": "Info",
+      "AutoFail": false,
+      "Expected": "e",
+      "Actual": "a",
+      "Recommendation": "",
+      "Evidence": [],
+      "Remediation": null,
+      "Pack": null
+    },
+    {
+      "FindingId": "MP-09",
+      "CheckId": "MP-09",
+      "Title": "Application control (Smart App Control, App Control for Business or AppLocker)",
+      "Subject": "",
+      "Category": "MalwareProtection",
+      "Frameworks": [
+        "NCSC",
+        "CE v3.3"
+      ],
+      "Reference": "NCSC Windows device guidance: deploy application control and prevent execution from user-writable locations. CE v3.3 allows application allow-listing as an alternative malware mechanism.",
+      "Scope": "Machine",
+      "Status": "Warn",
+      "Severity": "Medium",
+      "AutoFail": false,
+      "Expected": "e",
+      "Actual": "a",
+      "Recommendation": "",
+      "Evidence": [],
+      "Remediation": null,
+      "Pack": null
+    }
+  ]
+}

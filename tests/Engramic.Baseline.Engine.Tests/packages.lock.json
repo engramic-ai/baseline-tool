@@ -145,8 +145,15 @@
       "engramic.baseline.testing": {
         "type": "Project",
         "dependencies": {
-          "Engramic.Baseline.Platform": "[1.0.0-alpha.0, )"
+          "Engramic.Baseline.Platform": "[1.0.0-alpha.0, )",
+          "Microsoft.Extensions.TimeProvider.Testing": "[10.10.0, )"
         }
+      },
+      "Microsoft.Extensions.TimeProvider.Testing": {
+        "type": "CentralTransitive",
+        "requested": "[10.10.0, )",
+        "resolved": "10.10.0",
+        "contentHash": "8duZdxuO3Oo8tlyQXVq1drXee6GJC9DjUU97Pq3YaIqf92jrAHsWxbbRKwvjQI48Mer3IANwUKF0elqvHeY4Rw=="
       }
     }
   }

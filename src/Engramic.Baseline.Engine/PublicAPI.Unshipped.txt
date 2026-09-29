@@ -1,3 +1,259 @@
 #nullable enable
+abstract Engramic.Baseline.Engine.Check.Info.get -> Engramic.Baseline.Engine.CheckInfo!
+abstract Engramic.Baseline.Engine.Check.RunAsync(Engramic.Baseline.Engine.CheckContext! context, System.Threading.CancellationToken cancel) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyList<Engramic.Baseline.Engine.CheckResult!>!>
+const Engramic.Baseline.Engine.Applicability.DefaultReason = "Not applicable to this device." -> string!
+const Engramic.Baseline.Engine.AuditRunner.FailedRecommendation = "Investigate manually; see Evidence." -> string!
+const Engramic.Baseline.Engine.AuditRunner.NoResultActual = "Check returned no result." -> string!
+const Engramic.Baseline.Engine.AuditRunner.SkippedActual = "Not run: requires an elevated (Run as administrator) PowerShell session." -> string!
+const Engramic.Baseline.Engine.AuditRunner.SkippedRecommendation = "Re-run the audit from an elevated PowerShell prompt." -> string!
+const Engramic.Baseline.Engine.AuditRunner.TimedOutRecommendation = "Run the audit again. If this check keeps running out of time, investigate manually." -> string!
+const Engramic.Baseline.Engine.FindingIds.MaxSlugLength = 40 -> int
+const Engramic.Baseline.Engine.FrameworkTags.CePlusTC1 = "CE+ TC1" -> string!
+const Engramic.Baseline.Engine.FrameworkTags.CePlusTC2 = "CE+ TC2" -> string!
+const Engramic.Baseline.Engine.FrameworkTags.CePlusTC3 = "CE+ TC3" -> string!
+const Engramic.Baseline.Engine.FrameworkTags.CePlusTC4 = "CE+ TC4" -> string!
+const Engramic.Baseline.Engine.FrameworkTags.CePlusTC5 = "CE+ TC5" -> string!
+const Engramic.Baseline.Engine.FrameworkTags.CeV33 = "CE v3.3" -> string!
+const Engramic.Baseline.Engine.FrameworkTags.Ncsc = "NCSC" -> string!
+Engramic.Baseline.Engine.Applicability
+Engramic.Baseline.Engine.Applicability.<Clone>$() -> Engramic.Baseline.Engine.Applicability!
+Engramic.Baseline.Engine.Applicability.Equals(Engramic.Baseline.Engine.Applicability? other) -> bool
+Engramic.Baseline.Engine.Applicability.IsApplicable.get -> bool
+Engramic.Baseline.Engine.Applicability.Reason.get -> string!
+Engramic.Baseline.Engine.AuditConfig
+Engramic.Baseline.Engine.AuditConfig.AuditConfig(Engramic.Baseline.Engine.IConfigFiles! files) -> void
+Engramic.Baseline.Engine.AuditConfig.OsLifecycle.get -> Engramic.Baseline.Model.OsLifecycle!
+Engramic.Baseline.Engine.AuditRunner
+Engramic.Baseline.Engine.AuditRunner.AuditRunner(Engramic.Baseline.Engine.CheckCatalog! catalog, Engramic.Baseline.Engine.AuditRunnerOptions? options = null) -> void
+Engramic.Baseline.Engine.AuditRunner.RunAsync(Engramic.Baseline.Engine.CheckSelection! selection, Engramic.Baseline.Engine.CheckContext! context, System.Threading.CancellationToken cancel = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<System.Collections.Generic.IReadOnlyList<Engramic.Baseline.Model.Finding!>!>!
+Engramic.Baseline.Engine.AuditRunnerOptions
+Engramic.Baseline.Engine.AuditRunnerOptions.<Clone>$() -> Engramic.Baseline.Engine.AuditRunnerOptions!
+Engramic.Baseline.Engine.AuditRunnerOptions.AuditRunnerOptions() -> void
+Engramic.Baseline.Engine.AuditRunnerOptions.CheckTimeout.get -> System.TimeSpan
+Engramic.Baseline.Engine.AuditRunnerOptions.CheckTimeout.init -> void
+Engramic.Baseline.Engine.AuditRunnerOptions.Equals(Engramic.Baseline.Engine.AuditRunnerOptions? other) -> bool
+Engramic.Baseline.Engine.CePlusOutcome
+Engramic.Baseline.Engine.CePlusOutcome.<Clone>$() -> Engramic.Baseline.Engine.CePlusOutcome!
+Engramic.Baseline.Engine.CePlusOutcome.CePlusOutcome(Engramic.Baseline.Engine.CePlusTestCase! TestCase, Engramic.Baseline.Model.CePlusState State, System.Collections.Generic.IReadOnlyList<string!>! Failing) -> void
+Engramic.Baseline.Engine.CePlusOutcome.Deconstruct(out Engramic.Baseline.Engine.CePlusTestCase! TestCase, out Engramic.Baseline.Model.CePlusState State, out System.Collections.Generic.IReadOnlyList<string!>! Failing) -> void
+Engramic.Baseline.Engine.CePlusOutcome.Equals(Engramic.Baseline.Engine.CePlusOutcome? other) -> bool
+Engramic.Baseline.Engine.CePlusOutcome.Failing.get -> System.Collections.Generic.IReadOnlyList<string!>!
+Engramic.Baseline.Engine.CePlusOutcome.Failing.init -> void
+Engramic.Baseline.Engine.CePlusOutcome.State.get -> Engramic.Baseline.Model.CePlusState
+Engramic.Baseline.Engine.CePlusOutcome.State.init -> void
+Engramic.Baseline.Engine.CePlusOutcome.TestCase.get -> Engramic.Baseline.Engine.CePlusTestCase!
+Engramic.Baseline.Engine.CePlusOutcome.TestCase.init -> void
+Engramic.Baseline.Engine.CePlusTestCase
+Engramic.Baseline.Engine.CePlusTestCase.<Clone>$() -> Engramic.Baseline.Engine.CePlusTestCase!
+Engramic.Baseline.Engine.CePlusTestCase.CePlusTestCase(string! Id, string! Name, string! Scope, string? EvidenceCheck = null) -> void
+Engramic.Baseline.Engine.CePlusTestCase.Deconstruct(out string! Id, out string! Name, out string! Scope, out string? EvidenceCheck) -> void
+Engramic.Baseline.Engine.CePlusTestCase.Equals(Engramic.Baseline.Engine.CePlusTestCase? other) -> bool
+Engramic.Baseline.Engine.CePlusTestCase.EvidenceCheck.get -> string?
+Engramic.Baseline.Engine.CePlusTestCase.EvidenceCheck.init -> void
+Engramic.Baseline.Engine.CePlusTestCase.Id.get -> string!
+Engramic.Baseline.Engine.CePlusTestCase.Id.init -> void
+Engramic.Baseline.Engine.CePlusTestCase.Name.get -> string!
+Engramic.Baseline.Engine.CePlusTestCase.Name.init -> void
+Engramic.Baseline.Engine.CePlusTestCase.Scope.get -> string!
+Engramic.Baseline.Engine.CePlusTestCase.Scope.init -> void
+Engramic.Baseline.Engine.CePlusTestCase.Tag.get -> string!
+Engramic.Baseline.Engine.CePlusTestCases
+Engramic.Baseline.Engine.Check
+Engramic.Baseline.Engine.Check.Check() -> void
+Engramic.Baseline.Engine.CheckCatalog
+Engramic.Baseline.Engine.CheckCatalog.Builder
+Engramic.Baseline.Engine.CheckCatalog.Builder.Add(Engramic.Baseline.Engine.Check! check) -> Engramic.Baseline.Engine.CheckCatalog.Builder!
+Engramic.Baseline.Engine.CheckCatalog.Builder.AddRange(System.Collections.Generic.IEnumerable<Engramic.Baseline.Engine.Check!>! checks) -> Engramic.Baseline.Engine.CheckCatalog.Builder!
+Engramic.Baseline.Engine.CheckCatalog.Builder.Build() -> Engramic.Baseline.Engine.CheckCatalog!
+Engramic.Baseline.Engine.CheckCatalog.Builder.Builder() -> void
+Engramic.Baseline.Engine.CheckCatalog.Checks.get -> System.Collections.Generic.IReadOnlyList<Engramic.Baseline.Engine.Check!>!
+Engramic.Baseline.Engine.CheckCatalog.Find(string! id) -> Engramic.Baseline.Engine.Check?
+Engramic.Baseline.Engine.CheckCatalog.Select(Engramic.Baseline.Engine.CheckSelection! selection) -> System.Collections.Generic.IReadOnlyList<Engramic.Baseline.Engine.Check!>!
+Engramic.Baseline.Engine.CheckContext
+Engramic.Baseline.Engine.CheckContext.CheckContext(Engramic.Baseline.Engine.DeviceContext! device, Engramic.Baseline.Engine.AuditConfig! config, System.TimeProvider! time, Engramic.Baseline.Engine.NotReadLog? notRead = null) -> void
+Engramic.Baseline.Engine.CheckContext.Config.get -> Engramic.Baseline.Engine.AuditConfig!
+Engramic.Baseline.Engine.CheckContext.Device.get -> Engramic.Baseline.Engine.DeviceContext!
+Engramic.Baseline.Engine.CheckContext.NotRead.get -> Engramic.Baseline.Engine.NotReadLog!
+Engramic.Baseline.Engine.CheckContext.Time.get -> System.TimeProvider!
 Engramic.Baseline.Engine.CheckIds
+Engramic.Baseline.Engine.CheckInfo
+Engramic.Baseline.Engine.CheckInfo.<Clone>$() -> Engramic.Baseline.Engine.CheckInfo!
+Engramic.Baseline.Engine.CheckInfo.AutoFail.get -> bool
+Engramic.Baseline.Engine.CheckInfo.AutoFail.init -> void
+Engramic.Baseline.Engine.CheckInfo.Category.get -> Engramic.Baseline.Model.CheckCategory
+Engramic.Baseline.Engine.CheckInfo.Category.init -> void
+Engramic.Baseline.Engine.CheckInfo.CheckInfo(string! Id, string! Title, Engramic.Baseline.Model.CheckCategory Category, Engramic.Baseline.Model.Severity Severity, System.Collections.Generic.IReadOnlyList<string!>! Frameworks, string! Reference, Engramic.Baseline.Model.CheckScope Scope = Engramic.Baseline.Model.CheckScope.Machine, bool AutoFail = false, bool RequiresAdmin = false) -> void
+Engramic.Baseline.Engine.CheckInfo.Deconstruct(out string! Id, out string! Title, out Engramic.Baseline.Model.CheckCategory Category, out Engramic.Baseline.Model.Severity Severity, out System.Collections.Generic.IReadOnlyList<string!>! Frameworks, out string! Reference, out Engramic.Baseline.Model.CheckScope Scope, out bool AutoFail, out bool RequiresAdmin) -> void
+Engramic.Baseline.Engine.CheckInfo.Equals(Engramic.Baseline.Engine.CheckInfo? other) -> bool
+Engramic.Baseline.Engine.CheckInfo.Frameworks.get -> System.Collections.Generic.IReadOnlyList<string!>!
+Engramic.Baseline.Engine.CheckInfo.Frameworks.init -> void
+Engramic.Baseline.Engine.CheckInfo.Id.get -> string!
+Engramic.Baseline.Engine.CheckInfo.Id.init -> void
+Engramic.Baseline.Engine.CheckInfo.Reference.get -> string!
+Engramic.Baseline.Engine.CheckInfo.Reference.init -> void
+Engramic.Baseline.Engine.CheckInfo.RequiresAdmin.get -> bool
+Engramic.Baseline.Engine.CheckInfo.RequiresAdmin.init -> void
+Engramic.Baseline.Engine.CheckInfo.Scope.get -> Engramic.Baseline.Model.CheckScope
+Engramic.Baseline.Engine.CheckInfo.Scope.init -> void
+Engramic.Baseline.Engine.CheckInfo.Severity.get -> Engramic.Baseline.Model.Severity
+Engramic.Baseline.Engine.CheckInfo.Severity.init -> void
+Engramic.Baseline.Engine.CheckInfo.Title.get -> string!
+Engramic.Baseline.Engine.CheckInfo.Title.init -> void
+Engramic.Baseline.Engine.CheckResult
+Engramic.Baseline.Engine.CheckResult.<Clone>$() -> Engramic.Baseline.Engine.CheckResult!
+Engramic.Baseline.Engine.CheckResult.Actual.get -> string!
+Engramic.Baseline.Engine.CheckResult.Actual.init -> void
+Engramic.Baseline.Engine.CheckResult.CheckResult(Engramic.Baseline.Model.FindingStatus Status) -> void
+Engramic.Baseline.Engine.CheckResult.Deconstruct(out Engramic.Baseline.Model.FindingStatus Status) -> void
+Engramic.Baseline.Engine.CheckResult.Equals(Engramic.Baseline.Engine.CheckResult? other) -> bool
+Engramic.Baseline.Engine.CheckResult.Evidence.get -> System.Collections.Generic.IReadOnlyList<string!>!
+Engramic.Baseline.Engine.CheckResult.Evidence.init -> void
+Engramic.Baseline.Engine.CheckResult.Expected.get -> string!
+Engramic.Baseline.Engine.CheckResult.Expected.init -> void
+Engramic.Baseline.Engine.CheckResult.Recommendation.get -> string!
+Engramic.Baseline.Engine.CheckResult.Recommendation.init -> void
+Engramic.Baseline.Engine.CheckResult.Remediation.get -> Engramic.Baseline.Model.RemediationRef?
+Engramic.Baseline.Engine.CheckResult.Remediation.init -> void
+Engramic.Baseline.Engine.CheckResult.Severity.get -> Engramic.Baseline.Model.Severity?
+Engramic.Baseline.Engine.CheckResult.Severity.init -> void
+Engramic.Baseline.Engine.CheckResult.Status.get -> Engramic.Baseline.Model.FindingStatus
+Engramic.Baseline.Engine.CheckResult.Status.init -> void
+Engramic.Baseline.Engine.CheckResult.Subject.get -> string!
+Engramic.Baseline.Engine.CheckResult.Subject.init -> void
+Engramic.Baseline.Engine.CheckSelection
+Engramic.Baseline.Engine.CheckSelection.<Clone>$() -> Engramic.Baseline.Engine.CheckSelection!
+Engramic.Baseline.Engine.CheckSelection.Categories.get -> System.Collections.Generic.IReadOnlyList<Engramic.Baseline.Model.CheckCategory>!
+Engramic.Baseline.Engine.CheckSelection.Categories.init -> void
+Engramic.Baseline.Engine.CheckSelection.CheckSelection() -> void
+Engramic.Baseline.Engine.CheckSelection.Equals(Engramic.Baseline.Engine.CheckSelection? other) -> bool
+Engramic.Baseline.Engine.CheckSelection.ExcludeIds.get -> System.Collections.Generic.IReadOnlyList<string!>!
+Engramic.Baseline.Engine.CheckSelection.ExcludeIds.init -> void
+Engramic.Baseline.Engine.CheckSelection.Frameworks.get -> System.Collections.Generic.IReadOnlyList<string!>!
+Engramic.Baseline.Engine.CheckSelection.Frameworks.init -> void
+Engramic.Baseline.Engine.CheckSelection.Ids.get -> System.Collections.Generic.IReadOnlyList<string!>!
+Engramic.Baseline.Engine.CheckSelection.Ids.init -> void
+Engramic.Baseline.Engine.CheckSelection.Matches(Engramic.Baseline.Engine.CheckInfo! check) -> bool
+Engramic.Baseline.Engine.CheckSelection.Scopes.get -> System.Collections.Generic.IReadOnlyList<Engramic.Baseline.Model.CheckScope>!
+Engramic.Baseline.Engine.CheckSelection.Scopes.init -> void
+Engramic.Baseline.Engine.DeviceContext
+Engramic.Baseline.Engine.DeviceContext.<Clone>$() -> Engramic.Baseline.Engine.DeviceContext!
+Engramic.Baseline.Engine.DeviceContext.AuditTime.get -> System.DateTimeOffset
+Engramic.Baseline.Engine.DeviceContext.AuditTime.init -> void
+Engramic.Baseline.Engine.DeviceContext.Build.get -> int
+Engramic.Baseline.Engine.DeviceContext.Build.init -> void
+Engramic.Baseline.Engine.DeviceContext.ComputerName.get -> string!
+Engramic.Baseline.Engine.DeviceContext.ComputerName.init -> void
+Engramic.Baseline.Engine.DeviceContext.DeviceContext() -> void
+Engramic.Baseline.Engine.DeviceContext.DisplayVersion.get -> string!
+Engramic.Baseline.Engine.DeviceContext.DisplayVersion.init -> void
+Engramic.Baseline.Engine.DeviceContext.EditionClass.get -> string!
+Engramic.Baseline.Engine.DeviceContext.EditionClass.init -> void
+Engramic.Baseline.Engine.DeviceContext.EditionId.get -> string!
+Engramic.Baseline.Engine.DeviceContext.EditionId.init -> void
+Engramic.Baseline.Engine.DeviceContext.Equals(Engramic.Baseline.Engine.DeviceContext? other) -> bool
+Engramic.Baseline.Engine.DeviceContext.FullBuild.get -> string!
+Engramic.Baseline.Engine.DeviceContext.InstallationType.get -> string!
+Engramic.Baseline.Engine.DeviceContext.InstallationType.init -> void
+Engramic.Baseline.Engine.DeviceContext.IsElevated.get -> bool
+Engramic.Baseline.Engine.DeviceContext.IsElevated.init -> void
+Engramic.Baseline.Engine.DeviceContext.IsSystem.get -> bool
+Engramic.Baseline.Engine.DeviceContext.IsSystem.init -> void
+Engramic.Baseline.Engine.DeviceContext.OSFamily.get -> string!
+Engramic.Baseline.Engine.DeviceContext.OSFamily.init -> void
+Engramic.Baseline.Engine.DeviceContext.ProductName.get -> string!
+Engramic.Baseline.Engine.DeviceContext.ProductName.init -> void
+Engramic.Baseline.Engine.DeviceContext.RunningAs.get -> string!
+Engramic.Baseline.Engine.DeviceContext.RunningAs.init -> void
+Engramic.Baseline.Engine.DeviceContext.Ubr.get -> int
+Engramic.Baseline.Engine.DeviceContext.Ubr.init -> void
+Engramic.Baseline.Engine.FindingIds
+Engramic.Baseline.Engine.FrameworkTags
+Engramic.Baseline.Engine.IConfigFiles
+Engramic.Baseline.Engine.IConfigFiles.Read(string! name) -> byte[]?
+Engramic.Baseline.Engine.NotReadKind
+Engramic.Baseline.Engine.NotReadKind.Existence = 2 -> Engramic.Baseline.Engine.NotReadKind
+Engramic.Baseline.Engine.NotReadKind.FileContent = 1 -> Engramic.Baseline.Engine.NotReadKind
+Engramic.Baseline.Engine.NotReadKind.FolderListing = 0 -> Engramic.Baseline.Engine.NotReadKind
+Engramic.Baseline.Engine.NotReadLog
+Engramic.Baseline.Engine.NotReadLog.Add(string! location, Engramic.Baseline.Engine.NotReadKind kind, string! reason, string! topic, string! remedy = "", bool needsUserSession = false) -> void
+Engramic.Baseline.Engine.NotReadLog.NotReadLog() -> void
+Engramic.Baseline.Engine.NotReadLog.Records.get -> System.Collections.Generic.IReadOnlyList<Engramic.Baseline.Engine.NotReadRecord!>!
+Engramic.Baseline.Engine.NotReadRecord
+Engramic.Baseline.Engine.NotReadRecord.<Clone>$() -> Engramic.Baseline.Engine.NotReadRecord!
+Engramic.Baseline.Engine.NotReadRecord.Count.get -> int
+Engramic.Baseline.Engine.NotReadRecord.Count.init -> void
+Engramic.Baseline.Engine.NotReadRecord.Deconstruct(out string! Location, out Engramic.Baseline.Engine.NotReadKind Kind, out string! Reason, out string! Remedy, out string! Topic, out bool NeedsUserSession, out int Count) -> void
+Engramic.Baseline.Engine.NotReadRecord.Equals(Engramic.Baseline.Engine.NotReadRecord? other) -> bool
+Engramic.Baseline.Engine.NotReadRecord.Kind.get -> Engramic.Baseline.Engine.NotReadKind
+Engramic.Baseline.Engine.NotReadRecord.Kind.init -> void
+Engramic.Baseline.Engine.NotReadRecord.Location.get -> string!
+Engramic.Baseline.Engine.NotReadRecord.Location.init -> void
+Engramic.Baseline.Engine.NotReadRecord.NeedsUserSession.get -> bool
+Engramic.Baseline.Engine.NotReadRecord.NeedsUserSession.init -> void
+Engramic.Baseline.Engine.NotReadRecord.NotReadRecord(string! Location, Engramic.Baseline.Engine.NotReadKind Kind, string! Reason, string! Remedy, string! Topic, bool NeedsUserSession, int Count) -> void
+Engramic.Baseline.Engine.NotReadRecord.Reason.get -> string!
+Engramic.Baseline.Engine.NotReadRecord.Reason.init -> void
+Engramic.Baseline.Engine.NotReadRecord.Remedy.get -> string!
+Engramic.Baseline.Engine.NotReadRecord.Remedy.init -> void
+Engramic.Baseline.Engine.NotReadRecord.Topic.get -> string!
+Engramic.Baseline.Engine.NotReadRecord.Topic.init -> void
+Engramic.Baseline.Engine.StatusBuilder
+override Engramic.Baseline.Engine.Applicability.Equals(object? obj) -> bool
+override Engramic.Baseline.Engine.Applicability.GetHashCode() -> int
+override Engramic.Baseline.Engine.Applicability.ToString() -> string!
+override Engramic.Baseline.Engine.AuditRunnerOptions.Equals(object? obj) -> bool
+override Engramic.Baseline.Engine.AuditRunnerOptions.GetHashCode() -> int
+override Engramic.Baseline.Engine.AuditRunnerOptions.ToString() -> string!
+override Engramic.Baseline.Engine.CePlusOutcome.Equals(object? obj) -> bool
+override Engramic.Baseline.Engine.CePlusOutcome.GetHashCode() -> int
+override Engramic.Baseline.Engine.CePlusOutcome.ToString() -> string!
+override Engramic.Baseline.Engine.CePlusTestCase.Equals(object? obj) -> bool
+override Engramic.Baseline.Engine.CePlusTestCase.GetHashCode() -> int
+override Engramic.Baseline.Engine.CePlusTestCase.ToString() -> string!
+override Engramic.Baseline.Engine.Check.ToString() -> string!
+override Engramic.Baseline.Engine.CheckInfo.Equals(object? obj) -> bool
+override Engramic.Baseline.Engine.CheckInfo.GetHashCode() -> int
+override Engramic.Baseline.Engine.CheckInfo.ToString() -> string!
+override Engramic.Baseline.Engine.CheckResult.Equals(object? obj) -> bool
+override Engramic.Baseline.Engine.CheckResult.GetHashCode() -> int
+override Engramic.Baseline.Engine.CheckResult.ToString() -> string!
+override Engramic.Baseline.Engine.CheckSelection.Equals(object? obj) -> bool
+override Engramic.Baseline.Engine.CheckSelection.GetHashCode() -> int
+override Engramic.Baseline.Engine.CheckSelection.ToString() -> string!
+override Engramic.Baseline.Engine.DeviceContext.Equals(object? obj) -> bool
+override Engramic.Baseline.Engine.DeviceContext.GetHashCode() -> int
+override Engramic.Baseline.Engine.DeviceContext.ToString() -> string!
+override Engramic.Baseline.Engine.NotReadRecord.Equals(object? obj) -> bool
+override Engramic.Baseline.Engine.NotReadRecord.GetHashCode() -> int
+override Engramic.Baseline.Engine.NotReadRecord.ToString() -> string!
+static Engramic.Baseline.Engine.Applicability.Applicable.get -> Engramic.Baseline.Engine.Applicability!
+static Engramic.Baseline.Engine.Applicability.NotApplicable(string! reason = "Not applicable to this device.") -> Engramic.Baseline.Engine.Applicability!
+static Engramic.Baseline.Engine.Applicability.operator !=(Engramic.Baseline.Engine.Applicability? left, Engramic.Baseline.Engine.Applicability? right) -> bool
+static Engramic.Baseline.Engine.Applicability.operator ==(Engramic.Baseline.Engine.Applicability? left, Engramic.Baseline.Engine.Applicability? right) -> bool
+static Engramic.Baseline.Engine.AuditRunnerOptions.operator !=(Engramic.Baseline.Engine.AuditRunnerOptions? left, Engramic.Baseline.Engine.AuditRunnerOptions? right) -> bool
+static Engramic.Baseline.Engine.AuditRunnerOptions.operator ==(Engramic.Baseline.Engine.AuditRunnerOptions? left, Engramic.Baseline.Engine.AuditRunnerOptions? right) -> bool
+static Engramic.Baseline.Engine.CePlusOutcome.operator !=(Engramic.Baseline.Engine.CePlusOutcome? left, Engramic.Baseline.Engine.CePlusOutcome? right) -> bool
+static Engramic.Baseline.Engine.CePlusOutcome.operator ==(Engramic.Baseline.Engine.CePlusOutcome? left, Engramic.Baseline.Engine.CePlusOutcome? right) -> bool
+static Engramic.Baseline.Engine.CePlusTestCase.operator !=(Engramic.Baseline.Engine.CePlusTestCase? left, Engramic.Baseline.Engine.CePlusTestCase? right) -> bool
+static Engramic.Baseline.Engine.CePlusTestCase.operator ==(Engramic.Baseline.Engine.CePlusTestCase? left, Engramic.Baseline.Engine.CePlusTestCase? right) -> bool
+static Engramic.Baseline.Engine.CePlusTestCases.All.get -> System.Collections.Generic.IReadOnlyList<Engramic.Baseline.Engine.CePlusTestCase!>!
+static Engramic.Baseline.Engine.CePlusTestCases.Evaluate(System.Collections.Generic.IReadOnlyList<Engramic.Baseline.Model.Finding!>! findings) -> System.Collections.Generic.IReadOnlyList<Engramic.Baseline.Engine.CePlusOutcome!>!
 static Engramic.Baseline.Engine.CheckIds.IsWellFormed(string? id) -> bool
+static Engramic.Baseline.Engine.CheckInfo.operator !=(Engramic.Baseline.Engine.CheckInfo? left, Engramic.Baseline.Engine.CheckInfo? right) -> bool
+static Engramic.Baseline.Engine.CheckInfo.operator ==(Engramic.Baseline.Engine.CheckInfo? left, Engramic.Baseline.Engine.CheckInfo? right) -> bool
+static Engramic.Baseline.Engine.CheckResult.operator !=(Engramic.Baseline.Engine.CheckResult? left, Engramic.Baseline.Engine.CheckResult? right) -> bool
+static Engramic.Baseline.Engine.CheckResult.operator ==(Engramic.Baseline.Engine.CheckResult? left, Engramic.Baseline.Engine.CheckResult? right) -> bool
+static Engramic.Baseline.Engine.CheckSelection.All.get -> Engramic.Baseline.Engine.CheckSelection!
+static Engramic.Baseline.Engine.CheckSelection.operator !=(Engramic.Baseline.Engine.CheckSelection? left, Engramic.Baseline.Engine.CheckSelection? right) -> bool
+static Engramic.Baseline.Engine.CheckSelection.operator ==(Engramic.Baseline.Engine.CheckSelection? left, Engramic.Baseline.Engine.CheckSelection? right) -> bool
+static Engramic.Baseline.Engine.DeviceContext.operator !=(Engramic.Baseline.Engine.DeviceContext? left, Engramic.Baseline.Engine.DeviceContext? right) -> bool
+static Engramic.Baseline.Engine.DeviceContext.operator ==(Engramic.Baseline.Engine.DeviceContext? left, Engramic.Baseline.Engine.DeviceContext? right) -> bool
+static Engramic.Baseline.Engine.FindingIds.For(string! checkId, string? subject) -> string!
+static Engramic.Baseline.Engine.FindingIds.Slug(string! subject) -> string!
+static Engramic.Baseline.Engine.FrameworkTags.All.get -> System.Collections.Generic.IReadOnlyList<string!>!
+static Engramic.Baseline.Engine.NotReadRecord.operator !=(Engramic.Baseline.Engine.NotReadRecord? left, Engramic.Baseline.Engine.NotReadRecord? right) -> bool
+static Engramic.Baseline.Engine.NotReadRecord.operator ==(Engramic.Baseline.Engine.NotReadRecord? left, Engramic.Baseline.Engine.NotReadRecord? right) -> bool
+static Engramic.Baseline.Engine.StatusBuilder.Build(System.Collections.Generic.IReadOnlyList<Engramic.Baseline.Model.Finding!>! findings, Engramic.Baseline.Engine.CheckCatalog! catalog, Engramic.Baseline.Engine.DeviceContext! device, string! toolVersion, string! reportFolder = "") -> Engramic.Baseline.Model.StatusDocument!
+static Engramic.Baseline.Engine.StatusBuilder.CheckMap(System.Collections.Generic.IReadOnlyList<Engramic.Baseline.Model.Finding!>! findings, Engramic.Baseline.Engine.CheckCatalog! catalog) -> System.Collections.Generic.IReadOnlyDictionary<string!, Engramic.Baseline.Model.StatusCheck!>!
+static Engramic.Baseline.Engine.StatusBuilder.Frameworks(System.Collections.Generic.IReadOnlyDictionary<string!, Engramic.Baseline.Model.StatusCheck!>! checks, System.Collections.Generic.IReadOnlyList<Engramic.Baseline.Model.Finding!>! findings) -> Engramic.Baseline.Model.StatusFrameworks!
+virtual Engramic.Baseline.Engine.Check.AppliesTo(Engramic.Baseline.Engine.DeviceContext! device) -> Engramic.Baseline.Engine.Applicability!

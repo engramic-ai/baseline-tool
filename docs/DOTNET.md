@@ -164,6 +164,19 @@ The hygiene check needs a clone that git can read:
 pwsh -NoProfile -File tools/hygiene/Test-Hygiene.ps1
 ```
 
+## The audit command
+
+`baseline.exe audit` runs the ported checks on this device, read-only, and prints the findings. With
+`--json findings` or `--json status` it writes findings.json or status.json to standard output instead,
+byte for byte as the file is written (UTF-8 with a byte order mark), to redirect into a file from cmd or
+PowerShell 7.4 and later. It writes no file itself: files go only into the secure data folder, which the
+scheduled audit brings.
+
+```
+baseline.exe audit --id SU-01
+baseline.exe audit --id SU-01 --json status > status.json
+```
+
 ## CI
 
 `.github/workflows/dotnet.yml` runs on every pull request and on pushes to `main` and `feat/dotnet-port`:

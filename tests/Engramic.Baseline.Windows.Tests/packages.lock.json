@@ -129,6 +129,22 @@
           "xunit.v3.runner.common": "[4.0.1]"
         }
       },
+      "engramic.baseline.controls": {
+        "type": "Project",
+        "dependencies": {
+          "Engramic.Baseline.Engine": "[1.0.0-alpha.0, )"
+        }
+      },
+      "engramic.baseline.engine": {
+        "type": "Project",
+        "dependencies": {
+          "Engramic.Baseline.Model": "[1.0.0-alpha.0, )",
+          "Engramic.Baseline.Platform": "[1.0.0-alpha.0, )"
+        }
+      },
+      "engramic.baseline.model": {
+        "type": "Project"
+      },
       "engramic.baseline.platform": {
         "type": "Project"
       },

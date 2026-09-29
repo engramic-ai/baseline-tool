@@ -1,7 +1,22 @@
 #nullable enable
+const Engramic.Baseline.Controls.DeviceContextReader.CurrentVersionKey = "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion" -> string!
+const Engramic.Baseline.Controls.EditionClass.Enterprise = "Enterprise" -> string!
+const Engramic.Baseline.Controls.EditionClass.Home = "Home" -> string!
+const Engramic.Baseline.Controls.EditionClass.Pro = "Pro" -> string!
+const Engramic.Baseline.Controls.EditionClass.Server = "Server" -> string!
+const Engramic.Baseline.Controls.EditionClass.Unknown = "Unknown" -> string!
 const Engramic.Baseline.Controls.WindowsFamily.Server = "Windows Server" -> string!
 const Engramic.Baseline.Controls.WindowsFamily.Unknown = "Unknown" -> string!
 const Engramic.Baseline.Controls.WindowsFamily.Windows10 = "Windows 10" -> string!
 const Engramic.Baseline.Controls.WindowsFamily.Windows11 = "Windows 11" -> string!
+Engramic.Baseline.Controls.BuiltInChecks
+Engramic.Baseline.Controls.DeviceContextReader
+Engramic.Baseline.Controls.EditionClass
+Engramic.Baseline.Controls.ShippedConfig
 Engramic.Baseline.Controls.WindowsFamily
+static Engramic.Baseline.Controls.BuiltInChecks.CreateCatalog() -> Engramic.Baseline.Engine.CheckCatalog!
+static Engramic.Baseline.Controls.DeviceContextReader.Read(Engramic.Baseline.Platform.IRegistry! registry, string! computerName, Engramic.Baseline.Platform.ProcessAccount! account, System.DateTimeOffset auditTime) -> Engramic.Baseline.Engine.DeviceContext!
+static Engramic.Baseline.Controls.EditionClass.FromEdition(string! osFamily, string? editionId) -> string!
+static Engramic.Baseline.Controls.ShippedConfig.Files.get -> Engramic.Baseline.Engine.IConfigFiles!
+static Engramic.Baseline.Controls.ShippedConfig.Names.get -> System.Collections.Generic.IReadOnlyList<string!>!
 static Engramic.Baseline.Controls.WindowsFamily.FromBuild(int build, string? installationType) -> string!

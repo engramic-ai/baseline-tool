@@ -15,7 +15,7 @@ This note covers the layout, the rules the build enforces, and how to build and 
 | `src/Engramic.Baseline.Model` | Contracts: the status files, findings, changesets and config, and how they are written. |
 | `src/Engramic.Baseline.Platform` | The interfaces and records of the primitives: registry, files, processes, tokens and so on. |
 | `src/Engramic.Baseline.Engine` | The check and fix contracts, the runner, the framework rollups, changesets and undo. |
-| `src/Engramic.Baseline.Controls` | The checks, the fixes, and the readers that interpret what the primitives return. |
+| `src/Engramic.Baseline.Controls` | The checks, the fixes, the readers that interpret what the primitives return, and the shipped config. |
 | `src/Engramic.Baseline.Windows` | The Windows primitives, calling Win32 through code that CsWin32 generates from `NativeMethods.txt`. |
 | `src/Engramic.Baseline.Cli` | `baseline.exe`, the command line. |
 | `tests/Engramic.Baseline.*.Tests` | xUnit v3 tests: one project for each library. |
@@ -123,6 +123,12 @@ CI installs exactly the SDK that `global.json` names, never the newest patch of 
 keeps passing when a new patch ships and moves only when `global.json` does. If a restore changes lock
 files you did not mean to change, check that `dotnet --version` matches `global.json`.
 CsWin32 is still 0.x and pinned to an exact version.
+
+**Config.** The shipped `config/*.json` files are built into `Engramic.Baseline.Controls` (`ShippedConfig`)
+from the repository's config folder, which the PowerShell module also reads. Nothing reads them from
+disk, so they cannot be changed beside the executable, and no file API is needed for them. A check that
+reads another file adds it there as an `EmbeddedResource`. Administrators' overrides, which replace a
+shipped file whole, will come through SecureStore and its trust checks, in front of the shipped copy.
 
 **Text.** Sources are ASCII only (write other characters as escapes, such as `"\u00e9"` in C#),
 user-facing text is British English, and quotes are straight. The Hygiene check below enforces the first.

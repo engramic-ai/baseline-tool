@@ -5,5 +5,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Engramic.Baseline.Windows\Engramic.Baseline.Windows.csproj" />
+    <!-- To read this device's context through the real registry primitive. -->
+    <ProjectReference Include="..\..\src\Engramic.Baseline.Controls\Engramic.Baseline.Controls.csproj" />
   </ItemGroup>
 </Project>

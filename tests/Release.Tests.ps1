@@ -377,6 +377,24 @@ Describe 'New-SignedRelease.ps1 -DotNet' {
     }
 }
 
+Describe 'Invoke-PreFlight.ps1' {
+    It 'runs the .NET steps exactly as the .NET workflow does, and hygiene and actionlint' {
+        $preflight = Get-Content -LiteralPath (Join-Path $script:Tools 'Invoke-PreFlight.ps1') -Raw
+        $workflow = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.github\workflows\dotnet.yml') -Raw
+        $pairs = @(
+            @{ Workflow = 'dotnet restore Baseline.slnx --locked-mode'; PreFlight = "@('restore', 'Baseline.slnx', '--locked-mode')" }
+            @{ Workflow = 'dotnet build Baseline.slnx --configuration Release --no-restore -warnaserror'; PreFlight = "@('build', 'Baseline.slnx', '--configuration', 'Release', '--no-restore', '-warnaserror')" }
+            @{ Workflow = 'dotnet test --solution Baseline.slnx --configuration Release --no-build'; PreFlight = "@('test', '--solution', 'Baseline.slnx', '--configuration', 'Release', '--no-build')" }
+        )
+        foreach ($pair in $pairs) {
+            $workflow | Should -Match ([regex]::Escape($pair.Workflow)) -Because 'the pre-flight copies this step of dotnet.yml; change both together'
+            $preflight | Should -Match ([regex]::Escape($pair.PreFlight))
+        }
+        $preflight | Should -Match ([regex]::Escape("tools\hygiene\Test-Hygiene.ps1"))
+        $preflight | Should -Match 'Get-Command actionlint'
+    }
+}
+
 Describe 'The sign-test sandbox' {
     It 'signs baseline.exe, checks every PE file and runs the slice from the signed build' {
         $sandbox = Get-Content -LiteralPath (Join-Path $script:Tools 'sandbox\Invoke-SandboxSignTest.ps1') -Raw

@@ -13,8 +13,9 @@ namespace Engramic.Baseline.Engine;
 /// <item>An admin-only check is Skipped when the audit is not elevated, with the PowerShell tool's words.</item>
 /// <item>A check that does not apply to the device is NotApplicable, with its reason. If deciding that
 /// throws, it is NotApplicable too, with the error.</item>
-/// <item>Otherwise it runs. An exception, no result at all, or running longer than the time allowed (new
-/// in this tool) makes an Error finding instead of its results.</item>
+/// <item>Otherwise it runs, on a thread pool thread. An exception, no result at all, or running longer
+/// than the time allowed (new in this tool), counted from when it starts, whether it yields or blocks,
+/// makes an Error finding instead of its results.</item>
 /// </list>
 /// Stopping the audit through its cancellation token stops the run; nothing else does.
 /// </remarks>
@@ -119,9 +120,10 @@ public sealed class AuditRunner
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(cancel);
         try
         {
-            var results = await check.RunAsync(context, stop.Token).AsTask()
-                .WaitAsync(_options.CheckTimeout, context.Time, cancel)
-                .ConfigureAwait(false);
+            // Off this thread, so the time allowed covers what a check does before it first yields, such as
+            // blocking on a registry, CIM or process call, and a check that never yields cannot hold up the audit.
+            var run = Task.Run(() => check.RunAsync(context, stop.Token).AsTask(), stop.Token);
+            var results = await run.WaitAsync(_options.CheckTimeout, context.Time, cancel).ConfigureAwait(false);
             var findings = (results ?? []).Where(r => r is not null).Select(r => FindingFactory.Create(info, r)).ToArray();
             return findings.Length > 0 ? findings : One(info, new CheckResult(FindingStatus.Error) { Actual = NoResultActual });
         }

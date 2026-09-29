@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Authenticode-signs the PowerShell a customer actually runs, and fails if any of it is unsigned.
+    Authenticode-signs what a customer actually runs, and fails if any of it is unsigned.
 .DESCRIPTION
     Signing happens on an assembled payload, never on the repository working tree, and always
     before IntuneWinAppUtil wraps it: an .intunewin is an encrypted container, so a signature on
@@ -10,6 +10,14 @@
     PowerShell only checks the file it is launched with, but WDAC and AllSigned tenants need the
     whole engine signed, so every .ps1, .psm1 and .psd1 under -Path is signed, not just the entry
     points. Config, reports and markdown are not signed; they carry no code.
+
+    With .exe and .dll in -IncludeExtensions it signs a published .NET folder, but only the PE files
+    this repository built: the assemblies of its own projects and the launcher, as the .deps.json
+    that dotnet publish wrote names them (tools\Release.psm1). The .NET runtime and the package
+    assemblies keep Microsoft's signature and are never signed again: a PE file chosen for signing
+    that already carries any signature is refused, not overwritten. A PE signature must also be
+    timestamped, or signing fails. tools\Test-ReleaseSignatures.ps1 then checks every PE file in
+    the folder, ours and Microsoft's.
 
     Every signature is SHA256 and timestamped, so signatures stay valid after the certificate
     expires. Verification is part of signing: the script exits non-zero unless every file it
@@ -24,6 +32,9 @@
                       certificates are valid for three days, so the timestamp is what keeps a
                       signature verifying afterwards.
 
+    -Thumbprint and -PfxPath sign scripts and PE files with Set-AuthenticodeSignature. An installer
+    (.msi) needs the Azure path, which signs everything with signtool.
+
     A self-signed certificate is for developing and testing this pipeline only. It is refused
     unless -AllowSelfSigned is given, because a self-signed release is worse than an unsigned
     one: it looks signed while being trusted by nobody, and no customer should ever be asked to
@@ -37,10 +48,15 @@
     service without producing a release anyone should install.
 .PARAMETER VerifyOnly
     Check signatures without signing. Used by Build-IntunePackage.ps1 -RequireSignature.
+.PARAMETER IncludeExtensions
+    What to sign: .ps1, .psm1 and .psd1 by default. Add .exe and .dll for a published .NET folder,
+    of which only this repository's files are signed, or .msi for the installer (Azure only).
 .EXAMPLE
     .\tools\Sign-Release.ps1 -Path .\build\payload -Thumbprint A1B2C3...
 .EXAMPLE
     .\tools\Sign-Release.ps1 -Path .\build\payload -VerifyOnly
+.EXAMPLE
+    .\tools\Sign-Release.ps1 -Path .\build\release-dotnet\payload -AzureMetadata C:\keys\artifact-signing.json -IncludeExtensions .exe, .dll
 #>
 [CmdletBinding(SupportsShouldProcess, DefaultParameterSetName = 'Verify')]
 param(
@@ -56,24 +72,40 @@ param(
     [switch]$AllowSelfSigned,
     [switch]$AllowUntrustedChain,
     # Defaults to the PowerShell a customer runs. An installer is signed by adding '.msi', which
-    # only the Azure path can do: signtool handles MSI, Set-AuthenticodeSignature does not.
+    # only the Azure path can do: signtool handles MSI, Set-AuthenticodeSignature does not. '.exe'
+    # and '.dll' sign the PE files of a published .NET folder that this repository built.
     [string[]]$IncludeExtensions = @('.ps1', '.psm1', '.psd1')
 )
+Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'Release.psm1')
 
 if (-not (Test-Path -LiteralPath $Path)) { throw "Nothing to sign: '$Path' does not exist. Run intune\Build-IntunePackage.ps1 first." }
-$root = (Resolve-Path -LiteralPath $Path).Path
+$root = (Resolve-Path -LiteralPath $Path).ProviderPath.TrimEnd('\')
+$scriptExtensions = @('.ps1', '.psm1', '.psd1')
+$peExtensions = @('.exe', '.dll')
 
 # What a customer runs. Tests, sandbox helpers and developer tooling are not shipped and are not
 # signed; if one ever ships, add it here deliberately rather than by a wildcard.
 # -Include is silently ignored alongside -LiteralPath -Recurse, which would hand every file in the
 # payload to the signer, icons and JSON included. Filter on the extension instead.
 $signable = @(Get-ChildItem -LiteralPath $root -Recurse -File -ErrorAction SilentlyContinue |
-        Where-Object { $_.Extension -in $IncludeExtensions -and $_.FullName -notmatch '\\(tests|sandbox|tools)\\' })
+        Where-Object { $_.Extension -in $IncludeExtensions -and $_.FullName.Substring($root.Length) -notmatch '\\(tests|sandbox|tools)\\' })
+
+# PE files are signed only when this repository built them, as the publish's .deps.json says. The rest,
+# the .NET runtime and the package assemblies, ship with Microsoft's signature, which must never be
+# replaced by ours: tools\Test-ReleaseSignatures.ps1 fails a release where it is.
+$leftAlone = @()
+if (@($IncludeExtensions | Where-Object { $peExtensions -contains $_ }).Count) {
+    $own = @{}
+    foreach ($file in @(Get-ReleaseOwnFile -Path $root)) { $own[$file] = $true }
+    $leftAlone = @($signable | Where-Object { $peExtensions -contains $_.Extension -and -not $own.ContainsKey($_.FullName) })
+    $signable = @($signable | Where-Object { $peExtensions -notcontains $_.Extension -or $own.ContainsKey($_.FullName) })
+}
 if (-not $signable.Count) { throw ("No files matching {0} found under '{1}'." -f ($IncludeExtensions -join ', '), $root) }
-$nonScript = @($signable | Where-Object { $_.Extension -notin '.ps1', '.psm1', '.psd1' })
-if ($nonScript.Count -and $PSCmdlet.ParameterSetName -notin 'Azure', 'Verify') {
-    throw ('Only the Azure path can sign ' + (($nonScript.Extension | Sort-Object -Unique) -join ', ') +
+$signToolOnly = @($signable | Where-Object { ($scriptExtensions + $peExtensions) -notcontains $_.Extension })
+if ($signToolOnly.Count -and $PSCmdlet.ParameterSetName -notin 'Azure', 'Verify') {
+    throw ('Only the Azure path can sign ' + ((@($signToolOnly | ForEach-Object { $_.Extension }) | Sort-Object -Unique) -join ', ') +
         ": signtool handles them and Set-AuthenticodeSignature does not.")
 }
 
@@ -85,12 +117,14 @@ $script:AcceptableStatus = if ($AllowSelfSigned -or $AllowUntrustedChain) { @('V
 
 function Get-SignatureState {
     param([string]$File)
-    $sig = Get-AuthenticodeSignature -LiteralPath $File
+    $sig = Get-ReleaseSignature -LiteralPath $File
     [pscustomobject]@{
         File        = $File
-        Status      = [string]$sig.Status
-        Signer      = [string]$sig.SignerCertificate.Subject
-        Timestamped = [bool]$sig.TimeStamperCertificate
+        Status      = $sig.Status
+        Signer      = $sig.Subject
+        Timestamped = $sig.Timestamped
+        # A PE signature without a timestamp fails: it would stop verifying when the certificate expires.
+        IsPE        = ($peExtensions -contains [IO.Path]::GetExtension($File))
     }
 }
 
@@ -103,6 +137,8 @@ if ($PSCmdlet.ParameterSetName -eq 'Verify') {
     foreach ($b in $bad) { Write-Host ("  {0}: {1}" -f $b.Status, $b.File.Substring($root.Length + 1)) -ForegroundColor Red }
     foreach ($u in $unstamped) { Write-Warning ("not timestamped: " + $u.File.Substring($root.Length + 1)) }
     if ($bad.Count) { throw "$($bad.Count) of $($states.Count) file(s) are not validly signed." }
+    $unstampedPE = @($unstamped | Where-Object { $_.IsPE })
+    if ($unstampedPE.Count) { throw "$($unstampedPE.Count) PE file(s) are signed without a timestamp, so their signatures stop verifying when the certificate expires." }
     Write-Host ("All {0} file(s) signed by {1}" -f $states.Count, ($states[0].Signer)) -ForegroundColor Green
     if ($AllowSelfSigned -or $AllowUntrustedChain) { Write-Warning 'Accepted an untrusted chain because -AllowSelfSigned was given. Do not publish this build.' }
     return
@@ -144,6 +180,18 @@ if (-not $TimestampUrl) {
 }
 
 # --- sign ---------------------------------------------------------------------------------------
+# A PE file of ours comes straight from the build, unsigned. One that carries a signature is not what
+# this run built, or was signed already; either way it is left as it is rather than signed over.
+foreach ($f in @($signable | Where-Object { $peExtensions -contains $_.Extension })) {
+    $existing = Get-ReleaseSignature -LiteralPath $f.FullName
+    if ($existing.Status -ne 'NotSigned') {
+        throw ("Refusing to sign {0}: it already carries a signature ({1}, by {2}). Only a file this repository has " +
+            'just built is signed, so no signature is ever replaced; publish the folder again.') -f $f.FullName, $existing.Status, $existing.Subject
+    }
+}
+if ($leftAlone.Count) {
+    Write-Host ("Leaving {0} PE file(s) as their publisher signed them: the .NET runtime and the package assemblies." -f $leftAlone.Count)
+}
 Write-Host ("Signing {0} file(s) under {1}" -f $signable.Count, $root)
 $failed = New-Object System.Collections.ArrayList
 
@@ -151,8 +199,9 @@ if ($PSCmdlet.ParameterSetName -eq 'Azure') {
     # Artifact Signing signs through signtool and a dlib; the private key never leaves the service.
     # Untested here until a certificate profile exists - the identity validation gates it.
     if (-not $SignToolPath) {
-        $SignToolPath = (Get-ChildItem -Path "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter 'signtool.exe' -ErrorAction SilentlyContinue |
-                Where-Object { $_.FullName -match '\\x64\\' } | Sort-Object FullName -Descending | Select-Object -First 1).FullName
+        $newest = Get-ChildItem -Path "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter 'signtool.exe' -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match '\\x64\\' } | Sort-Object FullName -Descending | Select-Object -First 1
+        if ($newest) { $SignToolPath = $newest.FullName }
     }
     if (-not $SignToolPath -or -not (Test-Path -LiteralPath $SignToolPath)) { throw 'signtool.exe not found; pass -SignToolPath.' }
     if (-not (Test-Path -LiteralPath $AzureMetadata)) { throw "Artifact Signing metadata not found: $AzureMetadata" }
@@ -204,8 +253,11 @@ if ($PSCmdlet.ParameterSetName -eq 'Azure') {
     }
     foreach ($f in $signable) {
         if (-not $PSCmdlet.ShouldProcess($f.FullName, 'Authenticode sign')) { continue }
-        & $SignToolPath sign /v /fd SHA256 /tr $TimestampUrl /td SHA256 /dlib $dlib /dmdf $AzureMetadata $f.FullName | Out-Null
-        if ($LASTEXITCODE -ne 0) { [void]$failed.Add("signtool exit $LASTEXITCODE for $($f.FullName)") }
+        $run = Invoke-ReleaseSignTool -SignToolPath $SignToolPath -ArgumentList @(
+            'sign', '/v', '/fd', 'SHA256', '/tr', $TimestampUrl, '/td', 'SHA256', '/dlib', $dlib, '/dmdf', $AzureMetadata, $f.FullName)
+        if ($run.ExitCode -ne 0) {
+            [void]$failed.Add(("signtool exit {0} for {1}: {2}" -f $run.ExitCode, $f.FullName, (@($run.Output | Select-Object -Last 3) -join ' ')))
+        }
     }
 }
 else {
@@ -214,7 +266,8 @@ else {
         $r = Set-AuthenticodeSignature -LiteralPath $f.FullName -Certificate $cert -HashAlgorithm SHA256 `
             -TimestampServer $TimestampUrl -IncludeChain NotRoot -ErrorAction Continue
         # Same rule as the verification below: a declared test build cannot chain to a trusted root.
-        if ($script:AcceptableStatus -notcontains $r.Status) { [void]$failed.Add("$($r.Status) for $($f.FullName)") }
+        $status = if ($r) { [string]$r.Status } else { 'no result' }
+        if ($script:AcceptableStatus -notcontains $status) { [void]$failed.Add("$status for $($f.FullName)") }
     }
 }
 
@@ -224,10 +277,12 @@ if ($WhatIfPreference) { return }
 $states = @($signable | ForEach-Object { Get-SignatureState -File $_.FullName })
 $bad = @($states | Where-Object { $script:AcceptableStatus -notcontains $_.Status })
 $unstamped = @($states | Where-Object { -not $_.Timestamped })
+$unstampedPE = @($unstamped | Where-Object { $_.IsPE })
 foreach ($b in $bad) { Write-Host ("  {0}: {1}" -f $b.Status, $b.File.Substring($root.Length + 1)) -ForegroundColor Red }
 foreach ($u in $unstamped) { Write-Warning ('not timestamped: ' + $u.File.Substring($root.Length + 1)) }
-if ($failed.Count -or $bad.Count) {
-    throw ("Signing failed for {0} file(s); {1} do not verify. " -f $failed.Count, $bad.Count) + ($failed | Select-Object -First 3 | Out-String)
+if ($failed.Count -or $bad.Count -or $unstampedPE.Count) {
+    throw (("Signing failed for {0} file(s); {1} do not verify; {2} PE file(s) have no timestamp. " -f $failed.Count, $bad.Count, $unstampedPE.Count) +
+        ($failed | Select-Object -First 3 | Out-String))
 }
 Write-Host ("Signed and verified {0} file(s) as {1}" -f $states.Count, $states[0].Signer) -ForegroundColor Green
 if ($AllowSelfSigned -or $AllowUntrustedChain) { Write-Warning 'This build is signed by an untrusted self-signed certificate and must not be published.' }

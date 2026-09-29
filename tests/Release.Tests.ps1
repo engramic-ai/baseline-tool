@@ -253,3 +253,102 @@ Describe 'Test-ReleaseSignatures.ps1: every PE file signed and timestamped, ours
         { & $script:Check -Path (Join-Path $TestDrive 'nowhere') -Unsigned 6>$null } | Should -Throw '*no folder*'
     }
 }
+
+Describe 'Sign-Release.ps1 with .exe and .dll: only what this repository built' {
+    BeforeAll {
+        $script:Sign = Join-Path $script:Tools 'Sign-Release.ps1'
+        Mock -ModuleName Release Get-AuthenticodeSignature { Get-TestSignature -Path ([string]@($LiteralPath)[0]) }
+        $script:Kit = Join-Path $TestDrive 'kit'
+        New-Item -ItemType Directory -Path $script:Kit -Force | Out-Null
+        $script:SignTool = Join-Path $script:Kit 'signtool.exe'
+        $script:Dlib = Join-Path $script:Kit 'Azure.CodeSigning.Dlib.dll'
+        $script:Metadata = Join-Path $script:Kit 'metadata.json'
+        Set-Content -LiteralPath $script:SignTool -Value 'stand-in'
+        Set-Content -LiteralPath $script:Dlib -Value 'stand-in'
+        Set-Content -LiteralPath $script:Metadata -Value '{ "AccessToken": "stand-in", "ExcludeCredentials": [ "ManagedIdentityCredential" ] }'
+        $script:Azure = @{ AzureMetadata = $script:Metadata; SignToolPath = $script:SignTool; DlibPath = $script:Dlib; TimestampUrl = 'http://timestamp.example.test'; IncludeExtensions = @('.exe', '.dll') }
+    }
+
+    BeforeEach {
+        $script:Payload = New-TestPayload -Path (Join-Path $TestDrive ([guid]::NewGuid().ToString('N')))
+        Set-TestReleaseUnsigned
+        $global:ReleaseTestSignToolCalls = New-Object System.Collections.ArrayList
+        $azure = $script:Azure
+    }
+
+    It 'signs with signtool, SHA256 and timestamped, each file of ours and no other' {
+        Mock Invoke-ReleaseSignTool {
+            [void]$global:ReleaseTestSignToolCalls.Add(@($ArgumentList))
+            $global:ReleaseTestSignatures[(Split-Path -Leaf $ArgumentList[-1])] = New-TestOurSignature
+            [pscustomobject]@{ ExitCode = 0; Output = @('Successfully signed') }
+        }
+        & $script:Sign -Path $script:Payload @azure 6>$null
+        $signed = @($global:ReleaseTestSignToolCalls | ForEach-Object { Split-Path -Leaf $_[-1] } | Sort-Object)
+        $signed | Should -Be @('baseline.dll', 'baseline.exe', 'Engramic.Baseline.Model.dll')
+        foreach ($call in $global:ReleaseTestSignToolCalls) {
+            ($call[0..11] -join ' ') | Should -Be "sign /v /fd SHA256 /tr http://timestamp.example.test /td SHA256 /dlib $($script:Dlib) /dmdf $($script:Metadata)"
+        }
+    }
+
+    It 'refuses to sign a PE file that already carries a signature, even one the manifest calls ours' {
+        $global:ReleaseTestSignatures['baseline.dll'] = New-TestMicrosoftSignature
+        Mock Invoke-ReleaseSignTool { [void]$global:ReleaseTestSignToolCalls.Add(@($ArgumentList)); [pscustomobject]@{ ExitCode = 0; Output = @() } }
+        { & $script:Sign -Path $script:Payload @azure 6>$null } | Should -Throw '*baseline.dll*already carries a signature*'
+        $global:ReleaseTestSignToolCalls.Count | Should -Be 0 -Because 'nothing is signed once one file would be signed over'
+    }
+
+    It 'fails when a PE signature has no timestamp' {
+        Mock Invoke-ReleaseSignTool {
+            $global:ReleaseTestSignatures[(Split-Path -Leaf $ArgumentList[-1])] = New-TestOurSignature -NoTimestamp
+            [pscustomobject]@{ ExitCode = 0; Output = @() }
+        }
+        { & $script:Sign -Path $script:Payload @azure 6>$null 3>$null } | Should -Throw '*3 PE file(s) have no timestamp*'
+    }
+
+    It 'fails, saying what signtool said, when signtool fails' {
+        Mock Invoke-ReleaseSignTool { [pscustomobject]@{ ExitCode = 1; Output = @('SignTool Error: 403 Forbidden') } }
+        { & $script:Sign -Path $script:Payload @azure 6>$null 3>$null } | Should -Throw '*signtool exit 1*403 Forbidden*'
+    }
+
+    It 'refuses a folder without a .deps.json' {
+        Remove-Item -LiteralPath (Join-Path $script:Payload 'baseline.deps.json')
+        Mock Invoke-ReleaseSignTool { [pscustomobject]@{ ExitCode = 0; Output = @() } }
+        { & $script:Sign -Path $script:Payload @azure 6>$null } | Should -Throw '*no .deps.json*'
+        Should -Invoke Invoke-ReleaseSignTool -Times 0 -Exactly
+    }
+
+    It 'signs the PE files of ours with a certificate from a .pfx, through Set-AuthenticodeSignature' {
+        $pfx = Join-Path $script:Kit 'test.pfx'
+        Set-Content -LiteralPath $pfx -Value 'stand-in'
+        Mock Get-PfxCertificate { [pscustomobject]@{ HasPrivateKey = $true; Subject = $global:ReleaseTestOurs; Issuer = $global:ReleaseTestOursCA; NotAfter = (Get-Date).AddDays(3); Thumbprint = $global:ReleaseTestOurThumbprint } }
+        Mock Set-AuthenticodeSignature {
+            $global:ReleaseTestSignatures[(Split-Path -Leaf ([string]@($LiteralPath)[0]))] = New-TestOurSignature
+            [pscustomobject]@{ Status = 'Valid' }
+        } -RemoveParameterType 'Certificate'
+        & $script:Sign -Path $script:Payload -PfxPath $pfx -IncludeExtensions '.exe', '.dll' -TimestampUrl 'http://timestamp.example.test' 6>$null
+        Should -Invoke Set-AuthenticodeSignature -Times 3 -Exactly
+        Should -Invoke Set-AuthenticodeSignature -Times 0 -Exactly -ParameterFilter { @('coreclr.dll', 'createdump.exe', 'hostfxr.dll', 'System.CommandLine.dll') -contains (Split-Path -Leaf ([string]@($LiteralPath)[0])) }
+        Should -Invoke Set-AuthenticodeSignature -Times 3 -Exactly -ParameterFilter { $TimestampServer -eq 'http://timestamp.example.test' -and $HashAlgorithm -eq 'SHA256' }
+    }
+
+    It 'still signs only the PowerShell when not asked for .exe and .dll' {
+        Set-Content -LiteralPath (Join-Path $script:Payload 'Invoke-Thing.ps1') -Value "'hello'"
+        $pfx = Join-Path $script:Kit 'test.pfx'
+        Set-Content -LiteralPath $pfx -Value 'stand-in'
+        Mock Get-PfxCertificate { [pscustomobject]@{ HasPrivateKey = $true; Subject = $global:ReleaseTestOurs; Issuer = $global:ReleaseTestOursCA; NotAfter = (Get-Date).AddDays(3); Thumbprint = $global:ReleaseTestOurThumbprint } }
+        Mock Set-AuthenticodeSignature {
+            $global:ReleaseTestSignatures[(Split-Path -Leaf ([string]@($LiteralPath)[0]))] = New-TestOurSignature
+            [pscustomobject]@{ Status = 'Valid' }
+        } -RemoveParameterType 'Certificate'
+        & $script:Sign -Path $script:Payload -PfxPath $pfx -TimestampUrl 'http://timestamp.example.test' 6>$null
+        Should -Invoke Set-AuthenticodeSignature -Times 1 -Exactly
+        Should -Invoke Set-AuthenticodeSignature -Times 1 -Exactly -ParameterFilter { (Split-Path -Leaf ([string]@($LiteralPath)[0])) -eq 'Invoke-Thing.ps1' }
+    }
+
+    It '-VerifyOnly fails a PE signature without a timestamp, which a script''s only warns about' {
+        Set-TestReleaseSigned
+        { & $script:Sign -Path $script:Payload -VerifyOnly -IncludeExtensions '.exe', '.dll' 6>$null } | Should -Not -Throw
+        $global:ReleaseTestSignatures['baseline.dll'] = New-TestOurSignature -NoTimestamp
+        { & $script:Sign -Path $script:Payload -VerifyOnly -IncludeExtensions '.exe', '.dll' 6>$null 3>$null } | Should -Throw '*without a timestamp*'
+    }
+}

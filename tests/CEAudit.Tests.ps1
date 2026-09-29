@@ -2964,7 +2964,7 @@ Describe 'Locked-at-birth data folders (Initialize-CEDataFolder)' {
             $rule = { param([string]$Sid, [Security.AccessControl.FileSystemRights]$R, [string]$T = 'Allow') [pscustomobject]@{ IdentityReference = [Security.Principal.SecurityIdentifier]::new($Sid); FileSystemRights = $R; AccessControlType = [Security.AccessControl.AccessControlType]$T } }
             $adminOnly = @((& $rule 'S-1-5-18' 'FullControl'), (& $rule 'S-1-5-32-544' 'FullControl'))
             Mock Test-CEIsWindows { $true }
-            Mock Test-CEReparsePoint { $false }
+            Mock Test-CEDataLink { $false }
             Mock Get-Acl { & $newAcl 'S-1-5-32-544' $adminOnly }.GetNewClosure()
             Get-CELockedFolderProblem -Path 'X:\seal' | Should -BeNullOrEmpty
             Mock Get-Acl { & $newAcl 'S-1-5-32-544' ($adminOnly + @(& $rule 'S-1-5-32-545' 'ReadAndExecute')) }.GetNewClosure()
@@ -2975,7 +2975,7 @@ Describe 'Locked-at-birth data folders (Initialize-CEDataFolder)' {
             Get-CELockedFolderProblem -Path 'X:\seal' | Should -Match 'writable by S-1-5-21-1-2-3-1001'
             Mock Get-Acl { & $newAcl 'S-1-5-32-544' ($adminOnly + @(& $rule 'S-1-5-18' 'CreateFiles' 'Deny')) }.GetNewClosure()
             Get-CELockedFolderProblem -Path 'X:\seal' | Should -Match 'denies S-1-5-18'
-            Mock Test-CEReparsePoint { $true }
+            Mock Test-CEDataLink { $true }
             Get-CELockedFolderProblem -Path 'X:\seal' | Should -Match 'is a link'
         }
     }
@@ -6231,6 +6231,33 @@ Describe 'Security review fixes' {
             }
             @($problems) -join "`n" | Should -BeNullOrEmpty
         }
+
+        It 'treats every kind but none as a link when deciding whether to trust the data folder' {
+            # Profile reads read a cloud-synced folder normally. SYSTEM trust decisions about the data
+            # folder take the strict reading of the same Get-CEReparseKind answer.
+            $plain = Join-Path $TestDrive 'dl-plain'
+            $target = Join-Path $TestDrive 'dl-target'
+            $link = Join-Path $TestDrive 'dl-link'
+            New-Item -ItemType Directory -Path $plain, $target -Force | Out-Null
+            Set-Content -LiteralPath (Join-Path $target 'keep.txt') -Value 'x'
+            New-Item -ItemType Junction -Path $link -Target $target | Out-Null
+            try {
+                InModuleScope CEAudit -Parameters @{ Plain = $plain; Link = $link } {
+                    param($Plain, $Link)
+                    Test-CEDataLink -Path $Plain | Should -BeFalse
+                    Test-CEDataLink -Path (Join-Path $Plain 'missing') | Should -BeFalse
+                    Test-CEDataLink -Path $Link | Should -BeTrue
+                    foreach ($kind in 'junction', 'symlink', 'surrogate', 'unreadable', 'cloud', 'reparse') {
+                        Mock Get-CEReparseKind { $kind }.GetNewClosure()
+                        Test-CEDataLink -Path $Plain | Should -BeTrue -Because "$kind is not a plain folder"
+                    }
+                    Mock Get-CEReparseKind { 'none' }
+                    Test-CEDataLink -Path $Plain | Should -BeFalse
+                }
+            }
+            finally { [IO.Directory]::Delete($link, $false) }
+            Test-Path -LiteralPath (Join-Path $target 'keep.txt') | Should -BeTrue
+        }
     }
 
     Context 'firmware catalog record validation' {
@@ -7690,7 +7717,9 @@ namespace CETest {
                 Write-CEStatus -Status $status -Path (Join-Path $Root 'status.json') | Out-Null
             }
             . (Join-Path $script:RepoRoot 'intune\Discover-CECompliance.ps1')
-            (Get-CEComplianceData -DataRoot $root -Installed $true -NoKick).CEMfaAttested | Should -BeTrue
+            # A test folder is user-writable, so read it as a non-elevated reader does: this checks how
+            # UA-07 maps to CEMfaAttested, not the data-folder trust check (tested on its own).
+            (Get-CEComplianceData -DataRoot $root -Installed $true -Elevated $false -NoKick).CEMfaAttested | Should -BeTrue
             # A service without an attestation is still Manual, not read or not.
             InModuleScope CEAudit { (Get-CEConfig).'cloud-services'.services = @((Get-CEConfig).'cloud-services'.services | Where-Object name -ne 'Anthropic (Claude)') }
             $map = InModuleScope CEAudit { Get-CEStatusCheckMap -Findings @(Invoke-CEAuditCore -Id 'UA-07') }

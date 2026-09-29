@@ -361,7 +361,7 @@ function Initialize-CEDataFolder {
     # .NET would resolve against the process directory instead.
     $folder = $target.Path
     for ($attempt = 0; $attempt -lt 5; $attempt++) {
-        if (Test-CEReparsePoint -Path $folder) {
+        if (Test-CEDataLink -Path $folder) {
             if ([IO.File]::GetAttributes($folder) -band [IO.FileAttributes]::Directory) { [IO.Directory]::Delete($folder, $false) } else { [IO.File]::Delete($folder) }
             continue
         }
@@ -419,7 +419,7 @@ function Remove-CEDataTree {
     $attrs = $null
     try { $attrs = [IO.File]::GetAttributes($Path) }
     catch [System.IO.FileNotFoundException], [System.IO.DirectoryNotFoundException] { return $true }
-    if ($attrs -band [IO.FileAttributes]::ReparsePoint) {
+    if (Test-CEDataLink -Path $Path -Attributes $attrs) {
         if ($attrs -band [IO.FileAttributes]::Directory) { [IO.Directory]::Delete($Path, $false) } else { [IO.File]::Delete($Path) }
         return $true
     }

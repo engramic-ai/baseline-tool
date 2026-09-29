@@ -61,16 +61,23 @@ function Get-CEPathAclProblem {
     }
 }
 
-function Test-CEReparsePoint {
+function Test-CEDataLink {
     <#
-        Whether a path is a link: a junction or a symbolic link. Reads the link itself, never what
-        it points at. A standard user can create a junction without any special right.
+        Whether a data-folder path must be treated as a link. Get-CEReparseKind decides what the item
+        is; for these SYSTEM trust decisions anything but 'none' counts - a junction, a symbolic link,
+        any other reparse point, or an item stored online only - the strict reading, unlike profile
+        reads, where a cloud-synced folder is read normally. Reads the item itself, never what it
+        points at. A standard user can create a junction without any special right. Pass -Attributes
+        when the caller has already read them, so the decision is about the same read.
     #>
     [CmdletBinding()]
     [OutputType([bool])]
-    param([Parameter(Mandatory)][string]$Path)
-    try { return [bool]([IO.File]::GetAttributes($Path) -band [IO.FileAttributes]::ReparsePoint) }
-    catch { return $false }
+    param([Parameter(Mandatory)][string]$Path, $Attributes)
+    if ($null -eq $Attributes) {
+        try { $Attributes = [IO.File]::GetAttributes($Path) }
+        catch { return $false }
+    }
+    return ((Get-CEReparseKind -Item ([pscustomobject]@{ Attributes = $Attributes; FullName = $Path })) -ne 'none')
 }
 
 function Get-CEDataPathProblem {
@@ -81,7 +88,7 @@ function Get-CEDataPathProblem {
     #>
     param([Parameter(Mandatory)][string]$Path)
     if (-not (Test-CEIsWindows)) { return }
-    if (Test-CEReparsePoint -Path $Path) { return "$Path is a link (junction or symbolic link)" }
+    if (Test-CEDataLink -Path $Path) { return "$Path is a link (junction or symbolic link)" }
     return (Get-CEPathAclProblem -Path $Path)
 }
 

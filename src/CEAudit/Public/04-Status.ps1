@@ -237,7 +237,7 @@ function Get-CEAuditFailureProblem {
     #>
     param([Parameter(Mandatory)][string]$Path)
     $attributes = [IO.File]::GetAttributes($Path)
-    if ($attributes -band [IO.FileAttributes]::ReparsePoint) { return "$Path is a link (junction or symbolic link)" }
+    if (Test-CEDataLink -Path $Path -Attributes $attributes) { return "$Path is a link (junction or symbolic link)" }
     if ($attributes -band [IO.FileAttributes]::Directory) { return "$Path is a folder, not a file" }
     if (-not (Test-CEIsAdmin)) { return '' }
     $problems = @(Get-CEDataPathProblem -Path $Path)

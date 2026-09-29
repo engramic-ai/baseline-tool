@@ -1,0 +1,7 @@
+#nullable enable
+const Engramic.Baseline.Controls.WindowsFamily.Server = "Windows Server" -> string!
+const Engramic.Baseline.Controls.WindowsFamily.Unknown = "Unknown" -> string!
+const Engramic.Baseline.Controls.WindowsFamily.Windows10 = "Windows 10" -> string!
+const Engramic.Baseline.Controls.WindowsFamily.Windows11 = "Windows 11" -> string!
+Engramic.Baseline.Controls.WindowsFamily
+static Engramic.Baseline.Controls.WindowsFamily.FromBuild(int build, string? installationType) -> string!

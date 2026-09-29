@@ -1,0 +1,21 @@
+<Project>
+  <!--
+    The minimum Windows version of every Windows project, for the platform compatibility analyser
+    (CA1416), which then flags any call to an API that needs a newer Windows without a version check.
+
+    SupportedOSPlatformVersion would normally say this, but net10.0-windows has a TargetPlatformVersion
+    of 7.0 and the SDK refuses a supported version above it (NETSDK1135). A versioned target framework
+    such as net10.0-windows10.0.17763.0 would lift that limit, but it also brings in the Windows Runtime
+    projection, which these libraries must not depend on. So the SDK's attribute is turned off and the
+    same attribute is written here, from BaselineMinimumWindowsVersion in Directory.Build.props.
+  -->
+  <PropertyGroup Condition="'$(TargetPlatformIdentifier)' == 'windows'">
+    <GenerateSupportedOSPlatformAttribute>false</GenerateSupportedOSPlatformAttribute>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(TargetPlatformIdentifier)' == 'windows'">
+    <AssemblyAttribute Include="System.Runtime.Versioning.SupportedOSPlatformAttribute">
+      <_Parameter1>windows$(BaselineMinimumWindowsVersion)</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+</Project>

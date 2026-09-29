@@ -1,0 +1,16 @@
+#nullable enable
+Engramic.Baseline.Platform.Sid
+Engramic.Baseline.Platform.Sid.<Clone>$() -> Engramic.Baseline.Platform.Sid!
+Engramic.Baseline.Platform.Sid.Equals(Engramic.Baseline.Platform.Sid? other) -> bool
+Engramic.Baseline.Platform.Sid.Value.get -> string!
+override Engramic.Baseline.Platform.Sid.Equals(object? obj) -> bool
+override Engramic.Baseline.Platform.Sid.GetHashCode() -> int
+override Engramic.Baseline.Platform.Sid.ToString() -> string!
+static Engramic.Baseline.Platform.Sid.Administrators.get -> Engramic.Baseline.Platform.Sid!
+static Engramic.Baseline.Platform.Sid.LocalSystem.get -> Engramic.Baseline.Platform.Sid!
+static Engramic.Baseline.Platform.Sid.operator !=(Engramic.Baseline.Platform.Sid? left, Engramic.Baseline.Platform.Sid? right) -> bool
+static Engramic.Baseline.Platform.Sid.operator ==(Engramic.Baseline.Platform.Sid? left, Engramic.Baseline.Platform.Sid? right) -> bool
+static Engramic.Baseline.Platform.Sid.Parse(string! text) -> Engramic.Baseline.Platform.Sid!
+static Engramic.Baseline.Platform.Sid.TrustedInstaller.get -> Engramic.Baseline.Platform.Sid!
+static Engramic.Baseline.Platform.Sid.TryParse(string? text, out Engramic.Baseline.Platform.Sid? sid) -> bool
+static Engramic.Baseline.Platform.Sid.Users.get -> Engramic.Baseline.Platform.Sid!

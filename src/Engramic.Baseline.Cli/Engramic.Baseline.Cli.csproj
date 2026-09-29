@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    baseline.exe, the command line. Published self-contained for win-x64 with ReadyToRun, and neither
+    trimmed nor single-file (docs/DOTNET.md): dotnet publish -c Release -r win-x64
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <AssemblyName>baseline</AssemblyName>
+    <RootNamespace>Engramic.Baseline.Cli</RootNamespace>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <SelfContained Condition="'$(RuntimeIdentifier)' != ''">true</SelfContained>
+    <PublishReadyToRun>true</PublishReadyToRun>
+    <PublishTrimmed>false</PublishTrimmed>
+    <PublishSingleFile>false</PublishSingleFile>
+    <!-- No DOTNET_STARTUP_HOOKS: nothing may load code into this process from its environment. -->
+    <StartupHookSupport>false</StartupHookSupport>
+    <PublishDocumentationFile>false</PublishDocumentationFile>
+    <PublishReferencesDocumentationFiles>false</PublishReferencesDocumentationFiles>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.CommandLine" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Engramic.Baseline.Controls\Engramic.Baseline.Controls.csproj" />
+    <ProjectReference Include="..\Engramic.Baseline.Windows\Engramic.Baseline.Windows.csproj" />
+  </ItemGroup>
+</Project>

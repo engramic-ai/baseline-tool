@@ -1,0 +1,3 @@
+#nullable enable
+Engramic.Baseline.Windows.ConsoleSession
+static Engramic.Baseline.Windows.ConsoleSession.GetActiveSessionId() -> uint?

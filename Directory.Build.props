@@ -1,0 +1,58 @@
+<Project>
+  <!--
+    Settings for every .NET project in this repository. src/ and tests/ each add their own on top
+    (src/Directory.Build.props, tests/Directory.Build.props). docs/DOTNET.md explains the choices.
+  -->
+
+  <PropertyGroup Label="The one version">
+    <!--
+      The version of Engramic Baseline. Every assembly and the version option of baseline.exe take it
+      from here, and so will the status files and the installer; nothing else states a version.
+    -->
+    <VersionPrefix>1.0.0</VersionPrefix>
+    <VersionSuffix>alpha.0</VersionSuffix>
+    <!-- The informational version is exactly that; the commit is recorded in the symbols' source link. -->
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <Product>Engramic Baseline</Product>
+    <Company>Engramic</Company>
+    <Authors>Engramic</Authors>
+    <Copyright>(c) 2026 Engramic Ltd</Copyright>
+    <RepositoryUrl>https://github.com/engramic-ai/baseline-tool</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+  </PropertyGroup>
+
+  <PropertyGroup Label="Language">
+    <!-- Portable by default. Projects that need Windows say net10.0-windows themselves. -->
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- The oldest Windows the product supports: Windows 10 1607 and Server 2016 (Directory.Build.targets). -->
+    <BaselineMinimumWindowsVersion>10.0.14393</BaselineMinimumWindowsVersion>
+    <!-- British English only: leave out other languages' resource assemblies, which would also need signing. -->
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+  </PropertyGroup>
+
+  <PropertyGroup Label="Analysis">
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- Analyser choices are explained in docs/DOTNET.md; .editorconfig holds the per-rule settings. -->
+    <AnalysisLevel>latest</AnalysisLevel>
+    <AnalysisMode>Default</AnalysisMode>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+  </PropertyGroup>
+
+  <PropertyGroup Label="Build output">
+    <!--
+      Everything the build writes (bin, obj, publish) goes under artifacts/ at the root, never beside the
+      sources: the PowerShell packaging copies src/ as it is.
+    -->
+    <ArtifactsPath>$(MSBuildThisFileDirectory)artifacts</ArtifactsPath>
+  </PropertyGroup>
+
+  <PropertyGroup Label="Reproducible builds">
+    <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild Condition="'$(CI)' == 'true' or '$(GITHUB_ACTIONS)' == 'true'">true</ContinuousIntegrationBuild>
+    <!-- packages.lock.json is committed for every project; CI restores only what the lock files name. -->
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <RestoreLockedMode Condition="'$(ContinuousIntegrationBuild)' == 'true'">true</RestoreLockedMode>
+  </PropertyGroup>
+</Project>

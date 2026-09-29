@@ -1,0 +1,28 @@
+<Solution>
+  <Folder Name="/Solution Items/">
+    <File Path=".editorconfig" />
+    <File Path="Directory.Build.props" />
+    <File Path="Directory.Build.targets" />
+    <File Path="Directory.Packages.props" />
+    <File Path="global.json" />
+    <File Path="NuGet.config" />
+    <File Path="src/Directory.Build.props" />
+    <File Path="tests/Directory.Build.props" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/Engramic.Baseline.Cli/Engramic.Baseline.Cli.csproj" />
+    <Project Path="src/Engramic.Baseline.Controls/Engramic.Baseline.Controls.csproj" />
+    <Project Path="src/Engramic.Baseline.Engine/Engramic.Baseline.Engine.csproj" />
+    <Project Path="src/Engramic.Baseline.Model/Engramic.Baseline.Model.csproj" />
+    <Project Path="src/Engramic.Baseline.Platform/Engramic.Baseline.Platform.csproj" />
+    <Project Path="src/Engramic.Baseline.Windows/Engramic.Baseline.Windows.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Engramic.Baseline.Controls.Tests/Engramic.Baseline.Controls.Tests.csproj" />
+    <Project Path="tests/Engramic.Baseline.Engine.Tests/Engramic.Baseline.Engine.Tests.csproj" />
+    <Project Path="tests/Engramic.Baseline.Model.Tests/Engramic.Baseline.Model.Tests.csproj" />
+    <Project Path="tests/Engramic.Baseline.Platform.Tests/Engramic.Baseline.Platform.Tests.csproj" />
+    <Project Path="tests/Engramic.Baseline.Testing/Engramic.Baseline.Testing.csproj" />
+    <Project Path="tests/Engramic.Baseline.Windows.Tests/Engramic.Baseline.Windows.Tests.csproj" />
+  </Folder>
+</Solution>

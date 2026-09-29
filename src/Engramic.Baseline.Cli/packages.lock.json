@@ -1,0 +1,45 @@
+{
+  "version": 2,
+  "dependencies": {
+    "net10.0-windows7.0": {
+      "Microsoft.CodeAnalysis.PublicApiAnalyzers": {
+        "type": "Direct",
+        "requested": "[5.6.0, )",
+        "resolved": "5.6.0",
+        "contentHash": "W4kJGezNIKLzo0Ak5FAQDFvkMf2U7DtGL4THmHyRSApfKsKt5V+eX/bU0ZLKAt/uf9Bb2o1bi0YDKj/GRB/vYQ=="
+      },
+      "System.CommandLine": {
+        "type": "Direct",
+        "requested": "[2.0.12, )",
+        "resolved": "2.0.12",
+        "contentHash": "FpW672e6qqrTd1EfKqsvUtFZaJWlTlszUR1o8tdakXhkzKbnEZVndtpfd4K3fUPCFcIs9UmcswMyYGJP1zp/rg=="
+      },
+      "engramic.baseline.controls": {
+        "type": "Project",
+        "dependencies": {
+          "Engramic.Baseline.Engine": "[1.0.0-alpha.0, )"
+        }
+      },
+      "engramic.baseline.engine": {
+        "type": "Project",
+        "dependencies": {
+          "Engramic.Baseline.Model": "[1.0.0-alpha.0, )",
+          "Engramic.Baseline.Platform": "[1.0.0-alpha.0, )"
+        }
+      },
+      "engramic.baseline.model": {
+        "type": "Project"
+      },
+      "engramic.baseline.platform": {
+        "type": "Project"
+      },
+      "engramic.baseline.windows": {
+        "type": "Project",
+        "dependencies": {
+          "Engramic.Baseline.Platform": "[1.0.0-alpha.0, )"
+        }
+      }
+    },
+    "net10.0-windows7.0/win-x64": {}
+  }
+}

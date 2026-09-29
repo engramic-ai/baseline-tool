@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    The interfaces and records of the primitives (registry, files, processes, tokens and the rest) that
+    the Windows project implements and the portable code reads. Portable (net10.0) and AOT-clean.
+  -->
+  <PropertyGroup>
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+</Project>

@@ -12,3 +12,11 @@ app/_drv.ps1
 # Artifact Signing metadata: account, region and profile names. Never commit.
 artifact-signing*.json
 metadata.json
+
+# .NET build output (Directory.Build.props puts it all under artifacts/) and local tool state
+artifacts/
+bin/
+obj/
+.vs/
+*.user
+*.binlog

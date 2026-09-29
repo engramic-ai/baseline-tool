@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    The check and fix contracts, the runner, finding identifiers, the framework rollups, changesets and
+    the undo journal. Portable (net10.0) and AOT-clean.
+  -->
+  <PropertyGroup>
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Engramic.Baseline.Model\Engramic.Baseline.Model.csproj" />
+    <ProjectReference Include="..\Engramic.Baseline.Platform\Engramic.Baseline.Platform.csproj" />
+  </ItemGroup>
+</Project>

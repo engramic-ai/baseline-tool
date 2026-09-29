@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Engramic.Baseline.Controls\Engramic.Baseline.Controls.csproj" />
+  </ItemGroup>
+</Project>

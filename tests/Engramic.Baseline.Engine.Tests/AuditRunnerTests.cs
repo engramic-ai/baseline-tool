@@ -1,5 +1,4 @@
 using Engramic.Baseline.Model;
-using Microsoft.Extensions.Time.Testing;
 
 namespace Engramic.Baseline.Engine.Tests;
 
@@ -189,55 +188,71 @@ public sealed class AuditRunnerTests
     [Fact]
     public async Task A_check_that_runs_out_of_time_is_stopped_and_reported_as_an_Error()
     {
-        var time = new FakeTimeProvider(Samples.AuditTime);
-        var stopped = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var time = new WatchedClock(Samples.AuditTime);
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var stopped = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var slow = new FakeCheck(Samples.Info("SU-03"), async (_, cancel) =>
         {
-            using var registration = cancel.Register(() => stopped.TrySetResult(true));
-            await Task.Delay(Timeout.InfiniteTimeSpan, cancel);
+            started.SetResult();
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancel);
+            }
+            catch (OperationCanceledException) when (cancel.IsCancellationRequested)
+            {
+                stopped.SetResult();
+                throw;
+            }
+
             return [];
         });
         var next = FakeCheck.Returning(Samples.Info("SU-04"), new CheckResult(FindingStatus.Pass));
         var runner = new AuditRunner(Samples.Catalog(slow, next), new AuditRunnerOptions { CheckTimeout = TimeSpan.FromMinutes(10) });
 
         var run = runner.RunAsync(CheckSelection.All, Samples.Context(time: time), TestContext.Current.CancellationToken);
+        // The clock moves only once the check is running and the runner is timing it.
+        await started.Task.WithTimeout();
+        Assert.Equal(TimeSpan.FromMinutes(10), await time.NextTimerAsync());
         time.Advance(TimeSpan.FromMinutes(9));
         Assert.False(run.IsCompleted);
         time.Advance(TimeSpan.FromMinutes(1));
-        var findings = await run;
+        var findings = await run.WithTimeout();
 
         Assert.Equal(2, findings.Count);
         Assert.Equal(FindingStatus.Error, findings[0].Status);
         Assert.Equal("Check failed: it did not finish within 10 minutes, so it was stopped.", findings[0].Actual);
         Assert.Equal("Run the audit again. If this check keeps running out of time, investigate manually.", findings[0].Recommendation);
-        Assert.True(await stopped.Task);
+        await stopped.Task.WithTimeout();
         Assert.Equal(FindingStatus.Pass, findings[1].Status);
     }
 
     [Fact]
     public async Task A_check_that_blocks_before_it_yields_still_runs_out_of_time()
     {
-        var time = new FakeTimeProvider(Samples.AuditTime);
+        var time = new WatchedClock(Samples.AuditTime);
         using var gate = new ManualResetEventSlim();
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var blocking = new FakeCheck(Samples.Info("SU-03"), (_, cancel) =>
         {
-            // Blocks the thread it is called on, as a check waiting on a registry, CIM or process call does. If the
-            // runner called it on its own thread, RunAsync would not return for 30 seconds and then find a Pass.
+            // Blocks the thread it is called on, as a check waiting on a registry, CIM or process call does.
             started.SetResult();
-            gate.Wait(TimeSpan.FromSeconds(30), cancel);
+            gate.Wait(cancel);
             return ValueTask.FromResult<IReadOnlyList<CheckResult>>([new CheckResult(FindingStatus.Pass)]);
         });
         var next = FakeCheck.Returning(Samples.Info("SU-04"), new CheckResult(FindingStatus.Pass));
         var runner = new AuditRunner(Samples.Catalog(blocking, next), new AuditRunnerOptions { CheckTimeout = TimeSpan.FromMinutes(10) });
+        var cancel = TestContext.Current.CancellationToken;
 
         try
         {
-            var run = runner.RunAsync(CheckSelection.All, Samples.Context(time: time), TestContext.Current.CancellationToken);
-            await started.Task.WaitAsync(TestContext.Current.CancellationToken);
+            // From another thread, so that a runner that called the check on its own thread fails this test rather
+            // than blocking it: the check's timer would never start.
+            var run = Task.Run(() => runner.RunAsync(CheckSelection.All, Samples.Context(time: time), cancel), cancel);
+            await started.Task.WithTimeout();
+            Assert.Equal(TimeSpan.FromMinutes(10), await time.NextTimerAsync());
             Assert.False(run.IsCompleted);
             time.Advance(TimeSpan.FromMinutes(10));
-            var findings = await run;
+            var findings = await run.WithTimeout();
 
             Assert.Equal(2, findings.Count);
             Assert.Equal(FindingStatus.Error, findings[0].Status);
@@ -251,33 +266,130 @@ public sealed class AuditRunnerTests
     }
 
     [Fact]
+    public async Task A_check_that_never_returns_holds_a_thread_of_its_own_not_a_thread_pool_thread()
+    {
+        var time = new WatchedClock(Samples.AuditTime);
+        using var gate = new ManualResetEventSlim();
+        var started = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var stuck = new FakeCheck(Samples.Info("SU-03"), (_, _) =>
+        {
+            // Ignores being stopped, as a check stuck in a call that takes no token does, so its thread is never given back.
+            started.SetResult(Thread.CurrentThread.IsThreadPoolThread);
+            gate.Wait();
+            return ValueTask.FromResult<IReadOnlyList<CheckResult>>([new CheckResult(FindingStatus.Pass)]);
+        });
+        var next = FakeCheck.Returning(Samples.Info("SU-04"), new CheckResult(FindingStatus.Pass));
+        var runner = new AuditRunner(Samples.Catalog(stuck, next), new AuditRunnerOptions { CheckTimeout = TimeSpan.FromMinutes(10) });
+
+        try
+        {
+            var run = runner.RunAsync(CheckSelection.All, Samples.Context(time: time), TestContext.Current.CancellationToken);
+            Assert.False(await started.Task.WithTimeout(), "The check was called on a thread pool thread.");
+            await time.NextTimerAsync();
+            time.Advance(TimeSpan.FromMinutes(10));
+            var findings = await run.WithTimeout();
+
+            Assert.Equal([FindingStatus.Error, FindingStatus.Pass], findings.Select(f => f.Status));
+        }
+        finally
+        {
+            gate.Set();
+        }
+    }
+
+    [Fact]
+    public async Task A_check_that_blocks_when_told_to_stop_does_not_hold_up_the_audit()
+    {
+        var time = new WatchedClock(Samples.AuditTime);
+        using var gate = new ManualResetEventSlim();
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource<IReadOnlyList<CheckResult>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var stubborn = new FakeCheck(Samples.Info("SU-03"), async (_, cancel) =>
+        {
+            // Told to stop, it waits for something that does not happen, as waiting for a process it killed can.
+            using var registration = cancel.Register(() => gate.Wait());
+            started.SetResult();
+            return await release.Task;
+        });
+        var next = FakeCheck.Returning(Samples.Info("SU-04"), new CheckResult(FindingStatus.Pass));
+        var runner = new AuditRunner(Samples.Catalog(stubborn, next), new AuditRunnerOptions { CheckTimeout = TimeSpan.FromMinutes(10) });
+
+        try
+        {
+            var run = runner.RunAsync(CheckSelection.All, Samples.Context(time: time), TestContext.Current.CancellationToken);
+            await started.Task.WithTimeout();
+            await time.NextTimerAsync();
+            time.Advance(TimeSpan.FromMinutes(10));
+            var findings = await run.WithTimeout();
+
+            Assert.Equal([FindingStatus.Error, FindingStatus.Pass], findings.Select(f => f.Status));
+            Assert.Equal("Check failed: it did not finish within 10 minutes, so it was stopped.", findings[0].Actual);
+        }
+        finally
+        {
+            gate.Set();
+            release.TrySetResult([]);
+        }
+    }
+
+    [Fact]
+    public async Task A_timeout_the_check_itself_throws_is_a_failure_not_running_out_of_time()
+    {
+        var failing = new FakeCheck(Samples.Info("SU-03"), (_, _) => throw new TimeoutException("The CIM query timed out."));
+
+        var finding = Assert.Single(await Run(Samples.Catalog(failing)));
+
+        Assert.Equal(FindingStatus.Error, finding.Status);
+        Assert.Equal("Check failed: The CIM query timed out.", finding.Actual);
+        Assert.Equal("Investigate manually; see Evidence.", finding.Recommendation);
+        Assert.Equal("System.TimeoutException", finding.Evidence[0]);
+    }
+
+    [Fact]
     public async Task A_check_that_ignores_being_stopped_is_left_behind()
     {
-        var time = new FakeTimeProvider(Samples.AuditTime);
+        var time = new WatchedClock(Samples.AuditTime);
         var release = new TaskCompletionSource<IReadOnlyList<CheckResult>>(TaskCreationOptions.RunContinuationsAsynchronously);
         var stubborn = new FakeCheck(Samples.Info("SU-03"), (_, _) => new ValueTask<IReadOnlyList<CheckResult>>(release.Task));
         var runner = new AuditRunner(Samples.Catalog(stubborn), new AuditRunnerOptions { CheckTimeout = TimeSpan.FromSeconds(90) });
 
         var run = runner.RunAsync(CheckSelection.All, Samples.Context(time: time), TestContext.Current.CancellationToken);
+        Assert.Equal(TimeSpan.FromSeconds(90), await time.NextTimerAsync());
         time.Advance(TimeSpan.FromSeconds(90));
-        var finding = Assert.Single(await run);
+        var finding = Assert.Single(await run.WithTimeout());
         release.SetResult([new CheckResult(FindingStatus.Pass)]);
 
         Assert.Equal("Check failed: it did not finish within 90 seconds, so it was stopped.", finding.Actual);
     }
 
     [Fact]
-    public async Task Stopping_the_audit_stops_the_run_instead_of_making_findings()
+    public async Task Stopping_the_audit_stops_the_run_instead_of_making_findings_and_stops_the_check()
     {
-        using var stop = new CancellationTokenSource();
+        using var audit = new CancellationTokenSource();
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var stopped = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var check = new FakeCheck(Samples.Info("SU-03"), async (_, cancel) =>
         {
-            await stop.CancelAsync();
-            await Task.Delay(Timeout.InfiniteTimeSpan, cancel);
+            started.SetResult();
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancel);
+            }
+            catch (OperationCanceledException) when (cancel.IsCancellationRequested)
+            {
+                stopped.SetResult();
+                throw;
+            }
+
             return [];
         });
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => new AuditRunner(Samples.Catalog(check)).RunAsync(CheckSelection.All, Samples.Context(), stop.Token));
+        var run = new AuditRunner(Samples.Catalog(check)).RunAsync(CheckSelection.All, Samples.Context(), audit.Token);
+        await started.Task.WithTimeout();
+        await audit.CancelAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => run.WithTimeout());
+        await stopped.Task.WithTimeout();
     }
 
     [Fact]
@@ -292,7 +404,8 @@ public sealed class AuditRunnerTests
         var context = Samples.Context();
 
         var findings = await new AuditRunner(Samples.Catalog(Recording("SU-02"), Recording("FW-01"), Recording("SU-01")))
-            .RunAsync(CheckSelection.All, context, TestContext.Current.CancellationToken);
+            .RunAsync(CheckSelection.All, context, TestContext.Current.CancellationToken)
+            .WithTimeout();
 
         Assert.Equal(["SU-02", "FW-01", "SU-01"], findings.Select(f => f.CheckId));
         Assert.All(seen, s => Assert.Same(context, s.Context));
@@ -307,6 +420,6 @@ public sealed class AuditRunnerTests
 
     private static Task<IReadOnlyList<Finding>> Run(CheckCatalog catalog, DeviceContext? device = null)
     {
-        return new AuditRunner(catalog).RunAsync(CheckSelection.All, Samples.Context(device), TestContext.Current.CancellationToken);
+        return new AuditRunner(catalog).RunAsync(CheckSelection.All, Samples.Context(device), TestContext.Current.CancellationToken).WithTimeout();
     }
 }

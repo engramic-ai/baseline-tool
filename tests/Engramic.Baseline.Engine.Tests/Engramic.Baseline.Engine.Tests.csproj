@@ -2,4 +2,9 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Engramic.Baseline.Engine\Engramic.Baseline.Engine.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <!-- Findings and the status.json the PowerShell module made from them, for the rollup tests. -->
+    <EmbeddedResource Include="Golden\*.json" LogicalName="Golden/%(Filename)%(Extension)" />
+  </ItemGroup>
 </Project>

@@ -1,7 +1,10 @@
 #nullable enable
+const Engramic.Baseline.Windows.AuditMutex.MachineName = "Global\\EngramicBaselineAudit" -> string!
 const Engramic.Baseline.Windows.SecureStore.DataFolderName = "EngramicBaseline" -> string!
 const Engramic.Baseline.Windows.SecureStoreOptions.MachineSealKeyPath = "SOFTWARE\\EngramicBaseline.DataRoot" -> string!
 const Engramic.Baseline.Windows.SecureStoreOptions.MachineSealValueName = "DataRootSealed" -> string!
+Engramic.Baseline.Windows.AuditMutex
+Engramic.Baseline.Windows.AuditMutex.Dispose() -> void
 Engramic.Baseline.Windows.ConsoleSession
 Engramic.Baseline.Windows.CurrentProcess
 Engramic.Baseline.Windows.SecureStore
@@ -28,6 +31,7 @@ Engramic.Baseline.Windows.WindowsRegistry.WindowsRegistry() -> void
 override Engramic.Baseline.Windows.SecureStoreOptions.Equals(object? obj) -> bool
 override Engramic.Baseline.Windows.SecureStoreOptions.GetHashCode() -> int
 override Engramic.Baseline.Windows.SecureStoreOptions.ToString() -> string!
+static Engramic.Baseline.Windows.AuditMutex.TryAcquire(string! name, System.TimeSpan timeout) -> Engramic.Baseline.Windows.AuditMutex?
 static Engramic.Baseline.Windows.ConsoleSession.GetActiveSessionId() -> uint?
 static Engramic.Baseline.Windows.CurrentProcess.ReadAccount() -> Engramic.Baseline.Platform.ProcessAccount!
 static Engramic.Baseline.Windows.SecureStore.Open(Engramic.Baseline.Windows.SecureStoreOptions! options) -> Engramic.Baseline.Windows.SecureStore!

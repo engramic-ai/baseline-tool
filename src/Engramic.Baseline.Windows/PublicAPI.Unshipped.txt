@@ -1,3 +1,8 @@
 #nullable enable
 Engramic.Baseline.Windows.ConsoleSession
+Engramic.Baseline.Windows.CurrentProcess
+Engramic.Baseline.Windows.WindowsRegistry
+Engramic.Baseline.Windows.WindowsRegistry.GetValue(Engramic.Baseline.Platform.RegistryHive hive, Engramic.Baseline.Platform.RegistryView view, string! keyPath, string! valueName) -> Engramic.Baseline.Platform.RegistryValue?
+Engramic.Baseline.Windows.WindowsRegistry.WindowsRegistry() -> void
 static Engramic.Baseline.Windows.ConsoleSession.GetActiveSessionId() -> uint?
+static Engramic.Baseline.Windows.CurrentProcess.ReadAccount() -> Engramic.Baseline.Platform.ProcessAccount!

@@ -1,0 +1,71 @@
+using System.Security;
+using Engramic.Baseline.Platform;
+using Win32 = Microsoft.Win32;
+
+namespace Engramic.Baseline.Windows;
+
+/// <summary>
+/// The registry primitive on Windows: reads a value in the hive and view the caller names.
+/// </summary>
+/// <remarks>
+/// The one file that may use Microsoft.Win32.RegistryKey (src/BannedApiExemptions.txt). Every key is opened
+/// from its hive's base key in the named view, read-only, and values are returned as stored: text of type
+/// REG_EXPAND_SZ is not expanded from this process's environment.
+/// </remarks>
+public sealed class WindowsRegistry : IRegistry
+{
+    /// <inheritdoc/>
+    public RegistryValue? GetValue(RegistryHive hive, RegistryView view, string keyPath, string valueName)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(keyPath);
+        ArgumentNullException.ThrowIfNull(valueName);
+        var baseHive = hive switch
+        {
+            RegistryHive.LocalMachine => Win32.RegistryHive.LocalMachine,
+            _ => throw new ArgumentOutOfRangeException(nameof(hive), hive, "Not a hive the registry primitive reads."),
+        };
+        var baseView = view switch
+        {
+            RegistryView.Registry64 => Win32.RegistryView.Registry64,
+            RegistryView.Registry32 => Win32.RegistryView.Registry32,
+            _ => throw new ArgumentOutOfRangeException(nameof(view), view, "Not a registry view."),
+        };
+
+        object? data;
+        Win32.RegistryValueKind kind;
+        try
+        {
+#pragma warning disable RS0030 // The registry primitive: opens the named view read-only and reads one value, unexpanded
+            using var root = Win32.RegistryKey.OpenBaseKey(baseHive, baseView);
+            using var key = root.OpenSubKey(keyPath, writable: false);
+            if (key is null)
+            {
+                return null;
+            }
+
+            data = key.GetValue(valueName, null, Win32.RegistryValueOptions.DoNotExpandEnvironmentNames);
+            if (data is null)
+            {
+                return null;
+            }
+
+            kind = key.GetValueKind(valueName);
+#pragma warning restore RS0030
+        }
+        catch (SecurityException e)
+        {
+            throw new UnauthorizedAccessException($"The registry key {keyPath} cannot be read by this account.", e);
+        }
+
+        return kind switch
+        {
+            Win32.RegistryValueKind.String => RegistryValue.FromText((string)data),
+            Win32.RegistryValueKind.ExpandString => RegistryValue.FromExpandText((string)data),
+            Win32.RegistryValueKind.MultiString => RegistryValue.FromMultiText((string[])data),
+            Win32.RegistryValueKind.DWord => RegistryValue.FromDWord(unchecked((uint)(int)data)),
+            Win32.RegistryValueKind.QWord => RegistryValue.FromQWord(unchecked((ulong)(long)data)),
+            Win32.RegistryValueKind.Binary => RegistryValue.FromBinary((byte[])data),
+            _ => RegistryValue.FromOther(data as byte[] ?? []),
+        };
+    }
+}

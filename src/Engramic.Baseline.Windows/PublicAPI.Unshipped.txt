@@ -1,8 +1,36 @@
 #nullable enable
+const Engramic.Baseline.Windows.SecureStore.DataFolderName = "EngramicBaseline" -> string!
+const Engramic.Baseline.Windows.SecureStoreOptions.MachineSealKeyPath = "SOFTWARE\\EngramicBaseline.DataRoot" -> string!
+const Engramic.Baseline.Windows.SecureStoreOptions.MachineSealValueName = "DataRootSealed" -> string!
 Engramic.Baseline.Windows.ConsoleSession
 Engramic.Baseline.Windows.CurrentProcess
+Engramic.Baseline.Windows.SecureStore
+Engramic.Baseline.Windows.SecureStore.Dispose() -> void
+Engramic.Baseline.Windows.SecureStore.RootPath.get -> string!
+Engramic.Baseline.Windows.SecureStore.WriteFile(string! name, System.ReadOnlySpan<byte> content) -> void
+Engramic.Baseline.Windows.SecureStoreOptions
+Engramic.Baseline.Windows.SecureStoreOptions.<Clone>$() -> Engramic.Baseline.Windows.SecureStoreOptions!
+Engramic.Baseline.Windows.SecureStoreOptions.Equals(Engramic.Baseline.Windows.SecureStoreOptions? other) -> bool
+Engramic.Baseline.Windows.SecureStoreOptions.ProgramDataPath.get -> string!
+Engramic.Baseline.Windows.SecureStoreOptions.ProgramDataPath.init -> void
+Engramic.Baseline.Windows.SecureStoreOptions.Registry.get -> Engramic.Baseline.Platform.IRegistry!
+Engramic.Baseline.Windows.SecureStoreOptions.Registry.init -> void
+Engramic.Baseline.Windows.SecureStoreOptions.SealKeyPath.get -> string!
+Engramic.Baseline.Windows.SecureStoreOptions.SealKeyPath.init -> void
+Engramic.Baseline.Windows.SecureStoreOptions.SealValueName.get -> string!
+Engramic.Baseline.Windows.SecureStoreOptions.SealValueName.init -> void
+Engramic.Baseline.Windows.SecureStoreOptions.SecureStoreOptions() -> void
+Engramic.Baseline.Windows.SecureStoreOptions.Time.get -> System.TimeProvider!
+Engramic.Baseline.Windows.SecureStoreOptions.Time.init -> void
 Engramic.Baseline.Windows.WindowsRegistry
 Engramic.Baseline.Windows.WindowsRegistry.GetValue(Engramic.Baseline.Platform.RegistryHive hive, Engramic.Baseline.Platform.RegistryView view, string! keyPath, string! valueName) -> Engramic.Baseline.Platform.RegistryValue?
 Engramic.Baseline.Windows.WindowsRegistry.WindowsRegistry() -> void
+override Engramic.Baseline.Windows.SecureStoreOptions.Equals(object? obj) -> bool
+override Engramic.Baseline.Windows.SecureStoreOptions.GetHashCode() -> int
+override Engramic.Baseline.Windows.SecureStoreOptions.ToString() -> string!
 static Engramic.Baseline.Windows.ConsoleSession.GetActiveSessionId() -> uint?
 static Engramic.Baseline.Windows.CurrentProcess.ReadAccount() -> Engramic.Baseline.Platform.ProcessAccount!
+static Engramic.Baseline.Windows.SecureStore.Open(Engramic.Baseline.Windows.SecureStoreOptions! options) -> Engramic.Baseline.Windows.SecureStore!
+static Engramic.Baseline.Windows.SecureStoreOptions.ForMachine(Engramic.Baseline.Platform.IRegistry! registry, System.TimeProvider! time) -> Engramic.Baseline.Windows.SecureStoreOptions!
+static Engramic.Baseline.Windows.SecureStoreOptions.operator !=(Engramic.Baseline.Windows.SecureStoreOptions? left, Engramic.Baseline.Windows.SecureStoreOptions? right) -> bool
+static Engramic.Baseline.Windows.SecureStoreOptions.operator ==(Engramic.Baseline.Windows.SecureStoreOptions? left, Engramic.Baseline.Windows.SecureStoreOptions? right) -> bool

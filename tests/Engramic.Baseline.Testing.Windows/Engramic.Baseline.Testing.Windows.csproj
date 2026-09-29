@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    Windows fixtures that the Windows test projects share: folders under the temp folder with the
+    security descriptors a test gives, junctions, hard links and other reparse points, and whether the
+    tests run elevated. Everything is made under a folder of its own and deleted by that exact path.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Engramic.Baseline.Platform\Engramic.Baseline.Platform.csproj" />
+  </ItemGroup>
+</Project>

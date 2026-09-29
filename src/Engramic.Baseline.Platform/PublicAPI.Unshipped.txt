@@ -39,6 +39,9 @@ Engramic.Baseline.Platform.FileFacts.LinkCount.get -> uint
 Engramic.Baseline.Platform.FileFacts.LinkCount.init -> void
 Engramic.Baseline.Platform.IRegistry
 Engramic.Baseline.Platform.IRegistry.GetValue(Engramic.Baseline.Platform.RegistryHive hive, Engramic.Baseline.Platform.RegistryView view, string! keyPath, string! valueName) -> Engramic.Baseline.Platform.RegistryValue?
+Engramic.Baseline.Platform.ISecureStore
+Engramic.Baseline.Platform.ISecureStore.RootPath.get -> string!
+Engramic.Baseline.Platform.ISecureStore.WriteFile(string! name, System.ReadOnlySpan<byte> content) -> void
 Engramic.Baseline.Platform.ItemSecurity
 Engramic.Baseline.Platform.ItemSecurity.<Clone>$() -> Engramic.Baseline.Platform.ItemSecurity!
 Engramic.Baseline.Platform.ItemSecurity.Dacl.get -> System.Collections.Generic.IReadOnlyList<Engramic.Baseline.Platform.AccessEntry!>?
@@ -80,6 +83,10 @@ Engramic.Baseline.Platform.RegistryValueKind.Text = 0 -> Engramic.Baseline.Platf
 Engramic.Baseline.Platform.RegistryView
 Engramic.Baseline.Platform.RegistryView.Registry32 = 1 -> Engramic.Baseline.Platform.RegistryView
 Engramic.Baseline.Platform.RegistryView.Registry64 = 0 -> Engramic.Baseline.Platform.RegistryView
+Engramic.Baseline.Platform.SecureStoreException
+Engramic.Baseline.Platform.SecureStoreException.SecureStoreException() -> void
+Engramic.Baseline.Platform.SecureStoreException.SecureStoreException(string! message) -> void
+Engramic.Baseline.Platform.SecureStoreException.SecureStoreException(string! message, System.Exception! innerException) -> void
 Engramic.Baseline.Platform.Sid
 Engramic.Baseline.Platform.Sid.<Clone>$() -> Engramic.Baseline.Platform.Sid!
 Engramic.Baseline.Platform.Sid.Equals(Engramic.Baseline.Platform.Sid? other) -> bool

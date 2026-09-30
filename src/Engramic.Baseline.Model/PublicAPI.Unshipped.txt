@@ -1,5 +1,395 @@
 #nullable enable
+const Engramic.Baseline.Model.ConfigFile.OsLifecycleName = "os-lifecycle.json" -> string!
+const Engramic.Baseline.Model.FindingsFile.FileName = "findings.json" -> string!
+const Engramic.Baseline.Model.StatusDocument.CurrentSchemaVersion = 1 -> int
+const Engramic.Baseline.Model.StatusFile.FileName = "status.json" -> string!
+Engramic.Baseline.Model.CePlusRollup
+Engramic.Baseline.Model.CePlusRollup.<Clone>$() -> Engramic.Baseline.Model.CePlusRollup!
+Engramic.Baseline.Model.CePlusRollup.CePlusRollup() -> void
+Engramic.Baseline.Model.CePlusRollup.Equals(Engramic.Baseline.Model.CePlusRollup? other) -> bool
+Engramic.Baseline.Model.CePlusRollup.Label.get -> string!
+Engramic.Baseline.Model.CePlusRollup.Label.init -> void
+Engramic.Baseline.Model.CePlusRollup.OnTrack.get -> int
+Engramic.Baseline.Model.CePlusRollup.TestCases.get -> Engramic.Baseline.Model.CePlusTestCaseStates!
+Engramic.Baseline.Model.CePlusRollup.TestCases.init -> void
+Engramic.Baseline.Model.CePlusRollup.Total.get -> int
+Engramic.Baseline.Model.CePlusState
+Engramic.Baseline.Model.CePlusState.Check = 2 -> Engramic.Baseline.Model.CePlusState
+Engramic.Baseline.Model.CePlusState.LikelyFail = 1 -> Engramic.Baseline.Model.CePlusState
+Engramic.Baseline.Model.CePlusState.LikelyPass = 3 -> Engramic.Baseline.Model.CePlusState
+Engramic.Baseline.Model.CePlusState.NotAssessed = 0 -> Engramic.Baseline.Model.CePlusState
+Engramic.Baseline.Model.CePlusTestCaseStates
+Engramic.Baseline.Model.CePlusTestCaseStates.<Clone>$() -> Engramic.Baseline.Model.CePlusTestCaseStates!
+Engramic.Baseline.Model.CePlusTestCaseStates.All.get -> System.Collections.Generic.IReadOnlyList<Engramic.Baseline.Model.CePlusState>!
+Engramic.Baseline.Model.CePlusTestCaseStates.CePlusTestCaseStates() -> void
+Engramic.Baseline.Model.CePlusTestCaseStates.Equals(Engramic.Baseline.Model.CePlusTestCaseStates? other) -> bool
+Engramic.Baseline.Model.CePlusTestCaseStates.TC1.get -> Engramic.Baseline.Model.CePlusState
+Engramic.Baseline.Model.CePlusTestCaseStates.TC1.init -> void
+Engramic.Baseline.Model.CePlusTestCaseStates.TC2.get -> Engramic.Baseline.Model.CePlusState
+Engramic.Baseline.Model.CePlusTestCaseStates.TC2.init -> void
+Engramic.Baseline.Model.CePlusTestCaseStates.TC3.get -> Engramic.Baseline.Model.CePlusState
+Engramic.Baseline.Model.CePlusTestCaseStates.TC3.init -> void
+Engramic.Baseline.Model.CePlusTestCaseStates.TC4.get -> Engramic.Baseline.Model.CePlusState
+Engramic.Baseline.Model.CePlusTestCaseStates.TC4.init -> void
+Engramic.Baseline.Model.CePlusTestCaseStates.TC5.get -> Engramic.Baseline.Model.CePlusState
+Engramic.Baseline.Model.CePlusTestCaseStates.TC5.init -> void
+Engramic.Baseline.Model.CheckCategory
+Engramic.Baseline.Model.CheckCategory.Firewalls = 0 -> Engramic.Baseline.Model.CheckCategory
+Engramic.Baseline.Model.CheckCategory.MalwareProtection = 4 -> Engramic.Baseline.Model.CheckCategory
+Engramic.Baseline.Model.CheckCategory.NCSCHardening = 5 -> Engramic.Baseline.Model.CheckCategory
+Engramic.Baseline.Model.CheckCategory.SecureConfiguration = 1 -> Engramic.Baseline.Model.CheckCategory
+Engramic.Baseline.Model.CheckCategory.SecurityUpdateManagement = 2 -> Engramic.Baseline.Model.CheckCategory
+Engramic.Baseline.Model.CheckCategory.UserAccessControl = 3 -> Engramic.Baseline.Model.CheckCategory
+Engramic.Baseline.Model.CheckScope
+Engramic.Baseline.Model.CheckScope.Machine = 0 -> Engramic.Baseline.Model.CheckScope
+Engramic.Baseline.Model.CheckScope.User = 1 -> Engramic.Baseline.Model.CheckScope
+Engramic.Baseline.Model.ConfigFile
+Engramic.Baseline.Model.Finding
+Engramic.Baseline.Model.Finding.<Clone>$() -> Engramic.Baseline.Model.Finding!
+Engramic.Baseline.Model.Finding.Actual.get -> string!
+Engramic.Baseline.Model.Finding.Actual.init -> void
+Engramic.Baseline.Model.Finding.AutoFail.get -> bool
+Engramic.Baseline.Model.Finding.AutoFail.init -> void
+Engramic.Baseline.Model.Finding.Category.get -> Engramic.Baseline.Model.CheckCategory
+Engramic.Baseline.Model.Finding.Category.init -> void
+Engramic.Baseline.Model.Finding.CheckId.get -> string!
+Engramic.Baseline.Model.Finding.CheckId.init -> void
+Engramic.Baseline.Model.Finding.Equals(Engramic.Baseline.Model.Finding? other) -> bool
+Engramic.Baseline.Model.Finding.Evidence.get -> System.Collections.Generic.IReadOnlyList<string!>!
+Engramic.Baseline.Model.Finding.Evidence.init -> void
+Engramic.Baseline.Model.Finding.Expected.get -> string!
+Engramic.Baseline.Model.Finding.Expected.init -> void
+Engramic.Baseline.Model.Finding.Finding() -> void
+Engramic.Baseline.Model.Finding.FindingId.get -> string!
+Engramic.Baseline.Model.Finding.FindingId.init -> void
+Engramic.Baseline.Model.Finding.Frameworks.get -> System.Collections.Generic.IReadOnlyList<string!>!
+Engramic.Baseline.Model.Finding.Frameworks.init -> void
+Engramic.Baseline.Model.Finding.Pack.get -> string?
+Engramic.Baseline.Model.Finding.Pack.init -> void
+Engramic.Baseline.Model.Finding.Recommendation.get -> string!
+Engramic.Baseline.Model.Finding.Recommendation.init -> void
+Engramic.Baseline.Model.Finding.Reference.get -> string!
+Engramic.Baseline.Model.Finding.Reference.init -> void
+Engramic.Baseline.Model.Finding.Remediation.get -> Engramic.Baseline.Model.RemediationRef?
+Engramic.Baseline.Model.Finding.Remediation.init -> void
+Engramic.Baseline.Model.Finding.Scope.get -> Engramic.Baseline.Model.CheckScope
+Engramic.Baseline.Model.Finding.Scope.init -> void
+Engramic.Baseline.Model.Finding.Severity.get -> Engramic.Baseline.Model.Severity
+Engramic.Baseline.Model.Finding.Severity.init -> void
+Engramic.Baseline.Model.Finding.Status.get -> Engramic.Baseline.Model.FindingStatus
+Engramic.Baseline.Model.Finding.Status.init -> void
+Engramic.Baseline.Model.Finding.Subject.get -> string!
+Engramic.Baseline.Model.Finding.Subject.init -> void
+Engramic.Baseline.Model.Finding.Title.get -> string!
+Engramic.Baseline.Model.Finding.Title.init -> void
+Engramic.Baseline.Model.FindingsDocument
+Engramic.Baseline.Model.FindingsDocument.<Clone>$() -> Engramic.Baseline.Model.FindingsDocument!
+Engramic.Baseline.Model.FindingsDocument.Equals(Engramic.Baseline.Model.FindingsDocument? other) -> bool
+Engramic.Baseline.Model.FindingsDocument.Findings.get -> System.Collections.Generic.IReadOnlyList<Engramic.Baseline.Model.Finding!>!
+Engramic.Baseline.Model.FindingsDocument.Findings.init -> void
+Engramic.Baseline.Model.FindingsDocument.FindingsDocument() -> void
+Engramic.Baseline.Model.FindingsFile
+Engramic.Baseline.Model.FindingStatus
+Engramic.Baseline.Model.FindingStatus.Error = 7 -> Engramic.Baseline.Model.FindingStatus
+Engramic.Baseline.Model.FindingStatus.Fail = 1 -> Engramic.Baseline.Model.FindingStatus
+Engramic.Baseline.Model.FindingStatus.Info = 4 -> Engramic.Baseline.Model.FindingStatus
+Engramic.Baseline.Model.FindingStatus.Manual = 3 -> Engramic.Baseline.Model.FindingStatus
+Engramic.Baseline.Model.FindingStatus.NotApplicable = 5 -> Engramic.Baseline.Model.FindingStatus
+Engramic.Baseline.Model.FindingStatus.Pass = 0 -> Engramic.Baseline.Model.FindingStatus
+Engramic.Baseline.Model.FindingStatus.Skipped = 6 -> Engramic.Baseline.Model.FindingStatus
+Engramic.Baseline.Model.FindingStatus.Warn = 2 -> Engramic.Baseline.Model.FindingStatus
+Engramic.Baseline.Model.FrameworkRollup
+Engramic.Baseline.Model.FrameworkRollup.<Clone>$() -> Engramic.Baseline.Model.FrameworkRollup!
+Engramic.Baseline.Model.FrameworkRollup.Applicable.get -> int
+Engramic.Baseline.Model.FrameworkRollup.Attention.get -> int
+Engramic.Baseline.Model.FrameworkRollup.Attention.init -> void
+Engramic.Baseline.Model.FrameworkRollup.Confirm.get -> int
+Engramic.Baseline.Model.FrameworkRollup.Confirm.init -> void
+Engramic.Baseline.Model.FrameworkRollup.Equals(Engramic.Baseline.Model.FrameworkRollup? other) -> bool
+Engramic.Baseline.Model.FrameworkRollup.FrameworkRollup() -> void
+Engramic.Baseline.Model.FrameworkRollup.Label.get -> string!
+Engramic.Baseline.Model.FrameworkRollup.Label.init -> void
+Engramic.Baseline.Model.FrameworkRollup.Met.get -> int
+Engramic.Baseline.Model.FrameworkRollup.Met.init -> void
+Engramic.Baseline.Model.FrameworkRollup.MetPct.get -> int
+Engramic.Baseline.Model.FrameworkRollup.NotApplicable.get -> int
+Engramic.Baseline.Model.FrameworkRollup.NotApplicable.init -> void
+Engramic.Baseline.Model.OsLifecycle
+Engramic.Baseline.Model.OsLifecycle.<Clone>$() -> Engramic.Baseline.Model.OsLifecycle!
+Engramic.Baseline.Model.OsLifecycle.Equals(Engramic.Baseline.Model.OsLifecycle? other) -> bool
+Engramic.Baseline.Model.OsLifecycle.HasSource.get -> bool
+Engramic.Baseline.Model.OsLifecycle.LastReviewed.get -> string!
+Engramic.Baseline.Model.OsLifecycle.LastReviewed.init -> void
+Engramic.Baseline.Model.OsLifecycle.OsLifecycle() -> void
+Engramic.Baseline.Model.OsLifecycle.ReviewWarningDays.get -> int
+Engramic.Baseline.Model.OsLifecycle.ReviewWarningDays.init -> void
+Engramic.Baseline.Model.OsLifecycle.Source.get -> string?
+Engramic.Baseline.Model.OsLifecycle.Source.init -> void
+Engramic.Baseline.Model.OsLifecycle.UpcomingEndWarningDays.get -> int
+Engramic.Baseline.Model.OsLifecycle.UpcomingEndWarningDays.init -> void
+Engramic.Baseline.Model.OsLifecycle.Windows10.get -> Engramic.Baseline.Model.Windows10Lifecycle?
+Engramic.Baseline.Model.OsLifecycle.Windows10.init -> void
+Engramic.Baseline.Model.OsLifecycle.Windows11.get -> System.Collections.Generic.IReadOnlyList<Engramic.Baseline.Model.Windows11Release!>?
+Engramic.Baseline.Model.OsLifecycle.Windows11.init -> void
+Engramic.Baseline.Model.OsLifecycle.WindowsServer.get -> System.Collections.Generic.IReadOnlyList<Engramic.Baseline.Model.WindowsServerRelease!>?
+Engramic.Baseline.Model.OsLifecycle.WindowsServer.init -> void
+Engramic.Baseline.Model.RemediationRef
+Engramic.Baseline.Model.RemediationRef.<Clone>$() -> Engramic.Baseline.Model.RemediationRef!
+Engramic.Baseline.Model.RemediationRef.Equals(Engramic.Baseline.Model.RemediationRef? other) -> bool
+Engramic.Baseline.Model.RemediationRef.Id.get -> string!
+Engramic.Baseline.Model.RemediationRef.Id.init -> void
+Engramic.Baseline.Model.RemediationRef.Parameters.get -> System.Collections.Generic.IReadOnlyDictionary<string!, System.Text.Json.JsonElement>!
+Engramic.Baseline.Model.RemediationRef.Parameters.init -> void
+Engramic.Baseline.Model.RemediationRef.RemediationRef() -> void
+Engramic.Baseline.Model.Severity
+Engramic.Baseline.Model.Severity.Critical = 0 -> Engramic.Baseline.Model.Severity
+Engramic.Baseline.Model.Severity.High = 1 -> Engramic.Baseline.Model.Severity
+Engramic.Baseline.Model.Severity.Info = 4 -> Engramic.Baseline.Model.Severity
+Engramic.Baseline.Model.Severity.Low = 3 -> Engramic.Baseline.Model.Severity
+Engramic.Baseline.Model.Severity.Medium = 2 -> Engramic.Baseline.Model.Severity
+Engramic.Baseline.Model.StatusCheck
+Engramic.Baseline.Model.StatusCheck.<Clone>$() -> Engramic.Baseline.Model.StatusCheck!
+Engramic.Baseline.Model.StatusCheck.AutoFail.get -> bool
+Engramic.Baseline.Model.StatusCheck.AutoFail.init -> void
+Engramic.Baseline.Model.StatusCheck.Equals(Engramic.Baseline.Model.StatusCheck? other) -> bool
+Engramic.Baseline.Model.StatusCheck.Frameworks.get -> System.Collections.Generic.IReadOnlyList<string!>!
+Engramic.Baseline.Model.StatusCheck.Frameworks.init -> void
+Engramic.Baseline.Model.StatusCheck.Scope.get -> Engramic.Baseline.Model.CheckScope
+Engramic.Baseline.Model.StatusCheck.Scope.init -> void
+Engramic.Baseline.Model.StatusCheck.Status.get -> Engramic.Baseline.Model.FindingStatus
+Engramic.Baseline.Model.StatusCheck.Status.init -> void
+Engramic.Baseline.Model.StatusCheck.StatusCheck() -> void
+Engramic.Baseline.Model.StatusCounts
+Engramic.Baseline.Model.StatusCounts.<Clone>$() -> Engramic.Baseline.Model.StatusCounts!
+Engramic.Baseline.Model.StatusCounts.Equals(Engramic.Baseline.Model.StatusCounts? other) -> bool
+Engramic.Baseline.Model.StatusCounts.Error.get -> int
+Engramic.Baseline.Model.StatusCounts.Error.init -> void
+Engramic.Baseline.Model.StatusCounts.Fail.get -> int
+Engramic.Baseline.Model.StatusCounts.Fail.init -> void
+Engramic.Baseline.Model.StatusCounts.Info.get -> int
+Engramic.Baseline.Model.StatusCounts.Info.init -> void
+Engramic.Baseline.Model.StatusCounts.Manual.get -> int
+Engramic.Baseline.Model.StatusCounts.Manual.init -> void
+Engramic.Baseline.Model.StatusCounts.NotApplicable.get -> int
+Engramic.Baseline.Model.StatusCounts.NotApplicable.init -> void
+Engramic.Baseline.Model.StatusCounts.Pass.get -> int
+Engramic.Baseline.Model.StatusCounts.Pass.init -> void
+Engramic.Baseline.Model.StatusCounts.Skipped.get -> int
+Engramic.Baseline.Model.StatusCounts.Skipped.init -> void
+Engramic.Baseline.Model.StatusCounts.StatusCounts() -> void
+Engramic.Baseline.Model.StatusCounts.Warn.get -> int
+Engramic.Baseline.Model.StatusCounts.Warn.init -> void
+Engramic.Baseline.Model.StatusDisk
+Engramic.Baseline.Model.StatusDisk.<Clone>$() -> Engramic.Baseline.Model.StatusDisk!
+Engramic.Baseline.Model.StatusDisk.Equals(Engramic.Baseline.Model.StatusDisk? other) -> bool
+Engramic.Baseline.Model.StatusDisk.Firmware.get -> string!
+Engramic.Baseline.Model.StatusDisk.Firmware.init -> void
+Engramic.Baseline.Model.StatusDisk.Model.get -> string!
+Engramic.Baseline.Model.StatusDisk.Model.init -> void
+Engramic.Baseline.Model.StatusDisk.StatusDisk() -> void
+Engramic.Baseline.Model.StatusDocument
+Engramic.Baseline.Model.StatusDocument.<Clone>$() -> Engramic.Baseline.Model.StatusDocument!
+Engramic.Baseline.Model.StatusDocument.AuditTime.get -> System.DateTimeOffset
+Engramic.Baseline.Model.StatusDocument.AuditTime.init -> void
+Engramic.Baseline.Model.StatusDocument.AutoFailCount.get -> int
+Engramic.Baseline.Model.StatusDocument.AutoFails.get -> System.Collections.Generic.IReadOnlyList<string!>!
+Engramic.Baseline.Model.StatusDocument.AutoFails.init -> void
+Engramic.Baseline.Model.StatusDocument.Checks.get -> System.Collections.Generic.IReadOnlyDictionary<string!, Engramic.Baseline.Model.StatusCheck!>!
+Engramic.Baseline.Model.StatusDocument.Checks.init -> void
+Engramic.Baseline.Model.StatusDocument.ComputerName.get -> string!
+Engramic.Baseline.Model.StatusDocument.ComputerName.init -> void
+Engramic.Baseline.Model.StatusDocument.Counts.get -> Engramic.Baseline.Model.StatusCounts!
+Engramic.Baseline.Model.StatusDocument.Counts.init -> void
+Engramic.Baseline.Model.StatusDocument.Elevated.get -> bool
+Engramic.Baseline.Model.StatusDocument.Elevated.init -> void
+Engramic.Baseline.Model.StatusDocument.Equals(Engramic.Baseline.Model.StatusDocument? other) -> bool
+Engramic.Baseline.Model.StatusDocument.Frameworks.get -> Engramic.Baseline.Model.StatusFrameworks!
+Engramic.Baseline.Model.StatusDocument.Frameworks.init -> void
+Engramic.Baseline.Model.StatusDocument.Hardware.get -> Engramic.Baseline.Model.StatusHardware?
+Engramic.Baseline.Model.StatusDocument.Hardware.init -> void
+Engramic.Baseline.Model.StatusDocument.Os.get -> string!
+Engramic.Baseline.Model.StatusDocument.Os.init -> void
+Engramic.Baseline.Model.StatusDocument.Packs.get -> System.Collections.Generic.IReadOnlyList<string!>!
+Engramic.Baseline.Model.StatusDocument.Platform.get -> string!
+Engramic.Baseline.Model.StatusDocument.Platform.init -> void
+Engramic.Baseline.Model.StatusDocument.ReportFolder.get -> string!
+Engramic.Baseline.Model.StatusDocument.ReportFolder.init -> void
+Engramic.Baseline.Model.StatusDocument.RunAs.get -> string!
+Engramic.Baseline.Model.StatusDocument.RunAs.init -> void
+Engramic.Baseline.Model.StatusDocument.SchemaVersion.get -> int
+Engramic.Baseline.Model.StatusDocument.SchemaVersion.init -> void
+Engramic.Baseline.Model.StatusDocument.Scope.get -> Engramic.Baseline.Model.CheckScope
+Engramic.Baseline.Model.StatusDocument.Scope.init -> void
+Engramic.Baseline.Model.StatusDocument.StatusDocument() -> void
+Engramic.Baseline.Model.StatusDocument.ToolVersion.get -> string!
+Engramic.Baseline.Model.StatusDocument.ToolVersion.init -> void
+Engramic.Baseline.Model.StatusFile
+Engramic.Baseline.Model.StatusFrameworks
+Engramic.Baseline.Model.StatusFrameworks.<Clone>$() -> Engramic.Baseline.Model.StatusFrameworks!
+Engramic.Baseline.Model.StatusFrameworks.CePlus.get -> Engramic.Baseline.Model.CePlusRollup?
+Engramic.Baseline.Model.StatusFrameworks.CePlus.init -> void
+Engramic.Baseline.Model.StatusFrameworks.CeV33.get -> Engramic.Baseline.Model.FrameworkRollup?
+Engramic.Baseline.Model.StatusFrameworks.CeV33.init -> void
+Engramic.Baseline.Model.StatusFrameworks.Equals(Engramic.Baseline.Model.StatusFrameworks? other) -> bool
+Engramic.Baseline.Model.StatusFrameworks.Ncsc.get -> Engramic.Baseline.Model.FrameworkRollup?
+Engramic.Baseline.Model.StatusFrameworks.Ncsc.init -> void
+Engramic.Baseline.Model.StatusFrameworks.StatusFrameworks() -> void
+Engramic.Baseline.Model.StatusHardware
+Engramic.Baseline.Model.StatusHardware.<Clone>$() -> Engramic.Baseline.Model.StatusHardware!
+Engramic.Baseline.Model.StatusHardware.Cpu.get -> string!
+Engramic.Baseline.Model.StatusHardware.Cpu.init -> void
+Engramic.Baseline.Model.StatusHardware.Disks.get -> System.Collections.Generic.IReadOnlyList<Engramic.Baseline.Model.StatusDisk!>!
+Engramic.Baseline.Model.StatusHardware.Disks.init -> void
+Engramic.Baseline.Model.StatusHardware.Equals(Engramic.Baseline.Model.StatusHardware? other) -> bool
+Engramic.Baseline.Model.StatusHardware.FirmwareDate.get -> string!
+Engramic.Baseline.Model.StatusHardware.FirmwareDate.init -> void
+Engramic.Baseline.Model.StatusHardware.FirmwareType.get -> string!
+Engramic.Baseline.Model.StatusHardware.FirmwareType.init -> void
+Engramic.Baseline.Model.StatusHardware.FirmwareVersion.get -> string!
+Engramic.Baseline.Model.StatusHardware.FirmwareVersion.init -> void
+Engramic.Baseline.Model.StatusHardware.IsVirtualMachine.get -> bool
+Engramic.Baseline.Model.StatusHardware.IsVirtualMachine.init -> void
+Engramic.Baseline.Model.StatusHardware.Manufacturer.get -> string!
+Engramic.Baseline.Model.StatusHardware.Manufacturer.init -> void
+Engramic.Baseline.Model.StatusHardware.Model.get -> string!
+Engramic.Baseline.Model.StatusHardware.Model.init -> void
+Engramic.Baseline.Model.StatusHardware.SerialNumber.get -> string!
+Engramic.Baseline.Model.StatusHardware.SerialNumber.init -> void
+Engramic.Baseline.Model.StatusHardware.StatusHardware() -> void
+Engramic.Baseline.Model.StatusHardware.SystemSku.get -> string!
+Engramic.Baseline.Model.StatusHardware.SystemSku.init -> void
+Engramic.Baseline.Model.StatusHardware.TpmFirmware.get -> string!
+Engramic.Baseline.Model.StatusHardware.TpmFirmware.init -> void
+Engramic.Baseline.Model.StatusHardware.TpmManufacturer.get -> string!
+Engramic.Baseline.Model.StatusHardware.TpmManufacturer.init -> void
+Engramic.Baseline.Model.StatusHardware.TpmSpec.get -> string!
+Engramic.Baseline.Model.StatusHardware.TpmSpec.init -> void
 Engramic.Baseline.Model.Utf8Bom
+Engramic.Baseline.Model.Windows10Lifecycle
+Engramic.Baseline.Model.Windows10Lifecycle.<Clone>$() -> Engramic.Baseline.Model.Windows10Lifecycle!
+Engramic.Baseline.Model.Windows10Lifecycle.EndOfSupport.get -> string?
+Engramic.Baseline.Model.Windows10Lifecycle.EndOfSupport.init -> void
+Engramic.Baseline.Model.Windows10Lifecycle.Equals(Engramic.Baseline.Model.Windows10Lifecycle? other) -> bool
+Engramic.Baseline.Model.Windows10Lifecycle.EsuCommercialYear3End.get -> string?
+Engramic.Baseline.Model.Windows10Lifecycle.EsuCommercialYear3End.init -> void
+Engramic.Baseline.Model.Windows10Lifecycle.EsuConsumerEnd.get -> string?
+Engramic.Baseline.Model.Windows10Lifecycle.EsuConsumerEnd.init -> void
+Engramic.Baseline.Model.Windows10Lifecycle.HasEndOfSupport.get -> bool
+Engramic.Baseline.Model.Windows10Lifecycle.Windows10Lifecycle() -> void
+Engramic.Baseline.Model.Windows11Release
+Engramic.Baseline.Model.Windows11Release.<Clone>$() -> Engramic.Baseline.Model.Windows11Release!
+Engramic.Baseline.Model.Windows11Release.Build.get -> int
+Engramic.Baseline.Model.Windows11Release.Build.init -> void
+Engramic.Baseline.Model.Windows11Release.Enterprise.get -> string?
+Engramic.Baseline.Model.Windows11Release.Enterprise.init -> void
+Engramic.Baseline.Model.Windows11Release.Equals(Engramic.Baseline.Model.Windows11Release? other) -> bool
+Engramic.Baseline.Model.Windows11Release.HasBuild.get -> bool
+Engramic.Baseline.Model.Windows11Release.HasEnterprise.get -> bool
+Engramic.Baseline.Model.Windows11Release.HasHomePro.get -> bool
+Engramic.Baseline.Model.Windows11Release.HasVersion.get -> bool
+Engramic.Baseline.Model.Windows11Release.HomePro.get -> string?
+Engramic.Baseline.Model.Windows11Release.HomePro.init -> void
+Engramic.Baseline.Model.Windows11Release.Version.get -> string?
+Engramic.Baseline.Model.Windows11Release.Version.init -> void
+Engramic.Baseline.Model.Windows11Release.Windows11Release() -> void
+Engramic.Baseline.Model.WindowsServerRelease
+Engramic.Baseline.Model.WindowsServerRelease.<Clone>$() -> Engramic.Baseline.Model.WindowsServerRelease!
+Engramic.Baseline.Model.WindowsServerRelease.Build.get -> int
+Engramic.Baseline.Model.WindowsServerRelease.Build.init -> void
+Engramic.Baseline.Model.WindowsServerRelease.Equals(Engramic.Baseline.Model.WindowsServerRelease? other) -> bool
+Engramic.Baseline.Model.WindowsServerRelease.ExtendedEnd.get -> string?
+Engramic.Baseline.Model.WindowsServerRelease.ExtendedEnd.init -> void
+Engramic.Baseline.Model.WindowsServerRelease.HasBuild.get -> bool
+Engramic.Baseline.Model.WindowsServerRelease.HasVersion.get -> bool
+Engramic.Baseline.Model.WindowsServerRelease.Version.get -> string?
+Engramic.Baseline.Model.WindowsServerRelease.Version.init -> void
+Engramic.Baseline.Model.WindowsServerRelease.WindowsServerRelease() -> void
+override Engramic.Baseline.Model.CePlusRollup.Equals(object? obj) -> bool
+override Engramic.Baseline.Model.CePlusRollup.GetHashCode() -> int
+override Engramic.Baseline.Model.CePlusRollup.ToString() -> string!
+override Engramic.Baseline.Model.CePlusTestCaseStates.Equals(object? obj) -> bool
+override Engramic.Baseline.Model.CePlusTestCaseStates.GetHashCode() -> int
+override Engramic.Baseline.Model.CePlusTestCaseStates.ToString() -> string!
+override Engramic.Baseline.Model.Finding.Equals(object? obj) -> bool
+override Engramic.Baseline.Model.Finding.GetHashCode() -> int
+override Engramic.Baseline.Model.Finding.ToString() -> string!
+override Engramic.Baseline.Model.FindingsDocument.Equals(object? obj) -> bool
+override Engramic.Baseline.Model.FindingsDocument.GetHashCode() -> int
+override Engramic.Baseline.Model.FindingsDocument.ToString() -> string!
+override Engramic.Baseline.Model.FrameworkRollup.Equals(object? obj) -> bool
+override Engramic.Baseline.Model.FrameworkRollup.GetHashCode() -> int
+override Engramic.Baseline.Model.FrameworkRollup.ToString() -> string!
+override Engramic.Baseline.Model.OsLifecycle.Equals(object? obj) -> bool
+override Engramic.Baseline.Model.OsLifecycle.GetHashCode() -> int
+override Engramic.Baseline.Model.OsLifecycle.ToString() -> string!
+override Engramic.Baseline.Model.RemediationRef.Equals(object? obj) -> bool
+override Engramic.Baseline.Model.RemediationRef.GetHashCode() -> int
+override Engramic.Baseline.Model.RemediationRef.ToString() -> string!
+override Engramic.Baseline.Model.StatusCheck.Equals(object? obj) -> bool
+override Engramic.Baseline.Model.StatusCheck.GetHashCode() -> int
+override Engramic.Baseline.Model.StatusCheck.ToString() -> string!
+override Engramic.Baseline.Model.StatusCounts.Equals(object? obj) -> bool
+override Engramic.Baseline.Model.StatusCounts.GetHashCode() -> int
+override Engramic.Baseline.Model.StatusCounts.ToString() -> string!
+override Engramic.Baseline.Model.StatusDisk.Equals(object? obj) -> bool
+override Engramic.Baseline.Model.StatusDisk.GetHashCode() -> int
+override Engramic.Baseline.Model.StatusDisk.ToString() -> string!
+override Engramic.Baseline.Model.StatusDocument.Equals(object? obj) -> bool
+override Engramic.Baseline.Model.StatusDocument.GetHashCode() -> int
+override Engramic.Baseline.Model.StatusDocument.ToString() -> string!
+override Engramic.Baseline.Model.StatusFrameworks.Equals(object? obj) -> bool
+override Engramic.Baseline.Model.StatusFrameworks.GetHashCode() -> int
+override Engramic.Baseline.Model.StatusFrameworks.ToString() -> string!
+override Engramic.Baseline.Model.StatusHardware.Equals(object? obj) -> bool
+override Engramic.Baseline.Model.StatusHardware.GetHashCode() -> int
+override Engramic.Baseline.Model.StatusHardware.ToString() -> string!
+override Engramic.Baseline.Model.Windows10Lifecycle.Equals(object? obj) -> bool
+override Engramic.Baseline.Model.Windows10Lifecycle.GetHashCode() -> int
+override Engramic.Baseline.Model.Windows10Lifecycle.ToString() -> string!
+override Engramic.Baseline.Model.Windows11Release.Equals(object? obj) -> bool
+override Engramic.Baseline.Model.Windows11Release.GetHashCode() -> int
+override Engramic.Baseline.Model.Windows11Release.ToString() -> string!
+override Engramic.Baseline.Model.WindowsServerRelease.Equals(object? obj) -> bool
+override Engramic.Baseline.Model.WindowsServerRelease.GetHashCode() -> int
+override Engramic.Baseline.Model.WindowsServerRelease.ToString() -> string!
+static Engramic.Baseline.Model.CePlusRollup.operator !=(Engramic.Baseline.Model.CePlusRollup? left, Engramic.Baseline.Model.CePlusRollup? right) -> bool
+static Engramic.Baseline.Model.CePlusRollup.operator ==(Engramic.Baseline.Model.CePlusRollup? left, Engramic.Baseline.Model.CePlusRollup? right) -> bool
+static Engramic.Baseline.Model.CePlusTestCaseStates.operator !=(Engramic.Baseline.Model.CePlusTestCaseStates? left, Engramic.Baseline.Model.CePlusTestCaseStates? right) -> bool
+static Engramic.Baseline.Model.CePlusTestCaseStates.operator ==(Engramic.Baseline.Model.CePlusTestCaseStates? left, Engramic.Baseline.Model.CePlusTestCaseStates? right) -> bool
+static Engramic.Baseline.Model.ConfigFile.ReadOsLifecycle(System.ReadOnlySpan<byte> utf8) -> Engramic.Baseline.Model.OsLifecycle!
+static Engramic.Baseline.Model.Finding.operator !=(Engramic.Baseline.Model.Finding? left, Engramic.Baseline.Model.Finding? right) -> bool
+static Engramic.Baseline.Model.Finding.operator ==(Engramic.Baseline.Model.Finding? left, Engramic.Baseline.Model.Finding? right) -> bool
+static Engramic.Baseline.Model.FindingsDocument.operator !=(Engramic.Baseline.Model.FindingsDocument? left, Engramic.Baseline.Model.FindingsDocument? right) -> bool
+static Engramic.Baseline.Model.FindingsDocument.operator ==(Engramic.Baseline.Model.FindingsDocument? left, Engramic.Baseline.Model.FindingsDocument? right) -> bool
+static Engramic.Baseline.Model.FindingsFile.Parse(System.ReadOnlySpan<byte> utf8) -> Engramic.Baseline.Model.FindingsDocument!
+static Engramic.Baseline.Model.FindingsFile.ToBytes(Engramic.Baseline.Model.FindingsDocument! findings) -> byte[]!
+static Engramic.Baseline.Model.FrameworkRollup.operator !=(Engramic.Baseline.Model.FrameworkRollup? left, Engramic.Baseline.Model.FrameworkRollup? right) -> bool
+static Engramic.Baseline.Model.FrameworkRollup.operator ==(Engramic.Baseline.Model.FrameworkRollup? left, Engramic.Baseline.Model.FrameworkRollup? right) -> bool
+static Engramic.Baseline.Model.OsLifecycle.operator !=(Engramic.Baseline.Model.OsLifecycle? left, Engramic.Baseline.Model.OsLifecycle? right) -> bool
+static Engramic.Baseline.Model.OsLifecycle.operator ==(Engramic.Baseline.Model.OsLifecycle? left, Engramic.Baseline.Model.OsLifecycle? right) -> bool
+static Engramic.Baseline.Model.RemediationRef.operator !=(Engramic.Baseline.Model.RemediationRef? left, Engramic.Baseline.Model.RemediationRef? right) -> bool
+static Engramic.Baseline.Model.RemediationRef.operator ==(Engramic.Baseline.Model.RemediationRef? left, Engramic.Baseline.Model.RemediationRef? right) -> bool
+static Engramic.Baseline.Model.StatusCheck.operator !=(Engramic.Baseline.Model.StatusCheck? left, Engramic.Baseline.Model.StatusCheck? right) -> bool
+static Engramic.Baseline.Model.StatusCheck.operator ==(Engramic.Baseline.Model.StatusCheck? left, Engramic.Baseline.Model.StatusCheck? right) -> bool
+static Engramic.Baseline.Model.StatusCounts.Of(System.Collections.Generic.IEnumerable<Engramic.Baseline.Model.FindingStatus>! statuses) -> Engramic.Baseline.Model.StatusCounts!
+static Engramic.Baseline.Model.StatusCounts.operator !=(Engramic.Baseline.Model.StatusCounts? left, Engramic.Baseline.Model.StatusCounts? right) -> bool
+static Engramic.Baseline.Model.StatusCounts.operator ==(Engramic.Baseline.Model.StatusCounts? left, Engramic.Baseline.Model.StatusCounts? right) -> bool
+static Engramic.Baseline.Model.StatusDisk.operator !=(Engramic.Baseline.Model.StatusDisk? left, Engramic.Baseline.Model.StatusDisk? right) -> bool
+static Engramic.Baseline.Model.StatusDisk.operator ==(Engramic.Baseline.Model.StatusDisk? left, Engramic.Baseline.Model.StatusDisk? right) -> bool
+static Engramic.Baseline.Model.StatusDocument.operator !=(Engramic.Baseline.Model.StatusDocument? left, Engramic.Baseline.Model.StatusDocument? right) -> bool
+static Engramic.Baseline.Model.StatusDocument.operator ==(Engramic.Baseline.Model.StatusDocument? left, Engramic.Baseline.Model.StatusDocument? right) -> bool
+static Engramic.Baseline.Model.StatusFile.Parse(System.ReadOnlySpan<byte> utf8) -> Engramic.Baseline.Model.StatusDocument!
+static Engramic.Baseline.Model.StatusFile.ToBytes(Engramic.Baseline.Model.StatusDocument! status) -> byte[]!
+static Engramic.Baseline.Model.StatusFrameworks.operator !=(Engramic.Baseline.Model.StatusFrameworks? left, Engramic.Baseline.Model.StatusFrameworks? right) -> bool
+static Engramic.Baseline.Model.StatusFrameworks.operator ==(Engramic.Baseline.Model.StatusFrameworks? left, Engramic.Baseline.Model.StatusFrameworks? right) -> bool
+static Engramic.Baseline.Model.StatusHardware.operator !=(Engramic.Baseline.Model.StatusHardware? left, Engramic.Baseline.Model.StatusHardware? right) -> bool
+static Engramic.Baseline.Model.StatusHardware.operator ==(Engramic.Baseline.Model.StatusHardware? left, Engramic.Baseline.Model.StatusHardware? right) -> bool
 static Engramic.Baseline.Model.Utf8Bom.Encoding.get -> System.Text.Encoding!
 static Engramic.Baseline.Model.Utf8Bom.GetBytes(string! text) -> byte[]!
 static Engramic.Baseline.Model.Utf8Bom.Preamble.get -> System.ReadOnlySpan<byte>
+static Engramic.Baseline.Model.Windows10Lifecycle.operator !=(Engramic.Baseline.Model.Windows10Lifecycle? left, Engramic.Baseline.Model.Windows10Lifecycle? right) -> bool
+static Engramic.Baseline.Model.Windows10Lifecycle.operator ==(Engramic.Baseline.Model.Windows10Lifecycle? left, Engramic.Baseline.Model.Windows10Lifecycle? right) -> bool
+static Engramic.Baseline.Model.Windows11Release.operator !=(Engramic.Baseline.Model.Windows11Release? left, Engramic.Baseline.Model.Windows11Release? right) -> bool
+static Engramic.Baseline.Model.Windows11Release.operator ==(Engramic.Baseline.Model.Windows11Release? left, Engramic.Baseline.Model.Windows11Release? right) -> bool
+static Engramic.Baseline.Model.WindowsServerRelease.operator !=(Engramic.Baseline.Model.WindowsServerRelease? left, Engramic.Baseline.Model.WindowsServerRelease? right) -> bool
+static Engramic.Baseline.Model.WindowsServerRelease.operator ==(Engramic.Baseline.Model.WindowsServerRelease? left, Engramic.Baseline.Model.WindowsServerRelease? right) -> bool

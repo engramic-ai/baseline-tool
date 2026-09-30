@@ -12,4 +12,12 @@
   <ItemGroup>
     <ProjectReference Include="..\Engramic.Baseline.Engine\Engramic.Baseline.Engine.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      The shipped config (ShippedConfig): the repository's config folder, which the PowerShell tool also
+      reads, built in under config/<name>. A file joins when a ported check first reads it.
+    -->
+    <EmbeddedResource Include="..\..\config\os-lifecycle.json" LogicalName="config/os-lifecycle.json" Visible="false" />
+  </ItemGroup>
 </Project>

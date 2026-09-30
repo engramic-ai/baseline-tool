@@ -1,0 +1,169 @@
+{
+  "schemaVersion": 1,
+  "toolVersion": "0.3.2",
+  "scope": "Machine",
+  "platform": "windows",
+  "computerName": "DEVICE01",
+  "auditTime": "2026-09-29T14:03:49.0000000Z",
+  "runAs": "CONTOSO\\alex",
+  "elevated": false,
+  "os": "Windows 11 24H2 Professional (26100.4946)",
+  "counts": {
+    "Pass": 4,
+    "Fail": 2,
+    "Warn": 2,
+    "Manual": 1,
+    "Info": 1,
+    "NotApplicable": 1,
+    "Skipped": 1,
+    "Error": 1
+  },
+  "autoFailCount": 2,
+  "autoFails": [
+    "SU-03",
+    "SU-05"
+  ],
+  "checks": {
+    "FW-01": {
+      "status": "Pass",
+      "frameworks": [
+        "CE v3.3",
+        "NCSC"
+      ],
+      "scope": "Machine",
+      "autoFail": false
+    },
+    "FW-02": {
+      "status": "Fail",
+      "frameworks": [
+        "CE v3.3",
+        "CE+ TC1"
+      ],
+      "scope": "Machine",
+      "autoFail": false
+    },
+    "MP-01": {
+      "status": "Pass",
+      "frameworks": [
+        "CE v3.3",
+        "CE+ TC3"
+      ],
+      "scope": "Machine",
+      "autoFail": false
+    },
+    "MP-09": {
+      "status": "Warn",
+      "frameworks": [
+        "NCSC",
+        "CE v3.3"
+      ],
+      "scope": "Machine",
+      "autoFail": false
+    },
+    "NC-01": {
+      "status": "Skipped",
+      "frameworks": [
+        "NCSC"
+      ],
+      "scope": "Machine",
+      "autoFail": false
+    },
+    "NC-03": {
+      "status": "Info",
+      "frameworks": [
+        "NCSC"
+      ],
+      "scope": "Machine",
+      "autoFail": false
+    },
+    "NC-04": {
+      "status": "NotApplicable",
+      "frameworks": [
+        "NCSC"
+      ],
+      "scope": "Machine",
+      "autoFail": false
+    },
+    "SU-01": {
+      "status": "Warn",
+      "frameworks": [
+        "CE v3.3",
+        "CE+ TC2"
+      ],
+      "scope": "Machine",
+      "autoFail": true
+    },
+    "SU-03": {
+      "status": "Fail",
+      "frameworks": [
+        "CE v3.3",
+        "CE+ TC2"
+      ],
+      "scope": "Machine",
+      "autoFail": true
+    },
+    "SU-05": {
+      "status": "Error",
+      "frameworks": [
+        "CE v3.3",
+        "CE+ TC2"
+      ],
+      "scope": "Machine",
+      "autoFail": true
+    },
+    "UA-01": {
+      "status": "Pass",
+      "frameworks": [
+        "CE v3.3",
+        "CE+ TC5",
+        "NCSC"
+      ],
+      "scope": "Machine",
+      "autoFail": false
+    },
+    "UA-07": {
+      "status": "Manual",
+      "frameworks": [
+        "CE v3.3",
+        "CE+ TC4"
+      ],
+      "scope": "Machine",
+      "autoFail": true
+    }
+  },
+  "frameworks": {
+    "ce-v3.3": {
+      "label": "Cyber Essentials v3.3",
+      "applicable": 9,
+      "met": 3,
+      "attention": 5,
+      "confirm": 1,
+      "notApplicable": 0,
+      "metPct": 33
+    },
+    "ncsc": {
+      "label": "NCSC device hardening",
+      "applicable": 3,
+      "met": 2,
+      "attention": 1,
+      "confirm": 0,
+      "notApplicable": 3,
+      "metPct": 67
+    },
+    "ce-plus": {
+      "label": "Cyber Essentials Plus",
+      "tcs": {
+        "TC1": "Likely fail",
+        "TC2": "Likely fail",
+        "TC3": "Check",
+        "TC4": "Check",
+        "TC5": "Likely pass"
+      },
+      "onTrack": 1,
+      "total": 5
+    }
+  },
+  "hardware": null,
+  "packs": [],
+  "reportFolder": "C:\\ProgramData\\EngramicBaseline\\reports\\DEVICE01-20260929-150349"
+}

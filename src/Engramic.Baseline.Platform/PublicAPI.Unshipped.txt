@@ -1,11 +1,60 @@
 #nullable enable
+Engramic.Baseline.Platform.IRegistry
+Engramic.Baseline.Platform.IRegistry.GetValue(Engramic.Baseline.Platform.RegistryHive hive, Engramic.Baseline.Platform.RegistryView view, string! keyPath, string! valueName) -> Engramic.Baseline.Platform.RegistryValue?
+Engramic.Baseline.Platform.ProcessAccount
+Engramic.Baseline.Platform.ProcessAccount.<Clone>$() -> Engramic.Baseline.Platform.ProcessAccount!
+Engramic.Baseline.Platform.ProcessAccount.Deconstruct(out string! Name, out bool IsAdministrator, out bool IsLocalSystem) -> void
+Engramic.Baseline.Platform.ProcessAccount.Equals(Engramic.Baseline.Platform.ProcessAccount? other) -> bool
+Engramic.Baseline.Platform.ProcessAccount.IsAdministrator.get -> bool
+Engramic.Baseline.Platform.ProcessAccount.IsAdministrator.init -> void
+Engramic.Baseline.Platform.ProcessAccount.IsElevated.get -> bool
+Engramic.Baseline.Platform.ProcessAccount.IsLocalSystem.get -> bool
+Engramic.Baseline.Platform.ProcessAccount.IsLocalSystem.init -> void
+Engramic.Baseline.Platform.ProcessAccount.Name.get -> string!
+Engramic.Baseline.Platform.ProcessAccount.Name.init -> void
+Engramic.Baseline.Platform.ProcessAccount.ProcessAccount(string! Name, bool IsAdministrator, bool IsLocalSystem) -> void
+Engramic.Baseline.Platform.RegistryHive
+Engramic.Baseline.Platform.RegistryHive.LocalMachine = 0 -> Engramic.Baseline.Platform.RegistryHive
+Engramic.Baseline.Platform.RegistryValue
+Engramic.Baseline.Platform.RegistryValue.Bytes.get -> System.ReadOnlyMemory<byte>
+Engramic.Baseline.Platform.RegistryValue.Equals(Engramic.Baseline.Platform.RegistryValue? other) -> bool
+Engramic.Baseline.Platform.RegistryValue.Kind.get -> Engramic.Baseline.Platform.RegistryValueKind
+Engramic.Baseline.Platform.RegistryValue.Lines.get -> System.Collections.Generic.IReadOnlyList<string!>!
+Engramic.Baseline.Platform.RegistryValue.Number.get -> ulong?
+Engramic.Baseline.Platform.RegistryValue.Text.get -> string?
+Engramic.Baseline.Platform.RegistryValueKind
+Engramic.Baseline.Platform.RegistryValueKind.Binary = 5 -> Engramic.Baseline.Platform.RegistryValueKind
+Engramic.Baseline.Platform.RegistryValueKind.DWord = 3 -> Engramic.Baseline.Platform.RegistryValueKind
+Engramic.Baseline.Platform.RegistryValueKind.ExpandText = 1 -> Engramic.Baseline.Platform.RegistryValueKind
+Engramic.Baseline.Platform.RegistryValueKind.MultiText = 2 -> Engramic.Baseline.Platform.RegistryValueKind
+Engramic.Baseline.Platform.RegistryValueKind.Other = 6 -> Engramic.Baseline.Platform.RegistryValueKind
+Engramic.Baseline.Platform.RegistryValueKind.QWord = 4 -> Engramic.Baseline.Platform.RegistryValueKind
+Engramic.Baseline.Platform.RegistryValueKind.Text = 0 -> Engramic.Baseline.Platform.RegistryValueKind
+Engramic.Baseline.Platform.RegistryView
+Engramic.Baseline.Platform.RegistryView.Registry32 = 1 -> Engramic.Baseline.Platform.RegistryView
+Engramic.Baseline.Platform.RegistryView.Registry64 = 0 -> Engramic.Baseline.Platform.RegistryView
 Engramic.Baseline.Platform.Sid
 Engramic.Baseline.Platform.Sid.<Clone>$() -> Engramic.Baseline.Platform.Sid!
 Engramic.Baseline.Platform.Sid.Equals(Engramic.Baseline.Platform.Sid? other) -> bool
 Engramic.Baseline.Platform.Sid.Value.get -> string!
+override Engramic.Baseline.Platform.ProcessAccount.Equals(object? obj) -> bool
+override Engramic.Baseline.Platform.ProcessAccount.GetHashCode() -> int
+override Engramic.Baseline.Platform.ProcessAccount.ToString() -> string!
+override Engramic.Baseline.Platform.RegistryValue.Equals(object? obj) -> bool
+override Engramic.Baseline.Platform.RegistryValue.GetHashCode() -> int
+override Engramic.Baseline.Platform.RegistryValue.ToString() -> string!
 override Engramic.Baseline.Platform.Sid.Equals(object? obj) -> bool
 override Engramic.Baseline.Platform.Sid.GetHashCode() -> int
 override Engramic.Baseline.Platform.Sid.ToString() -> string!
+static Engramic.Baseline.Platform.ProcessAccount.operator !=(Engramic.Baseline.Platform.ProcessAccount? left, Engramic.Baseline.Platform.ProcessAccount? right) -> bool
+static Engramic.Baseline.Platform.ProcessAccount.operator ==(Engramic.Baseline.Platform.ProcessAccount? left, Engramic.Baseline.Platform.ProcessAccount? right) -> bool
+static Engramic.Baseline.Platform.RegistryValue.FromBinary(System.ReadOnlySpan<byte> bytes) -> Engramic.Baseline.Platform.RegistryValue!
+static Engramic.Baseline.Platform.RegistryValue.FromDWord(uint number) -> Engramic.Baseline.Platform.RegistryValue!
+static Engramic.Baseline.Platform.RegistryValue.FromExpandText(string! text) -> Engramic.Baseline.Platform.RegistryValue!
+static Engramic.Baseline.Platform.RegistryValue.FromMultiText(System.Collections.Generic.IEnumerable<string!>! lines) -> Engramic.Baseline.Platform.RegistryValue!
+static Engramic.Baseline.Platform.RegistryValue.FromOther(System.ReadOnlySpan<byte> bytes) -> Engramic.Baseline.Platform.RegistryValue!
+static Engramic.Baseline.Platform.RegistryValue.FromQWord(ulong number) -> Engramic.Baseline.Platform.RegistryValue!
+static Engramic.Baseline.Platform.RegistryValue.FromText(string! text) -> Engramic.Baseline.Platform.RegistryValue!
 static Engramic.Baseline.Platform.Sid.Administrators.get -> Engramic.Baseline.Platform.Sid!
 static Engramic.Baseline.Platform.Sid.LocalSystem.get -> Engramic.Baseline.Platform.Sid!
 static Engramic.Baseline.Platform.Sid.operator !=(Engramic.Baseline.Platform.Sid? left, Engramic.Baseline.Platform.Sid? right) -> bool

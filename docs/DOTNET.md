@@ -15,13 +15,14 @@ This note covers the layout, the rules the build enforces, and how to build and 
 | `src/Engramic.Baseline.Model` | Contracts: the status files, findings, changesets and config, and how they are written. |
 | `src/Engramic.Baseline.Platform` | The interfaces and records of the primitives: registry, files, processes, tokens and so on. |
 | `src/Engramic.Baseline.Engine` | The check and fix contracts, the runner, the framework rollups, changesets and undo. |
-| `src/Engramic.Baseline.Controls` | The checks, the fixes, and the readers that interpret what the primitives return. |
+| `src/Engramic.Baseline.Controls` | The checks, the fixes, the readers that interpret what the primitives return, and the shipped config. |
 | `src/Engramic.Baseline.Windows` | The Windows primitives, calling Win32 through code that CsWin32 generates from `NativeMethods.txt`. |
 | `src/Engramic.Baseline.Cli` | `baseline.exe`, the command line. |
 | `tests/Engramic.Baseline.*.Tests` | xUnit v3 tests: one project for each library. |
 | `tests/Engramic.Baseline.Invariants.Tests` | Tests of the repository's own rules, described below. |
 | `tests/Engramic.Baseline.Testing` | Fakes and recorded responses that the tests share. |
 | `tests/AotCanary` | Compiles the AOT-clean libraries with Native AOT and calls into each one. |
+| `tools/parity` | Compares the ported checks with the PowerShell module on a device (below). |
 
 Model, Platform, Engine and Controls target `net10.0` and must not depend on Windows, so their tests
 run on Linux too. Windows, the CLI and their tests target `net10.0-windows`. All build output goes
@@ -124,6 +125,12 @@ keeps passing when a new patch ships and moves only when `global.json` does. If 
 files you did not mean to change, check that `dotnet --version` matches `global.json`.
 CsWin32 is still 0.x and pinned to an exact version.
 
+**Config.** The shipped `config/*.json` files are built into `Engramic.Baseline.Controls` (`ShippedConfig`)
+from the repository's config folder, which the PowerShell module also reads. Nothing reads them from
+disk, so they cannot be changed beside the executable, and no file API is needed for them. A check that
+reads another file adds it there as an `EmbeddedResource`. Administrators' overrides, which replace a
+shipped file whole, will come through SecureStore and its trust checks, in front of the shipped copy.
+
 **Text.** Sources are ASCII only (write other characters as escapes, such as `"\u00e9"` in C#),
 user-facing text is British English, and quotes are straight. The Hygiene check below enforces the first.
 
@@ -138,6 +145,12 @@ dotnet test --solution Baseline.slnx -c Release --no-build
 ```
 
 On Linux, use `Baseline.Portable.slnf` in place of `Baseline.slnx`.
+
+A hung test fails the run instead of holding it until CI gives up: once no test has finished for 30 seconds,
+the hang dump extension (`tests/Directory.Build.props`) dumps and stops the test process, and `TestResults/`
+gets the dump and a `_hang.log` that names the tests still running. Tests that wait on work on other threads,
+as the runner's tests do, give up on each wait after 10 seconds and say what they were waiting for, and they
+move a fake clock only once the code under test has started its timer on it.
 
 Publish after a restore of the whole solution, with `--no-restore`: a restore for a single runtime would
 apply that runtime to the referenced libraries too, which their lock files do not list.
@@ -156,6 +169,33 @@ The hygiene check needs a clone that git can read:
 
 ```
 pwsh -NoProfile -File tools/hygiene/Test-Hygiene.ps1
+```
+
+## The audit command
+
+`baseline.exe audit` runs the ported checks on this device, read-only, and prints the findings. With
+`--json findings` or `--json status` it writes findings.json or status.json to standard output instead,
+byte for byte as the file is written (UTF-8 with a byte order mark), to redirect into a file from cmd or
+PowerShell 7.4 and later. It writes no file itself: files go only into the secure data folder, which the
+scheduled audit brings.
+
+```
+baseline.exe audit --id SU-01
+baseline.exe audit --id SU-01 --json status > status.json
+```
+
+## Comparing with the PowerShell module
+
+`tools/parity/Compare-Parity.ps1` runs the same checks in the untouched module, out of process in Windows
+PowerShell 5.1, and in `baseline.exe` on this device, then compares every field of every finding, every
+value of status.json and what the Intune discovery script reports for each. It ignores what differs by
+design (the tool version, times and paths), lists each difference it expects with the reason, and exits
+1 on any other difference. Run it as the account whose audit you want to compare: a standard user, an
+elevated administrator or SYSTEM.
+
+```
+dotnet build Baseline.slnx -c Release
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/parity/Compare-Parity.ps1 -Id SU-01
 ```
 
 ## CI

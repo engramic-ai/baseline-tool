@@ -1,0 +1,27 @@
+<Project>
+  <!--
+    Central package versions. A project names a package without a version; the version is set here once.
+    Every project's packages.lock.json records the exact versions and hashes restored, and CI restores in
+    locked mode. docs/DOTNET.md says how to update a package.
+  -->
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    <!-- Lets a vulnerable transitive package be lifted here without adding it to any project. -->
+    <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
+  </PropertyGroup>
+
+  <ItemGroup Label="Analysers for product code (src/Directory.Build.props)">
+    <PackageVersion Include="Microsoft.CodeAnalysis.BannedApiAnalyzers" Version="5.6.0" />
+    <PackageVersion Include="Microsoft.CodeAnalysis.PublicApiAnalyzers" Version="5.6.0" />
+  </ItemGroup>
+
+  <ItemGroup Label="Product">
+    <!-- Still 0.x, where any release can change the generated code: pinned to exactly this version. -->
+    <PackageVersion Include="Microsoft.Windows.CsWin32" Version="[0.3.335]" />
+    <PackageVersion Include="System.CommandLine" Version="2.0.12" />
+  </ItemGroup>
+
+  <ItemGroup Label="Tests">
+    <PackageVersion Include="xunit.v3" Version="4.0.1" />
+  </ItemGroup>
+</Project>

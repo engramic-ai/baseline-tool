@@ -1,0 +1,3 @@
+#nullable enable
+Engramic.Baseline.Engine.CheckIds
+static Engramic.Baseline.Engine.CheckIds.IsWellFormed(string? id) -> bool

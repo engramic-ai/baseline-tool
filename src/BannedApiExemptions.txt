@@ -1,0 +1,18 @@
+// Files allowed to use an API that BannedSymbols.txt bans. One file per line: its path from the
+// repository root, a semicolon, and why that file needs it. docs/DOTNET.md explains the rules.
+//
+// Only the audited classes that exist to do these things safely belong here:
+//   SecureStore      the data folders: born locked, checked through a handle, written atomically
+//   ProfileReader    reading user profiles by handle, without following links
+//   the registry primitive, with an explicit 64-bit view
+//   the trusted process runner, for the few Windows tools that have no API
+//
+// In a listed file, each use sits between "#pragma warning disable RS0030 // <why>" and
+// "#pragma warning restore RS0030", around as few lines as possible. Adding a file here, or a use to
+// a listed file, needs the maintainer's review. tests/Engramic.Baseline.Invariants.Tests enforces this.
+//
+// The same goes for a sensitive Win32 function in src/Engramic.Baseline.Windows/NativeMethods.txt (one
+// that opens files by path, touches the registry, starts a process and so on): only a listed file may
+// name it, and only inside such a pragma region.
+//
+// No file needs an exemption yet.

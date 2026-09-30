@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    Tests of the repository's own rules, run on Windows and Linux: the banned APIs and their exemptions,
+    and that the solution lists every project. They read the source tree, not the built libraries.
+  -->
+</Project>

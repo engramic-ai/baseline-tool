@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    Contracts: the status files, findings, changesets, undo logs and config, and how they are written.
+    Portable (net10.0) and AOT-clean.
+  -->
+  <PropertyGroup>
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+</Project>

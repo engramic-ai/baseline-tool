@@ -7,3 +7,9 @@
 *.md   text eol=lf
 *.ico  binary
 *.ttf  binary
+*.cs      text eol=crlf
+*.csproj  text eol=crlf
+*.props   text eol=crlf
+*.targets text eol=crlf
+*.slnx    text eol=crlf
+*.slnf    text eol=crlf

@@ -1,0 +1,145 @@
+// APIs that product code (every project under src/) must not call. The build fails with RS0030 and
+// the message after the semicolon. docs/DOTNET.md explains the rules.
+//
+// A few audited classes exist to do these things safely. Only the files they live in may use a banned
+// API: each is named in BannedApiExemptions.txt, and each use sits between a commented
+// "#pragma warning disable RS0030" and "#pragma warning restore RS0030".
+// tests/Engramic.Baseline.Invariants.Tests checks the exemptions, and that every line below names a
+// real API and every overload of what it bans.
+//
+// Format: a documentation comment ID, a semicolon, the message.
+
+// Files and folders. Path-based access follows junctions and symbolic links, and creating a folder by
+// path accepts one that someone else made first. Only SecureStore (the data folders) and ProfileReader
+// (reading user profiles) touch the file system, by handle.
+T:System.IO.File;Files are reached through SecureStore or ProfileReader, by handle: path-based access follows links
+T:System.IO.Directory;Folders are reached through SecureStore or ProfileReader, by handle: creating one by path accepts one someone else made
+T:System.IO.FileSystemInfo;Files are reached through SecureStore or ProfileReader, by handle: path-based access follows links
+T:System.IO.FileInfo;Files are reached through SecureStore or ProfileReader, by handle: path-based access follows links
+T:System.IO.DirectoryInfo;Folders are reached through SecureStore or ProfileReader, by handle: creating one by path accepts one someone else made
+T:System.IO.Enumeration.FileSystemEnumerable`1;Folders are listed through SecureStore or ProfileReader, by handle: a path-based walk follows links
+T:System.IO.Enumeration.FileSystemEnumerator`1;Folders are listed through SecureStore or ProfileReader, by handle: a path-based walk follows links
+M:System.IO.FileStream.#ctor(System.String,System.IO.FileMode);Files are opened through SecureStore or ProfileReader, by handle: opening by path follows links
+M:System.IO.FileStream.#ctor(System.String,System.IO.FileMode,System.IO.FileAccess);Files are opened through SecureStore or ProfileReader, by handle: opening by path follows links
+M:System.IO.FileStream.#ctor(System.String,System.IO.FileMode,System.IO.FileAccess,System.IO.FileShare);Files are opened through SecureStore or ProfileReader, by handle: opening by path follows links
+M:System.IO.FileStream.#ctor(System.String,System.IO.FileMode,System.IO.FileAccess,System.IO.FileShare,System.Int32);Files are opened through SecureStore or ProfileReader, by handle: opening by path follows links
+M:System.IO.FileStream.#ctor(System.String,System.IO.FileMode,System.IO.FileAccess,System.IO.FileShare,System.Int32,System.Boolean);Files are opened through SecureStore or ProfileReader, by handle: opening by path follows links
+M:System.IO.FileStream.#ctor(System.String,System.IO.FileMode,System.IO.FileAccess,System.IO.FileShare,System.Int32,System.IO.FileOptions);Files are opened through SecureStore or ProfileReader, by handle: opening by path follows links
+M:System.IO.FileStream.#ctor(System.String,System.IO.FileStreamOptions);Files are opened through SecureStore or ProfileReader, by handle: opening by path follows links
+M:System.IO.StreamReader.#ctor(System.String);Files are opened through SecureStore or ProfileReader, by handle: opening by path follows links
+M:System.IO.StreamReader.#ctor(System.String,System.Boolean);Files are opened through SecureStore or ProfileReader, by handle: opening by path follows links
+M:System.IO.StreamReader.#ctor(System.String,System.IO.FileStreamOptions);Files are opened through SecureStore or ProfileReader, by handle: opening by path follows links
+M:System.IO.StreamReader.#ctor(System.String,System.Text.Encoding);Files are opened through SecureStore or ProfileReader, by handle: opening by path follows links
+M:System.IO.StreamReader.#ctor(System.String,System.Text.Encoding,System.Boolean);Files are opened through SecureStore or ProfileReader, by handle: opening by path follows links
+M:System.IO.StreamReader.#ctor(System.String,System.Text.Encoding,System.Boolean,System.Int32);Files are opened through SecureStore or ProfileReader, by handle: opening by path follows links
+M:System.IO.StreamReader.#ctor(System.String,System.Text.Encoding,System.Boolean,System.IO.FileStreamOptions);Files are opened through SecureStore or ProfileReader, by handle: opening by path follows links
+M:System.IO.StreamWriter.#ctor(System.String);Files are opened through SecureStore or ProfileReader, by handle: opening by path follows links
+M:System.IO.StreamWriter.#ctor(System.String,System.Boolean);Files are opened through SecureStore or ProfileReader, by handle: opening by path follows links
+M:System.IO.StreamWriter.#ctor(System.String,System.Boolean,System.Text.Encoding);Files are opened through SecureStore or ProfileReader, by handle: opening by path follows links
+M:System.IO.StreamWriter.#ctor(System.String,System.Boolean,System.Text.Encoding,System.Int32);Files are opened through SecureStore or ProfileReader, by handle: opening by path follows links
+M:System.IO.StreamWriter.#ctor(System.String,System.IO.FileStreamOptions);Files are opened through SecureStore or ProfileReader, by handle: opening by path follows links
+M:System.IO.StreamWriter.#ctor(System.String,System.Text.Encoding,System.IO.FileStreamOptions);Files are opened through SecureStore or ProfileReader, by handle: opening by path follows links
+M:System.Diagnostics.FileVersionInfo.GetVersionInfo(System.String);Files are read through SecureStore or ProfileReader, by handle: reading by path follows links
+
+// Temporary files. For SYSTEM the temp folder is C:\Windows\Temp, which other accounts can write to.
+M:System.IO.Path.GetTempPath;Use a SecureStore scratch folder: the temp folder is shared with other accounts
+M:System.IO.Path.GetTempFileName;Use a SecureStore scratch folder: the temp folder is shared with other accounts
+
+// Access control and ownership. Only SecureStore sets a security descriptor, in the call that creates
+// the object, and nothing takes ownership of what a user controls.
+T:System.IO.FileSystemAclExtensions;Only SecureStore sets access control, in the call that creates the folder or file
+M:System.Security.AccessControl.ObjectSecurity.SetOwner(System.Security.Principal.IdentityReference);Nothing takes ownership: a user's earlier handle keeps its rights
+M:System.Threading.ThreadingAclExtensions.SetAccessControl(System.Threading.EventWaitHandle,System.Security.AccessControl.EventWaitHandleSecurity);Create the object with its access control instead (such as MutexAcl.Create)
+M:System.Threading.ThreadingAclExtensions.SetAccessControl(System.Threading.Mutex,System.Security.AccessControl.MutexSecurity);Create the object with its access control instead (such as MutexAcl.Create)
+M:System.Threading.ThreadingAclExtensions.SetAccessControl(System.Threading.Semaphore,System.Security.AccessControl.SemaphoreSecurity);Create the object with its access control instead (such as MutexAcl.Create)
+M:System.IO.Pipes.PipesAclExtensions.SetAccessControl(System.IO.Pipes.PipeStream,System.IO.Pipes.PipeSecurity);Create the pipe with its access control instead
+
+// The registry. Only the registry primitive reads and writes it, with an explicit 64-bit view.
+T:Microsoft.Win32.Registry;Use the registry primitive, which always names its view
+T:Microsoft.Win32.RegistryKey;Use the registry primitive, which always names its view
+
+// WMI. System.Management is not AOT-ready, so only the CIM layer uses it, in its own project.
+N:System.Management;Only the CIM layer uses System.Management
+
+// Processes. Only the trusted process runner starts one: a closed list of tools, resolved from
+// System32 and checked for their signature, never through PATH or a shell.
+M:System.Diagnostics.Process.Start;Use the trusted process runner
+M:System.Diagnostics.Process.Start(System.String);Use the trusted process runner
+M:System.Diagnostics.Process.Start(System.String,System.String);Use the trusted process runner
+M:System.Diagnostics.Process.Start(System.String,System.Collections.Generic.IEnumerable{System.String});Use the trusted process runner
+M:System.Diagnostics.Process.Start(System.Diagnostics.ProcessStartInfo);Use the trusted process runner
+M:System.Diagnostics.Process.Start(System.String,System.String,System.Security.SecureString,System.String);Use the trusted process runner
+M:System.Diagnostics.Process.Start(System.String,System.String,System.String,System.Security.SecureString,System.String);Use the trusted process runner
+T:System.Diagnostics.ProcessStartInfo;Use the trusted process runner
+
+// Environment variables. The user or the parent process sets them, so no decision may depend on one.
+M:System.Environment.GetEnvironmentVariable(System.String);Environment variables are set by whoever starts the process; use a known folder or config
+M:System.Environment.GetEnvironmentVariable(System.String,System.EnvironmentVariableTarget);Environment variables are set by whoever starts the process; use a known folder or config
+M:System.Environment.GetEnvironmentVariables;Environment variables are set by whoever starts the process; use a known folder or config
+M:System.Environment.GetEnvironmentVariables(System.EnvironmentVariableTarget);Environment variables are set by whoever starts the process; use a known folder or config
+M:System.Environment.ExpandEnvironmentVariables(System.String);Environment variables are set by whoever starts the process; use a known folder or config
+
+// The clock. Take a TimeProvider, so tests can set the time.
+P:System.DateTime.Now;Use a TimeProvider
+P:System.DateTime.UtcNow;Use a TimeProvider
+P:System.DateTime.Today;Use a TimeProvider
+P:System.DateTimeOffset.Now;Use a TimeProvider
+P:System.DateTimeOffset.UtcNow;Use a TimeProvider
+
+// Loading code. Nothing is loaded that did not ship with the product; custom checks, if they ever
+// come, will be data, never assemblies. Native code is reached only through CsWin32, never by loading
+// a library or calling a function pointer (tests/Engramic.Baseline.Invariants.Tests, NativeCodeTests).
+M:System.Reflection.Assembly.LoadFrom(System.String);Load nothing from a path
+M:System.Reflection.Assembly.LoadFrom(System.String,System.Byte[],System.Configuration.Assemblies.AssemblyHashAlgorithm);Load nothing from a path
+M:System.Reflection.Assembly.LoadFile(System.String);Load nothing from a path
+M:System.Reflection.Assembly.UnsafeLoadFrom(System.String);Load nothing from a path
+M:System.Runtime.Loader.AssemblyLoadContext.LoadFromAssemblyPath(System.String);Load nothing from a path
+M:System.Runtime.Loader.AssemblyLoadContext.LoadFromNativeImagePath(System.String,System.String);Load nothing from a path
+T:System.Runtime.InteropServices.NativeLibrary;Reach Win32 through the functions CsWin32 generates in Engramic.Baseline.Windows, never by loading a library
+M:System.Runtime.InteropServices.Marshal.GetDelegateForFunctionPointer(System.IntPtr,System.Type);Reach Win32 through the functions CsWin32 generates in Engramic.Baseline.Windows, never through a function pointer
+M:System.Runtime.InteropServices.Marshal.GetDelegateForFunctionPointer``1(System.IntPtr);Reach Win32 through the functions CsWin32 generates in Engramic.Baseline.Windows, never through a function pointer
+
+// JSON. Source-generated only: pass a JsonTypeInfo from a JsonSerializerContext, never options alone.
+// The reflection-based overloads are not AOT-safe and bind to whatever members a type has.
+M:System.Text.Json.JsonSerializer.Deserialize``1(System.IO.Stream,System.Text.Json.JsonSerializerOptions);Pass a JsonTypeInfo from a source-generated JsonSerializerContext
+M:System.Text.Json.JsonSerializer.Deserialize``1(System.ReadOnlySpan{System.Byte},System.Text.Json.JsonSerializerOptions);Pass a JsonTypeInfo from a source-generated JsonSerializerContext
+M:System.Text.Json.JsonSerializer.Deserialize``1(System.ReadOnlySpan{System.Char},System.Text.Json.JsonSerializerOptions);Pass a JsonTypeInfo from a source-generated JsonSerializerContext
+M:System.Text.Json.JsonSerializer.Deserialize``1(System.String,System.Text.Json.JsonSerializerOptions);Pass a JsonTypeInfo from a source-generated JsonSerializerContext
+M:System.Text.Json.JsonSerializer.Deserialize``1(System.Text.Json.JsonDocument,System.Text.Json.JsonSerializerOptions);Pass a JsonTypeInfo from a source-generated JsonSerializerContext
+M:System.Text.Json.JsonSerializer.Deserialize``1(System.Text.Json.JsonElement,System.Text.Json.JsonSerializerOptions);Pass a JsonTypeInfo from a source-generated JsonSerializerContext
+M:System.Text.Json.JsonSerializer.Deserialize``1(System.Text.Json.Nodes.JsonNode,System.Text.Json.JsonSerializerOptions);Pass a JsonTypeInfo from a source-generated JsonSerializerContext
+M:System.Text.Json.JsonSerializer.Deserialize``1(System.Text.Json.Utf8JsonReader@,System.Text.Json.JsonSerializerOptions);Pass a JsonTypeInfo from a source-generated JsonSerializerContext
+M:System.Text.Json.JsonSerializer.DeserializeAsync``1(System.IO.Pipelines.PipeReader,System.Text.Json.JsonSerializerOptions,System.Threading.CancellationToken);Pass a JsonTypeInfo from a source-generated JsonSerializerContext
+M:System.Text.Json.JsonSerializer.DeserializeAsync``1(System.IO.Stream,System.Text.Json.JsonSerializerOptions,System.Threading.CancellationToken);Pass a JsonTypeInfo from a source-generated JsonSerializerContext
+M:System.Text.Json.JsonSerializer.DeserializeAsyncEnumerable``1(System.IO.Pipelines.PipeReader,System.Boolean,System.Text.Json.JsonSerializerOptions,System.Threading.CancellationToken);Pass a JsonTypeInfo from a source-generated JsonSerializerContext
+M:System.Text.Json.JsonSerializer.DeserializeAsyncEnumerable``1(System.IO.Pipelines.PipeReader,System.Text.Json.JsonSerializerOptions,System.Threading.CancellationToken);Pass a JsonTypeInfo from a source-generated JsonSerializerContext
+M:System.Text.Json.JsonSerializer.DeserializeAsyncEnumerable``1(System.IO.Stream,System.Boolean,System.Text.Json.JsonSerializerOptions,System.Threading.CancellationToken);Pass a JsonTypeInfo from a source-generated JsonSerializerContext
+M:System.Text.Json.JsonSerializer.DeserializeAsyncEnumerable``1(System.IO.Stream,System.Text.Json.JsonSerializerOptions,System.Threading.CancellationToken);Pass a JsonTypeInfo from a source-generated JsonSerializerContext
+M:System.Text.Json.JsonSerializer.DeserializeAsync(System.IO.Pipelines.PipeReader,System.Type,System.Text.Json.JsonSerializerOptions,System.Threading.CancellationToken);Pass a JsonTypeInfo from a source-generated JsonSerializerContext
+M:System.Text.Json.JsonSerializer.DeserializeAsync(System.IO.Stream,System.Type,System.Text.Json.JsonSerializerOptions,System.Threading.CancellationToken);Pass a JsonTypeInfo from a source-generated JsonSerializerContext
+M:System.Text.Json.JsonSerializer.Deserialize(System.IO.Stream,System.Type,System.Text.Json.JsonSerializerOptions);Pass a JsonTypeInfo from a source-generated JsonSerializerContext
+M:System.Text.Json.JsonSerializer.Deserialize(System.ReadOnlySpan{System.Byte},System.Type,System.Text.Json.JsonSerializerOptions);Pass a JsonTypeInfo from a source-generated JsonSerializerContext
+M:System.Text.Json.JsonSerializer.Deserialize(System.ReadOnlySpan{System.Char},System.Type,System.Text.Json.JsonSerializerOptions);Pass a JsonTypeInfo from a source-generated JsonSerializerContext
+M:System.Text.Json.JsonSerializer.Deserialize(System.String,System.Type,System.Text.Json.JsonSerializerOptions);Pass a JsonTypeInfo from a source-generated JsonSerializerContext
+M:System.Text.Json.JsonSerializer.Deserialize(System.Text.Json.JsonDocument,System.Type,System.Text.Json.JsonSerializerOptions);Pass a JsonTypeInfo from a source-generated JsonSerializerContext
+M:System.Text.Json.JsonSerializer.Deserialize(System.Text.Json.JsonElement,System.Type,System.Text.Json.JsonSerializerOptions);Pass a JsonTypeInfo from a source-generated JsonSerializerContext
+M:System.Text.Json.JsonSerializer.Deserialize(System.Text.Json.Nodes.JsonNode,System.Type,System.Text.Json.JsonSerializerOptions);Pass a JsonTypeInfo from a source-generated JsonSerializerContext
+M:System.Text.Json.JsonSerializer.Deserialize(System.Text.Json.Utf8JsonReader@,System.Type,System.Text.Json.JsonSerializerOptions);Pass a JsonTypeInfo from a source-generated JsonSerializerContext
+M:System.Text.Json.JsonSerializer.Serialize``1(``0,System.Text.Json.JsonSerializerOptions);Pass a JsonTypeInfo from a source-generated JsonSerializerContext
+M:System.Text.Json.JsonSerializer.Serialize``1(System.IO.Stream,``0,System.Text.Json.JsonSerializerOptions);Pass a JsonTypeInfo from a source-generated JsonSerializerContext
+M:System.Text.Json.JsonSerializer.Serialize``1(System.Text.Json.Utf8JsonWriter,``0,System.Text.Json.JsonSerializerOptions);Pass a JsonTypeInfo from a source-generated JsonSerializerContext
+M:System.Text.Json.JsonSerializer.SerializeAsync``1(System.IO.Pipelines.PipeWriter,``0,System.Text.Json.JsonSerializerOptions,System.Threading.CancellationToken);Pass a JsonTypeInfo from a source-generated JsonSerializerContext
+M:System.Text.Json.JsonSerializer.SerializeAsync``1(System.IO.Stream,``0,System.Text.Json.JsonSerializerOptions,System.Threading.CancellationToken);Pass a JsonTypeInfo from a source-generated JsonSerializerContext
+M:System.Text.Json.JsonSerializer.SerializeAsync(System.IO.Pipelines.PipeWriter,System.Object,System.Type,System.Text.Json.JsonSerializerOptions,System.Threading.CancellationToken);Pass a JsonTypeInfo from a source-generated JsonSerializerContext
+M:System.Text.Json.JsonSerializer.SerializeAsync(System.IO.Stream,System.Object,System.Type,System.Text.Json.JsonSerializerOptions,System.Threading.CancellationToken);Pass a JsonTypeInfo from a source-generated JsonSerializerContext
+M:System.Text.Json.JsonSerializer.Serialize(System.IO.Stream,System.Object,System.Type,System.Text.Json.JsonSerializerOptions);Pass a JsonTypeInfo from a source-generated JsonSerializerContext
+M:System.Text.Json.JsonSerializer.Serialize(System.Object,System.Type,System.Text.Json.JsonSerializerOptions);Pass a JsonTypeInfo from a source-generated JsonSerializerContext
+M:System.Text.Json.JsonSerializer.Serialize(System.Text.Json.Utf8JsonWriter,System.Object,System.Type,System.Text.Json.JsonSerializerOptions);Pass a JsonTypeInfo from a source-generated JsonSerializerContext
+M:System.Text.Json.JsonSerializer.SerializeToDocument``1(``0,System.Text.Json.JsonSerializerOptions);Pass a JsonTypeInfo from a source-generated JsonSerializerContext
+M:System.Text.Json.JsonSerializer.SerializeToDocument(System.Object,System.Type,System.Text.Json.JsonSerializerOptions);Pass a JsonTypeInfo from a source-generated JsonSerializerContext
+M:System.Text.Json.JsonSerializer.SerializeToElement``1(``0,System.Text.Json.JsonSerializerOptions);Pass a JsonTypeInfo from a source-generated JsonSerializerContext
+M:System.Text.Json.JsonSerializer.SerializeToElement(System.Object,System.Type,System.Text.Json.JsonSerializerOptions);Pass a JsonTypeInfo from a source-generated JsonSerializerContext
+M:System.Text.Json.JsonSerializer.SerializeToNode``1(``0,System.Text.Json.JsonSerializerOptions);Pass a JsonTypeInfo from a source-generated JsonSerializerContext
+M:System.Text.Json.JsonSerializer.SerializeToNode(System.Object,System.Type,System.Text.Json.JsonSerializerOptions);Pass a JsonTypeInfo from a source-generated JsonSerializerContext
+M:System.Text.Json.JsonSerializer.SerializeToUtf8Bytes``1(``0,System.Text.Json.JsonSerializerOptions);Pass a JsonTypeInfo from a source-generated JsonSerializerContext
+M:System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(System.Object,System.Type,System.Text.Json.JsonSerializerOptions);Pass a JsonTypeInfo from a source-generated JsonSerializerContext

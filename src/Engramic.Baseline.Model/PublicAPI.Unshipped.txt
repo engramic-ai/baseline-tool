@@ -1,0 +1,5 @@
+#nullable enable
+Engramic.Baseline.Model.Utf8Bom
+static Engramic.Baseline.Model.Utf8Bom.Encoding.get -> System.Text.Encoding!
+static Engramic.Baseline.Model.Utf8Bom.GetBytes(string! text) -> byte[]!
+static Engramic.Baseline.Model.Utf8Bom.Preamble.get -> System.ReadOnlySpan<byte>

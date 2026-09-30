@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    Fakes of the primitives in Engramic.Baseline.Platform, and recorded primitive responses to replay,
+    shared by the test projects. Empty until the first primitive lands.
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Engramic.Baseline.Platform\Engramic.Baseline.Platform.csproj" />
+  </ItemGroup>
+</Project>

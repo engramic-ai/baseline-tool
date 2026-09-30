@@ -1,0 +1,28 @@
+<Project>
+  <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))" />
+
+  <!--
+    Tests and test helpers. They keep the "Default" analysers, since test names read as sentences and
+    tests may use the APIs product code must not (files, processes, the clock) to set up a case.
+  -->
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <!-- Reported only with a documentation file, as the unused-using check needs one. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+
+  <!-- A project named *.Tests is an xUnit v3 test application, run with Microsoft.Testing.Platform (global.json). -->
+  <PropertyGroup Condition="$(MSBuildProjectName.EndsWith('.Tests'))">
+    <OutputType>Exe</OutputType>
+    <IsTestProject>true</IsTestProject>
+    <!-- A test project whose tests all vanished is a mistake, not a pass. -->
+    <TestingPlatformCommandLineArguments>--minimum-expected-tests 1</TestingPlatformCommandLineArguments>
+  </PropertyGroup>
+
+  <ItemGroup Condition="$(MSBuildProjectName.EndsWith('.Tests'))">
+    <PackageReference Include="xunit.v3" />
+    <Using Include="Xunit" />
+    <ProjectReference Include="$(MSBuildThisFileDirectory)Engramic.Baseline.Testing/Engramic.Baseline.Testing.csproj" />
+  </ItemGroup>
+</Project>

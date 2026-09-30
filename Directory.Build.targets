@@ -1,0 +1,60 @@
+<Project>
+  <!--
+    The minimum Windows version of every Windows project, for the platform compatibility analyser
+    (CA1416), which then flags any call to an API that needs a newer Windows without a version check.
+
+    SupportedOSPlatformVersion would normally say this, but net10.0-windows has a TargetPlatformVersion
+    of 7.0 and the SDK refuses a supported version above it (NETSDK1135). A versioned target framework
+    such as net10.0-windows10.0.17763.0 would lift that limit, but it also brings in the Windows Runtime
+    projection, which these libraries must not depend on. So the SDK's attribute is turned off and the
+    same attribute is written here, from BaselineMinimumWindowsVersion in Directory.Build.props.
+  -->
+  <PropertyGroup Condition="'$(TargetPlatformIdentifier)' == 'windows'">
+    <GenerateSupportedOSPlatformAttribute>false</GenerateSupportedOSPlatformAttribute>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(TargetPlatformIdentifier)' == 'windows'">
+    <AssemblyAttribute Include="System.Runtime.Versioning.SupportedOSPlatformAttribute">
+      <_Parameter1>windows$(BaselineMinimumWindowsVersion)</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+
+  <!--
+    Product code (every project under src/) must build with the banned-API analyser, the shared list and
+    the rule at full strength: a project that lost any of them fails here rather than building quietly.
+    - The analyser must be referenced, and the compiler must run analysers: RunAnalyzers=false,
+      RunAnalyzersDuringBuild=false and OptimizeImplicitlyTriggeredBuild all make the SDK skip them
+      (_SkipAnalyzers), which would leave the analyser referenced but silent.
+    - src/BannedSymbols.txt must be the one list: a project that swapped it for a list of its own, or
+      added another BannedSymbols*.txt, fails.
+    - Nothing may turn RS0030 down with NoWarn or WarningsNotAsErrors.
+    Settings this target cannot see, such as ImportDirectoryBuildTargets=false, are left to
+    tests/Engramic.Baseline.Invariants.Tests.
+  -->
+  <PropertyGroup>
+    <_BaselineProjectPath>$([MSBuild]::MakeRelative('$(MSBuildThisFileDirectory)', '$(MSBuildProjectDirectory)').Replace('\', '/'))</_BaselineProjectPath>
+    <_BaselineBannedList>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)src/BannedSymbols.txt'))</_BaselineBannedList>
+  </PropertyGroup>
+
+  <Target Name="_BaselineRequireBannedApiAnalyser"
+          BeforeTargets="CoreCompile"
+          DependsOnTargets="_ComputeSkipAnalyzers"
+          Condition="$(_BaselineProjectPath.StartsWith('src/'))">
+    <ItemGroup>
+      <_BaselineBannedLists Include="@(AdditionalFiles)" Condition="$([System.String]::Copy('%(Filename)').StartsWith('BannedSymbols', StringComparison.OrdinalIgnoreCase))" />
+      <_BaselineSharedBannedList Include="@(_BaselineBannedLists)" Condition="'%(FullPath)' == '$(_BaselineBannedList)'" />
+      <_BaselineOtherBannedLists Include="@(_BaselineBannedLists)" Exclude="@(_BaselineSharedBannedList)" />
+    </ItemGroup>
+
+    <Error Condition="'@(Analyzer->AnyHaveMetadataValue('NuGetPackageId', 'Microsoft.CodeAnalysis.BannedApiAnalyzers'))' != 'true'"
+           Text="$(MSBuildProjectName) is product code but does not run the banned-API analyser (src/Directory.Build.props)." />
+    <Error Condition="'$(_SkipAnalyzers)' == 'true' or '$(RunAnalyzers)' == 'false'"
+           Text="$(MSBuildProjectName) is product code but skips the analysers (RunAnalyzers, RunAnalyzersDuringBuild or OptimizeImplicitlyTriggeredBuild), so the banned-API rule would not run." />
+    <Error Condition="'@(_BaselineSharedBannedList)' == ''"
+           Text="$(MSBuildProjectName) is product code but does not read src/BannedSymbols.txt (src/Directory.Build.props)." />
+    <Error Condition="'@(_BaselineOtherBannedLists)' != ''"
+           Text="$(MSBuildProjectName) reads a banned-API list other than src/BannedSymbols.txt: @(_BaselineOtherBannedLists->'%(Identity)', ', '). Keep one list." />
+    <Error Condition="$(NoWarn.Contains('RS0030')) or $(WarningsNotAsErrors.Contains('RS0030'))"
+           Text="$(MSBuildProjectName) turns the banned-API rule RS0030 down; use an exemption instead (src/BannedApiExemptions.txt)." />
+  </Target>
+</Project>

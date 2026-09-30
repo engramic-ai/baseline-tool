@@ -1,0 +1,6 @@
+// Win32 APIs that CsWin32 generates into Windows.Win32.PInvoke (internal). One name per line.
+// Keep this list to what the code calls: every entry is a native entry point the product can reach.
+// Plain names only, no wildcards. A function that does what a banned API does (files by path, the
+// registry, processes, security descriptors, the environment, loading code) may be used only as
+// src/BannedApiExemptions.txt allows; docs/DOTNET.md explains.
+WTSGetActiveConsoleSessionId

@@ -46,6 +46,23 @@ public static unsafe partial class Native
         return handle;
     }
 
+    /// <summary>
+    /// Replaces the access list of the item a handle is open on, through the handle, as a holder of a handle
+    /// opened with WRITE_DAC can whatever the item's access list says now.
+    /// </summary>
+    /// <returns>0 when it was set, otherwise the Win32 error.</returns>
+    public static int SetDacl(SafeFileHandle handle, string daclSddl)
+    {
+        var descriptor = new System.Security.AccessControl.RawSecurityDescriptor(daclSddl);
+        var acl = new byte[descriptor.DiscretionaryAcl!.BinaryLength];
+        descriptor.DiscretionaryAcl.GetBinaryForm(acl, 0);
+        fixed (byte* dacl = acl)
+        {
+            // SE_FILE_OBJECT, DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION.
+            return (int)SetSecurityInfo(handle, 1, 0x0000_0004 | 0x8000_0000, null, null, dacl, null);
+        }
+    }
+
     public static void SetReparsePoint(SafeFileHandle handle, ReadOnlySpan<byte> buffer)
     {
         fixed (byte* input = buffer)
@@ -94,6 +111,9 @@ public static unsafe partial class Native
     [LibraryImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool DeviceIoControl(SafeFileHandle device, uint code, byte* input, uint inputLength, void* output, uint outputLength, uint* returned, void* overlapped);
+
+    [LibraryImport("advapi32.dll")]
+    private static partial uint SetSecurityInfo(SafeFileHandle handle, int objectType, uint securityInformation, void* owner, void* group, void* dacl, void* sacl);
 
     [LibraryImport("kernel32.dll", EntryPoint = "GetFinalPathNameByHandleW", SetLastError = true)]
     private static partial uint GetFinalPathNameByHandle(SafeFileHandle file, char* path, uint length, uint flags);

@@ -7,7 +7,9 @@ namespace Engramic.Baseline.Testing.Windows;
 /// <summary>The Win32 calls the fixtures need to make links and read handles, and to open a handle in a test.</summary>
 public static unsafe partial class Native
 {
+    public const uint FileListDirectory = 0x0000_0001;
     public const uint FileReadAttributes = 0x0000_0080;
+    public const uint Synchronize = 0x0010_0000;
     public const uint FileWriteData = 0x0000_0002;
     public const uint FileWriteAttributes = 0x0000_0100;
     public const uint ShareAll = 0x0000_0007;
@@ -20,6 +22,20 @@ public static unsafe partial class Native
     public static SafeFileHandle Open(string path, uint access, bool asLink)
     {
         var handle = CreateFile(path, access, ShareAll, IntPtr.Zero, OpenExisting, BackupSemantics | (asLink ? OpenReparsePoint : 0), IntPtr.Zero);
+        if (handle.IsInvalid)
+        {
+            var error = Marshal.GetLastPInvokeError();
+            handle.Dispose();
+            throw new Win32Exception(error, $"Could not open {path}");
+        }
+
+        return handle;
+    }
+
+    /// <summary>Opens a folder or file as itself, sharing only what <paramref name="share"/> says, as a holder of it would.</summary>
+    public static SafeFileHandle OpenWithShare(string path, uint access, uint share)
+    {
+        var handle = CreateFile(path, access, share, IntPtr.Zero, OpenExisting, BackupSemantics | OpenReparsePoint, IntPtr.Zero);
         if (handle.IsInvalid)
         {
             var error = Marshal.GetLastPInvokeError();

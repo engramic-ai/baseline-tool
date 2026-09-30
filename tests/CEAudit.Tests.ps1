@@ -1514,6 +1514,23 @@ Describe 'Intune: status, discovery and compliance rules' {
         (Get-CEComplianceData -DataRoot $root -Installed $true -Elevated $false -NoKick).CEAuditFailedRuns | Should -Be 1
     }
 
+    It 'compliance scripts read JSON as UTF-8, so Windows PowerShell 5.1 reads non-ASCII text in a file without a BOM' {
+        foreach ($file in @('Detect-CECompliance.ps1', 'Discover-CECompliance.ps1', 'Remediate-CECompliance.ps1')) {
+            $ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $script:intune $file), [ref]$null, [ref]$null)
+            $reads = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-Content' }, $true))
+            $reads.Count | Should -BeGreaterThan 0 -Because "$file reads JSON"
+            foreach ($read in $reads) { $read.Extent.Text | Should -Match '-Encoding UTF8\b' -Because "$file line $($read.Extent.StartLineNumber)" }
+        }
+        $root = Join-Path $TestDrive 'utf8-status'
+        New-Item -ItemType Directory -Path $root -Force | Out-Null
+        $name = 'SU-' + [char]0x00E9 + [char]0x00FC + [char]0x4E2D
+        $json = [ordered]@{ SchemaVersion = 1; AuditTime = [datetime]::UtcNow.ToString('o'); toolVersion = "1.0.0-$name"; autoFailCount = 1; autoFails = @($name); checks = [ordered]@{} } | ConvertTo-Json -Depth 4
+        [IO.File]::WriteAllText((Join-Path $root 'status.json'), $json, (New-Object Text.UTF8Encoding($false)))
+        $data = Get-CEComplianceData -DataRoot $root -Installed $true -Elevated $false -NoKick
+        $data.CEToolVersion | Should -BeExactly "1.0.0-$name"
+        $data.CEFailing | Should -BeExactly $name
+    }
+
     It 'never reports compliant when nothing is installed or no audit has run' {
         $data = Get-CEComplianceData -DataRoot (Join-Path $TestDrive 'empty') -Installed $false -Elevated $false -NoKick
         $data.CEAutoFailCount | Should -Be -1
@@ -6944,32 +6961,47 @@ Describe 'MCP inventory never records a credential value' {
 Describe 'Undo log cannot be used to escalate privilege' {
     # A tampered undo log is the one input a rollback trusts, and a rollback often runs elevated.
     # Naming an allow-listed command was once enough; these are the shapes that got through.
-    It 'refuses a registry record outside the keys the tool writes' {
+    It 'refuses a registry record outside the values the tool writes' {
         InModuleScope CEAudit {
             $bad = @(
-                'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon',
-                'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run',
-                'HKLM:\SYSTEM\CurrentControlSet\Services\Foo',
-                'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\sethc.exe',
-                'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\..\..\..\SOFTWARE\Microsoft\Windows\CurrentVersion\Run',
-                'HKLM:\SOFTWARE\Policies\*'
+                @('HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon', 'Userinit'),
+                @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run', 'x'),
+                @('HKLM:\SYSTEM\CurrentControlSet\Services\Foo', 'ImagePath'),
+                @('HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\sethc.exe', 'Debugger'),
+                @('HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\..\..\..\SOFTWARE\Microsoft\Windows\CurrentVersion\Run', 'RunAsPPL'),
+                @('HKLM:\SOFTWARE\Policies\*', 'RunAsPPL'),
+                # Allowed keys, values the tool never writes.
+                @('HKLM:\SYSTEM\CurrentControlSet\Control\Lsa', 'Security Packages'),
+                @('HKLM:\SYSTEM\CurrentControlSet\Control\Lsa', 'Notification Packages'),
+                @('HKLM:\SYSTEM\CurrentControlSet\Control\Lsa', 'Authentication Packages'),
+                @('HKLM:\SOFTWARE\Policies\Google\Chrome', 'ExtensionInstallForcelist'),
+                @('HKLM:\SOFTWARE\Policies\Google\Chrome\ExtensionInstallForcelist', '1'),
+                @('HKLM:\SOFTWARE\Policies\Microsoft\Edge\ExtensionInstallForcelist', '1'),
+                @('HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp', 'InitialProgram'),
+                @('HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\OSConfig', 'Security Packages'),
+                # A listed value under a key the tool does not write.
+                @('HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0', 'RunAsPPL'),
+                @('HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters\Interfaces\a\b', 'NetbiosOptions'),
+                @('HKCU:\Software\Policies\Microsoft\Office\16.0\outlook\Security', 'VBAWarnings'),
+                @('HKLM:\SYSTEM\CurrentControlSet\Control\Lsa', ''),
+                @('HKLM:\SYSTEM\CurrentControlSet\Control\Lsa', '*')
             )
-            foreach ($p in $bad) { Test-CEUndoRegistryPathAllowed $p | Should -Not -BeNullOrEmpty -Because $p }
+            foreach ($b in $bad) { Test-CEUndoRegistryValueAllowed -Path $b[0] -Name $b[1] | Should -Not -BeNullOrEmpty -Because "$($b[0])\$($b[1])" }
         }
     }
 
-    It 'still allows every key the shipped remediations write' {
+    It 'still allows the values the shipped remediations write' {
         InModuleScope CEAudit {
             $ok = @(
-                'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa',
-                'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp',
-                'HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters\Interfaces\{1234}',
-                'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection',
-                'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit',
-                'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU',
-                'HKCU:\Software\Policies\Microsoft\Office\16.0\Word\Security'
+                @('HKLM:\SYSTEM\CurrentControlSet\Control\Lsa', 'RunAsPPL'),
+                @('HKLM:\SYSTEM\CurrentControlSet\Control\Lsa', 'LsaCfgFlags'),
+                @('HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp', 'UserAuthentication'),
+                @('HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters\Interfaces\Tcpip_{1234}', 'NetbiosOptions'),
+                @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit', 'ProcessCreationIncludeCmdLine_Enabled'),
+                @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU', 'NoAutoUpdate'),
+                @('HKCU:\Software\Policies\Microsoft\Office\16.0\Word\Security', 'VBAWarnings')
             )
-            foreach ($p in $ok) { Test-CEUndoRegistryPathAllowed $p | Should -BeNullOrEmpty -Because $p }
+            foreach ($o in $ok) { Test-CEUndoRegistryValueAllowed -Path $o[0] -Name $o[1] | Should -BeNullOrEmpty -Because "$($o[0])\$($o[1])" }
         }
     }
 
@@ -6983,6 +7015,8 @@ Describe 'Undo log cannot be used to escalate privilege' {
                 "Set-Service -Name 'Foo' -BinaryPathName 'C:\payload.exe'",
                 "Set-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run' -Name x -Value 'payload'",
                 "Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Foo' -Name ImagePath -Value 'payload'",
+                "Set-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Control\SecureBoot' -Name 'Other' -Value 0",
+                "Set-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Control\SecureBoot' -Value 0",
                 "Write-Warning 'x' > C:\Windows\System32\payload.ps1"
             )
             foreach ($c in $bad) { Test-CEUndoCommandAllowed $c | Should -Not -BeNullOrEmpty -Because $c }
@@ -7012,6 +7046,147 @@ Describe 'Undo log cannot be used to escalate privilege' {
             Should -Invoke New-ItemProperty -Times 0
             ($warnings -join ' ') | Should -Match 'Refusing to restore'
         }
+    }
+}
+
+Describe 'Undo round trip through the registry allow-list' {
+    # Every value a remediation writes must be one a rollback will restore; a value missing from the
+    # allow-list makes the fix silently one-way (AppUpdate-Unblock was, until this was tested).
+    BeforeAll {
+        # OfficeMacros-Harden refuses to run as someone other than the signed-in user.
+        Set-TestDevice -Kind Insecure -ContextOverride @{ RunningAs = 'TESTPC\paul' }
+        # The value each conditional fix looks for before it writes.
+        $global:CETestUndoCurrent = @{
+            NoAutoUpdate = 1; ConsentPromptBehaviorAdmin = 0; ConsentPromptBehaviorUser = 2; MaximumPINLength = 6
+            DisableAntiSpyware = 1; DisableAntiVirus = 1; SafeBrowsingProtectionLevel = 0; DownloadRestrictions = 0
+            UpdateDefault = 0; 'Update{56EB18F8-B008-4CBD-B6D2-8C97FE7E9062}' = 0; 'Update{8A69D345-D564-463C-AFF1-A69D9E530F96}' = 0
+            DisableAppUpdate = 1; AutoDownload = 2; enableautomaticupdates = 0; UpdatesEnabled = 'False'
+        }
+        $global:CETestUndoWrites = New-Object System.Collections.ArrayList
+        Mock -ModuleName CEAudit Get-CERegistryValue { if ($global:CETestUndoCurrent.ContainsKey($Name)) { $global:CETestUndoCurrent[$Name] } else { $Default } }
+        Mock -ModuleName CEAudit Get-CERegistryState { @{ Path = $Path; Name = $Name; Existed = $true; Value = 12345; Kind = 'DWord' } }
+        Mock -ModuleName CEAudit Test-CERegistryValueExists { $true }
+        Mock -ModuleName CEAudit Test-Path { $true }
+        Mock -ModuleName CEAudit Test-CEIsAdmin { $false }
+        Mock -ModuleName CEAudit New-ItemProperty { [void]$global:CETestUndoWrites.Add("$LiteralPath|$Name") }
+        Mock -ModuleName CEAudit Remove-ItemProperty { [void]$global:CETestUndoWrites.Add("$LiteralPath|$Name") }
+        Mock -ModuleName CEAudit Get-ChildItem { [pscustomobject]@{ PSChildName = 'Tcpip_{0A1B2C3D-0000-1111-2222-333344445555}' } }
+        Mock -ModuleName CEAudit Get-Service { [pscustomobject]@{ StartType = 'Manual' } }
+        Mock -ModuleName CEAudit Get-MpPreference {
+            [pscustomobject]@{ DisableRealtimeMonitoring = $false; DisableBehaviorMonitoring = $false; DisableIOAVProtection = $false; DisableScriptScanning = $false }
+        }
+        Mock -ModuleName CEAudit Confirm-SecureBootUEFI { $true }
+        Mock -ModuleName CEAudit Start-ScheduledTask { }
+
+        function global:Invoke-TestUndoRoundTrip {
+            <# Applies one fix against the mocked registry, then rolls it back from a written undo log. #>
+            param([string]$Id, [hashtable]$Params = @{})
+            $global:CETestUndoWrites.Clear()
+            $r = Invoke-CERemediation -Id $Id -Parameters $Params
+            $records = @($r.Undo | Where-Object { $_.Type -eq 'Registry' })
+            $commands = @($r.Undo | Where-Object { $_.Type -eq 'Command' -and $_.Command -match '^Set-ItemProperty ' })
+            $applied = @($global:CETestUndoWrites)
+            $refusedCommands = @(foreach ($c in $commands) {
+                    InModuleScope CEAudit -Parameters @{ C = $c.Command } { param($C) Test-CEUndoCommandAllowed $C }
+                })
+            $log = Join-Path $TestDrive "undo-$Id-$(@($Params.Values) -join '-').json"
+            [pscustomobject]@{
+                ComputerName = $env:COMPUTERNAME
+                Items        = @([pscustomobject]@{ ItemId = 'C001'; Undo = $records })
+            } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $log -Encoding UTF8
+            $global:CETestUndoWrites.Clear()
+            $warnings = @()
+            Restore-CEUndoLog -Path $log -Confirm:$false -WarningVariable warnings -WarningAction SilentlyContinue
+            [pscustomobject]@{
+                Status          = $r.Status
+                Message         = $r.Message
+                Records         = @($records | ForEach-Object { "$($_.Path)|$($_.Name)" })
+                Applied         = $applied
+                Restored        = @($global:CETestUndoWrites)
+                Commands        = $commands.Count
+                RefusedCommands = @($refusedCommands | Where-Object { $_ })
+                Warnings        = @($warnings)
+            }
+        }
+
+        $script:UndoCases = @(
+            @{ Id = 'RDP-RequireNLA' }, @{ Id = 'RDP-Disable' }, @{ Id = 'Autorun-Disable' },
+            @{ Id = 'Lock-InactivityTimeout'; Params = @{ Seconds = 600 } }, @{ Id = 'HelloPin-MinLength'; Params = @{ Length = 8 } },
+            @{ Id = 'RemoteAssistance-Disable' }, @{ Id = 'WindowsUpdate-EnableAuto' }, @{ Id = 'WindowsUpdate-Resume' },
+            @{ Id = 'WindowsUpdate-RemoveQualityDeferral' }, @{ Id = 'UAC-Harden' }, @{ Id = 'Defender-EnableRealtime' },
+            @{ Id = 'SmartScreen-Enforce'; Params = @{ Target = 'Windows' } }, @{ Id = 'SmartScreen-Enforce'; Params = @{ Target = 'Edge' } },
+            @{ Id = 'SmartScreen-Enforce'; Params = @{ Target = 'Chrome' } },
+            @{ Id = 'OfficeMacros-Harden'; Params = @{ App = 'word' } }, @{ Id = 'OfficeMacros-Harden'; Params = @{ App = 'excel' } },
+            @{ Id = 'OfficeMacros-Harden'; Params = @{ App = 'powerpoint' } },
+            @{ Id = 'VBS-EnableHVCI' }, @{ Id = 'VBS-EnableCredentialGuard' }, @{ Id = 'Lsa-EnablePPL' },
+            @{ Id = 'Hardening-WDigestOff' }, @{ Id = 'Hardening-NtlmV2Only' }, @{ Id = 'Hardening-LlmnrOff' },
+            @{ Id = 'Hardening-RestrictAnonymous' }, @{ Id = 'Hardening-SmbClientSigning' }, @{ Id = 'Hardening-CommandLineLogging' },
+            @{ Id = 'Hardening-NetbiosOff' }, @{ Id = 'SecureBoot-Deploy2023Certs' }
+        )
+        foreach ($app in @('Edge', 'Chrome', 'Firefox', 'Store', 'Office', 'OfficeC2R')) { $script:UndoCases += @{ Id = 'AppUpdate-Unblock'; Params = @{ App = $app } } }
+    }
+
+    AfterAll {
+        Remove-Item -Path 'function:global:Invoke-TestUndoRoundTrip' -ErrorAction SilentlyContinue
+        Remove-Variable -Name CETestUndoCurrent, CETestUndoWrites -Scope Global -ErrorAction SilentlyContinue
+    }
+
+    It 'covers every remediation that writes the registry' {
+        $writers = @(Get-CERemediation | Where-Object { $_.Apply.ToString() -match 'RegistryValueTracked|ItemProperty' } | ForEach-Object { $_.Id })
+        $writers.Count | Should -BeGreaterThan 20
+        $tested = @($script:UndoCases | ForEach-Object { $_.Id })
+        foreach ($w in $writers) { $tested | Should -Contain $w -Because "$w writes the registry, so its undo must be round-tripped here" }
+    }
+
+    It 'restores every value each fix writes, with nothing refused' {
+        foreach ($c in $script:UndoCases) {
+            $p = if ($c.ContainsKey('Params')) { $c.Params } else { @{} }
+            $label = "$($c.Id) $(@($p.Values) -join ',')"
+            $rt = Invoke-TestUndoRoundTrip -Id $c.Id -Params $p
+            $rt.Status | Should -Be 'Applied' -Because "$label should apply against the mocked registry ($($rt.Message))"
+            ($rt.Records.Count + $rt.Commands) | Should -BeGreaterThan 0 -Because "$label should record undo data"
+            # SecureBoot-Deploy2023Certs writes directly and records a command instead.
+            if (-not $rt.Commands) { ($rt.Records | Sort-Object) -join ';' | Should -Be (($rt.Applied | Sort-Object) -join ';') -Because "$label records one undo entry per value it writes" }
+            $rt.Warnings.Count | Should -Be 0 -Because "$label undo must not be refused: $($rt.Warnings -join '; ')"
+            ($rt.Restored | Sort-Object) -join ';' | Should -Be (($rt.Records | Sort-Object) -join ';') -Because "$label restores every value it wrote"
+            $rt.RefusedCommands.Count | Should -Be 0 -Because "$label undo command must be allowed: $($rt.RefusedCommands -join '; ')"
+        }
+    }
+
+    It 'restores AppUpdate-Unblock, whose undo used to be refused' {
+        $rt = Invoke-TestUndoRoundTrip -Id 'AppUpdate-Unblock' -Params @{ App = 'Chrome' }
+        ($rt.Records | Sort-Object) -join ';' | Should -Be 'HKLM:\SOFTWARE\Policies\Google\Update|Update{8A69D345-D564-463C-AFF1-A69D9E530F96};HKLM:\SOFTWARE\Policies\Google\Update|UpdateDefault' -Because 'both Chrome update policies were blocked'
+        $rt.Warnings.Count | Should -Be 0
+        ($rt.Restored | Sort-Object) -join ';' | Should -Be (($rt.Records | Sort-Object) -join ';')
+        $rt = Invoke-TestUndoRoundTrip -Id 'AppUpdate-Unblock' -Params @{ App = 'OfficeC2R' }
+        $rt.Warnings.Count | Should -Be 0
+        $rt.Restored -join ';' | Should -Be 'HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\Configuration|UpdatesEnabled'
+    }
+
+    It 'refuses an unlisted value under an allowed key and still restores the listed ones' {
+        $log = Join-Path $TestDrive 'undo-unlisted.json'
+        $rec = { param($Path, $Name, $Existed, $Kind, $Value) [pscustomobject]@{ Type = 'Registry'; Path = $Path; Name = $Name; Existed = $Existed; Kind = $Kind; Value = $Value; KeyCreated = $false } }
+        [pscustomobject]@{
+            ComputerName = $env:COMPUTERNAME
+            Items        = @([pscustomobject]@{
+                    ItemId = 'C001'
+                    Undo   = @(
+                        (& $rec 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' 'RunAsPPL' $true 'DWord' 0),
+                        (& $rec 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' 'Security Packages' $true 'MultiString' @('kerberos', 'evil')),
+                        (& $rec 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' 'Notification Packages' $false $null $null),
+                        (& $rec 'HKLM:\SOFTWARE\Policies\Google\Chrome\ExtensionInstallForcelist' '1' $true 'String' 'abcdefghijklmnop;https://evil/update.xml'),
+                        (& $rec 'HKLM:\SOFTWARE\Policies\Microsoft\Edge\ExtensionInstallForcelist' '1' $true 'String' 'abcdefghijklmnop;https://evil/update.xml'),
+                        (& $rec 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' 'ExtensionInstallForcelist' $true 'String' 'x')
+                    )
+                })
+        } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $log -Encoding UTF8
+        $global:CETestUndoWrites.Clear()
+        $warnings = @()
+        Restore-CEUndoLog -Path $log -Confirm:$false -WarningVariable warnings -WarningAction SilentlyContinue
+        @($global:CETestUndoWrites) -join ';' | Should -Be 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa|RunAsPPL'
+        @($warnings).Count | Should -Be 5
+        ($warnings -join ' ') | Should -Match 'Security Packages'
+        ($warnings -join ' ') | Should -Match 'Notification Packages'
     }
 }
 
@@ -7046,6 +7221,205 @@ Describe 'Undo command safety (Test-CEUndoCommandAllowed)' {
                 "Set-NetFirewallProfile -Name (iex 'evil')"
             )
             foreach ($c in $bad) { Test-CEUndoCommandAllowed $c | Should -Not -BeNullOrEmpty -Because $c }
+        }
+    }
+}
+
+Describe 'Native tool scratch and backup files stay out of shared folders' {
+    # secedit and auditpol write files that are read back as administrator or SYSTEM. In the shared temp
+    # folder (C:\Windows\Temp for SYSTEM) or next to an undo log a standard user can write, those files
+    # could be predicted, planted or swapped. Elevated, they go in GUID-named folders locked at birth in
+    # the data folder, and the rollback refuses an audit policy backup that is not in one.
+    BeforeAll {
+        # Elevated on Windows, with a birth descriptor a standard user can apply (no owner) and every
+        # folder judged trusted: what the locked-folder path does is covered by its own Describe. Text,
+        # so that it is compiled and dot-sourced inside the module (InModuleScope), not in this file.
+        $global:CETestScratchElevated = @'
+param($Root)
+$script:CEDataRootOverride = $Root
+Mock Test-CEIsWindows { $true }
+Mock Test-CEIsAdmin { $true }
+Mock Get-CELockedFolderProblem { '' }
+Mock New-CELockedDirectorySecurity { $s = New-Object Security.AccessControl.DirectorySecurity; $s.SetSecurityDescriptorSddlForm('D:(A;OICI;FA;;;WD)'); $s }
+'@
+    }
+    AfterAll { Remove-Variable -Scope Global -Name CETestScratchElevated, CETestScratchSeen -ErrorAction SilentlyContinue }
+
+    It 'elevated, makes a new GUID-named folder locked at birth in the data folder' {
+        $root = Join-Path $TestDrive 'scr-new'
+        InModuleScope CEAudit -Parameters @{ Root = $root; Setup = $global:CETestScratchElevated } {
+            param($Root, $Setup)
+            . ([scriptblock]::Create($Setup)) $Root
+            try {
+                $first = New-CEScratchFolder -Area 'scratch'
+                $first | Should -Match ('^' + [regex]::Escape((Join-Path $Root 'scratch')) + '\\[0-9a-f]{32}$')
+                Test-Path -LiteralPath $first -PathType Container | Should -BeTrue
+                @(Get-ChildItem -LiteralPath $first -Force).Count | Should -Be 0
+                # The data folder, the area folder and the GUID folder were each made with the locked descriptor.
+                Should -Invoke New-CELockedDirectorySecurity -Times 3 -Exactly
+                $second = New-CEScratchFolder -Area 'scratch'
+                $second | Should -Not -Be $first
+                Should -Invoke New-CELockedDirectorySecurity -Times 4 -Exactly
+            }
+            finally { $script:CEDataRootOverride = $null }
+        }
+    }
+
+    It 'not elevated, makes a new GUID-named folder in the user temp folder' {
+        InModuleScope CEAudit {
+            Mock Test-CEIsAdmin { $false }
+            Mock New-CELockedDirectorySecurity { throw 'not expected' }
+            $d = New-CEScratchFolder -Area 'scratch'
+            try {
+                (Split-Path -Parent $d).TrimEnd('\') | Should -Be ([IO.Path]::GetTempPath()).TrimEnd('\')
+                Split-Path -Leaf $d | Should -Match '^ceaudit-[0-9a-f]{32}$'
+                Test-Path -LiteralPath $d -PathType Container | Should -BeTrue
+            }
+            finally { if ($d -and (Test-Path -LiteralPath $d)) { [IO.Directory]::Delete($d, $false) } }
+        }
+    }
+
+    It 'elevated, the secedit export goes in a locked scratch folder that is deleted afterwards' {
+        $root = Join-Path $TestDrive 'scr-export'
+        InModuleScope CEAudit -Parameters @{ Root = $root; Setup = $global:CETestScratchElevated } {
+            param($Root, $Setup)
+            . ([scriptblock]::Create($Setup)) $Root
+            try {
+                $global:CETestScratchSeen = @()
+                Mock Invoke-CENative {
+                    $global:CETestScratchSeen += $ArgumentList[2]
+                    Set-Content -LiteralPath $ArgumentList[2] -Value @('[System Access]', 'PasswordComplexity = 1')
+                    [pscustomobject]@{ ExitCode = 0; Output = @() }
+                }
+                $policy = Get-CESecurityPolicy
+                $policy['PasswordComplexity'] | Should -Be '1'
+                $inf = $global:CETestScratchSeen[0]
+                $inf | Should -Match ('^' + [regex]::Escape((Join-Path $Root 'scratch')) + '\\[0-9a-f]{32}\\secpol\.inf$')
+                Test-Path -LiteralPath (Split-Path -Parent $inf) | Should -BeFalse -Because 'the scratch folder is deleted once read'
+            }
+            finally { $script:CEDataRootOverride = $null }
+        }
+    }
+
+    It 'elevated, the secedit /configure INF and database go in a locked scratch folder that is deleted afterwards' {
+        $root = Join-Path $TestDrive 'scr-configure'
+        InModuleScope CEAudit -Parameters @{ Root = $root; Setup = $global:CETestScratchElevated } {
+            param($Root, $Setup)
+            . ([scriptblock]::Create($Setup)) $Root
+            try {
+                $global:CETestScratchSeen = @()
+                Mock Invoke-CENative {
+                    $global:CETestScratchSeen += [pscustomobject]@{ Db = $ArgumentList[2]; Cfg = $ArgumentList[4]; CfgExists = (Test-Path -LiteralPath $ArgumentList[4]) }
+                    Set-Content -LiteralPath $ArgumentList[2] -Value 'db'
+                    [pscustomobject]@{ ExitCode = 0; Output = @() }
+                }
+                # The module-level tripwire mocks Set-CESecurityPolicyValue; call the real function.
+                $real = Get-Command -Name Set-CESecurityPolicyValue -CommandType Function
+                & $real -Name 'PasswordComplexity' -Value 0
+                $seen = $global:CETestScratchSeen[0]
+                $seen.CfgExists | Should -BeTrue
+                $dir = Split-Path -Parent $seen.Cfg
+                $dir | Should -Match ('^' + [regex]::Escape((Join-Path $Root 'scratch')) + '\\[0-9a-f]{32}$')
+                Split-Path -Parent $seen.Db | Should -Be $dir
+                Test-Path -LiteralPath $dir | Should -BeFalse -Because 'the scratch folder is deleted afterwards'
+            }
+            finally { $script:CEDataRootOverride = $null }
+        }
+    }
+
+    It 'elevated, AuditPolicy-Set writes its backup in a locked GUID folder in the data folder, not next to the undo log' {
+        $root = Join-Path $TestDrive 'scr-auditpol'
+        $undoDir = Join-Path $TestDrive 'scr-auditpol-undo'
+        New-Item -ItemType Directory -Path $undoDir | Out-Null
+        InModuleScope CEAudit -Parameters @{ Root = $root; UndoDir = $undoDir; Setup = $global:CETestScratchElevated } {
+            param($Root, $UndoDir, $Setup)
+            . ([scriptblock]::Create($Setup)) $Root
+            try {
+                Mock Get-CEDeviceContext { New-TestContext }
+                Mock Invoke-CENative {
+                    if ($ArgumentList[0] -eq '/backup') { Set-Content -LiteralPath ($ArgumentList[1] -replace '^/file:', '') -Value 'Machine Name,Policy Target' }
+                    [pscustomobject]@{ ExitCode = 0; Output = @() }
+                }
+                $r = Invoke-CERemediation -Id 'AuditPolicy-Set' -Parameters @{ Subcategories = @('0cce922b-69ae-11d9-bed3-505054503030|Success') } -UndoDirectory $UndoDir -Confirm:$false
+                $r.Status | Should -Be 'Applied' -Because $r.Message
+                $cmd = [string](@($r.Undo | Where-Object { $_.Type -eq 'Command' })[0].Command)
+                $cmd -match "^auditpol\.exe /restore /file:'(.+)'$" | Should -BeTrue -Because $cmd
+                $backup = $Matches[1]
+                $backup | Should -Match ('^' + [regex]::Escape((Join-Path $Root 'backups')) + '\\[0-9a-f]{32}\\auditpol-backup-\d{8}-\d{6}\.csv$')
+                Test-Path -LiteralPath $backup | Should -BeTrue
+                @(Get-ChildItem -LiteralPath $UndoDir -Force).Count | Should -Be 0 -Because 'nothing is written next to the undo log'
+                # The generated undo command passes the rollback's checks when its folder is trusted.
+                Mock Get-CEDataPathProblem { }
+                Test-CEUndoCommandAllowed $cmd | Should -BeNullOrEmpty
+            }
+            finally { $script:CEDataRootOverride = $null }
+        }
+    }
+
+    It 'an elevated rollback refuses a planted or swapped audit policy backup, and restores a trusted one' {
+        $trusted = Join-Path $TestDrive 'bk-trusted'
+        $planted = Join-Path $TestDrive 'bk-planted'
+        foreach ($d in $trusted, $planted) { New-Item -ItemType Directory -Path $d | Out-Null }
+        $files = [ordered]@{
+            C001 = Join-Path $planted 'auditpol-backup-20260101-000000.csv'   # planted in a folder a standard user can write
+            C002 = Join-Path $trusted 'linked.csv'                            # swapped for a link
+            C003 = Join-Path $trusted 'swapped.csv'                           # swapped for a file a standard user owns
+            C004 = Join-Path $trusted 'auditpol-backup-20260101-000001.csv'   # the real one
+        }
+        foreach ($f in $files.Values) { Set-Content -LiteralPath $f -Value 'Machine Name,Policy Target' }
+        $log = Join-Path $trusted 'undo.json'
+        [pscustomobject]@{
+            ComputerName = $env:COMPUTERNAME
+            Items        = @($files.Keys | ForEach-Object {
+                    [pscustomobject]@{ ItemId = $_; Undo = @([pscustomobject]@{ Type = 'Command'; Description = 'Restore previous audit policy'; Command = "auditpol.exe /restore /file:'$($files[$_])'" }) }
+                })
+        } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $log -Encoding UTF8
+        InModuleScope CEAudit -Parameters @{ Log = $log; Good = $files.C004; Planted = $planted } {
+            param($Log, $Good, $Planted)
+            Mock Test-CEIsAdmin { $true }
+            Mock Test-CEIsWindows { $true }
+            Mock Test-CEDataLink { $Path -like '*linked.csv' }
+            Mock Get-CEPathAclProblem {
+                # Only the folder is writable: the planted file itself looks trusted, so the refusal must come from the folder test.
+                if ($Path.TrimEnd('\') -like '*\bk-planted') { return "$Path is writable by S-1-5-21-1-2-3-1001" }
+                if ($Path -like '*swapped.csv') { return "$Path is owned by S-1-5-21-1-2-3-1001" }
+            }
+            Mock Write-Host { }
+            Mock auditpol.exe { }
+            $warnings = @()
+            Restore-CEUndoLog -Path $Log -Confirm:$false -WarningVariable warnings -WarningAction SilentlyContinue
+            Should -Invoke auditpol.exe -Times 1 -Exactly
+            Should -Invoke auditpol.exe -Times 1 -Exactly -ParameterFilter { ($args -join ' ') -eq "/restore /file:$Good" }
+            $refused = @($warnings | Where-Object { "$_" -match 'Refusing to run undo command.*planted or swapped' })
+            $refused.Count | Should -Be 3 -Because ($warnings -join "`n")
+            $c001 = @($refused | Where-Object { "$_" -match 'C001' })
+            $c001.Count | Should -Be 1 -Because ($warnings -join "`n")
+            "$($c001[0])" | Should -Match ([regex]::Escape("$Planted is writable by"))
+            ($refused -join ' ') | Should -Match 'linked\.csv is a link'
+            ($refused -join ' ') | Should -Match 'swapped\.csv is owned by'
+        }
+    }
+
+    It 'allows only the generated auditpol /restore form, with a full local path when elevated' {
+        InModuleScope CEAudit {
+            Mock Test-CEIsAdmin { $true }
+            Mock Get-CEDataPathProblem { }
+            $bad = @(
+                'auditpol.exe /set /subcategory:{0cce922b-69ae-11d9-bed3-505054503030} /success:disable',
+                'auditpol.exe /clear /y',
+                'auditpol /remove /allusers',
+                'auditpol.exe /restore /file:$env:TEMP\x.csv',
+                "auditpol.exe /restore /file:'relative.csv'",
+                "auditpol.exe /restore /file:'\\server\share\x.csv'",
+                "auditpol.exe /restore /file:'C:\ProgramData\EngramicBaseline\backups\..\..\x.csv'",
+                "auditpol.exe /restore /file:'C:\a.csv' /file:'C:\b.csv'"
+            )
+            foreach ($c in $bad) { Test-CEUndoCommandAllowed $c | Should -Not -BeNullOrEmpty -Because $c }
+            Test-CEUndoCommandAllowed "auditpol.exe /restore /file:'C:\ProgramData\EngramicBaseline\backups\0123abcd\auditpol-backup-20260101-000000.csv'" | Should -BeNullOrEmpty
+            # A standard user's rollback keeps the shape rule but not the path rule: it only affects that user.
+            Mock Test-CEIsAdmin { $false }
+            Test-CEUndoCommandAllowed "auditpol.exe /restore /file:'relative.csv'" | Should -BeNullOrEmpty
+            Test-CEUndoCommandAllowed 'auditpol.exe /clear /y' | Should -Not -BeNullOrEmpty
         }
     }
 }

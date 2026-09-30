@@ -43,9 +43,9 @@ try {
     Import-Module (Join-Path $installPath 'src\CEAudit\CEAudit.psd1') -Force
     $cfg = (Get-CEConfig).'auto-remediation'
     if ($cfg -and $cfg.enabled -and @($cfg.remediationIds).Count) {
-        $status = Get-Content -LiteralPath (Join-Path (Get-CEDataRoot) 'status.json') -Raw | ConvertFrom-Json
+        $status = Get-Content -LiteralPath (Join-Path (Get-CEDataRoot) 'status.json') -Raw -Encoding UTF8 | ConvertFrom-Json
         $csPath = Join-Path $status.ReportFolder 'changeset.json'
-        $cs = Get-Content -LiteralPath $csPath -Raw | ConvertFrom-Json
+        $cs = Get-Content -LiteralPath $csPath -Raw -Encoding UTF8 | ConvertFrom-Json
         $allowed = @($cfg.remediationIds)
         $items = @($cs.Items | Where-Object { $allowed -contains $_.RemediationId -and $_.Risk -ne 'High' })
         if ($items.Count) {
@@ -61,7 +61,7 @@ catch {
     exit 1
 }
 
-$s = Get-Content -LiteralPath (Join-Path $env:ProgramData 'EngramicBaseline\status.json') -Raw | ConvertFrom-Json
+$s = Get-Content -LiteralPath (Join-Path $env:ProgramData 'EngramicBaseline\status.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 $props = @($s.checks.PSObject.Properties)
 $attention = @($props | Where-Object { @('Fail', 'Warn', 'Error') -contains [string]$_.Value.status }).Count
 $review = @($props | Where-Object { [string]$_.Value.status -eq 'Manual' }).Count

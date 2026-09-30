@@ -68,8 +68,8 @@ internal static class StatusMutations
             "the byte order mark is removed",
             RemoveByteOrderMark,
             "The file does not start with the UTF-8 byte order mark",
-            ReadersSee: true,
-            "The scripts read status.json without naming an encoding, so Windows PowerShell 5.1 reads a file without the mark in the ANSI code page, and the probe's toolVersion, 1.0.0-caf\u00e9, reaches both of them garbled."),
+            ReadersSee: false,
+            "The scripts read status.json with Get-Content -Encoding UTF8, which reads a file the same with or without the mark, so only the golden test guards it. Baseline still writes the mark, for any other reader on Windows PowerShell 5.1."),
     ];
 
     /// <summary>Gets a change by its name.</summary>

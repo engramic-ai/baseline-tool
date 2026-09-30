@@ -43,7 +43,9 @@ function Get-CESecurityPolicy {
     #>
     [CmdletBinding()]
     param()
-    $tmp = Join-Path ([IO.Path]::GetTempPath()) ("ceaudit-secpol-{0}.inf" -f ([guid]::NewGuid().ToString('N')))
+    # A locked folder in the data folder when elevated, not the shared temp folder (New-CEScratchFolder).
+    $dir = New-CEScratchFolder -Area 'scratch'
+    $tmp = Join-Path $dir 'secpol.inf'
     try {
         $null = Invoke-CENative -FilePath 'secedit.exe' -ArgumentList @('/export', '/cfg', $tmp, '/areas', 'SECURITYPOLICY', '/quiet')
         if (-not (Test-Path $tmp)) { throw 'secedit export produced no file' }
@@ -54,7 +56,7 @@ function Get-CESecurityPolicy {
         return $policy
     }
     finally {
-        Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+        try { Remove-CEDataTree -Path $dir | Out-Null } catch { Write-Warning "Could not remove the scratch folder $dir ($($_.Exception.Message))." }
     }
 }
 

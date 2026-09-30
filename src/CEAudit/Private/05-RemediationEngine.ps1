@@ -28,46 +28,68 @@ $script:CEUndoAllowedCommands = @(
     'net', 'net.exe', 'auditpol', 'auditpol.exe', 'wevtutil', 'wevtutil.exe'
 )
 
-# Registry keys the shipped remediations write, and therefore the only keys an undo record may
+# Registry values the shipped remediations write, and therefore the only values an undo record may
 # touch. Naming a command is not enough on its own: without this, a tampered log could restore a
 # "previous value" into Winlogon\Userinit, a Run key or a service ImagePath and get code execution
-# as whoever runs the rollback. A prefix matches the key itself or anything beneath it.
-$script:CEUndoAllowedRegistryPaths = @(
-    'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer',
-    'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System',
-    'HKLM:\SOFTWARE\Microsoft\WindowsUpdate\UX\Settings',
-    'HKLM:\SOFTWARE\Policies\Google\Chrome',
-    'HKLM:\SOFTWARE\Policies\Microsoft\Edge',
-    'HKLM:\SOFTWARE\Policies\Microsoft\PassportForWork\PINComplexity',
-    'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender',
-    'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient',
-    'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer',
-    'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System',
-    'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate',
-    'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard',
-    'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa',
-    'HKLM:\SYSTEM\CurrentControlSet\Control\Remote Assistance',
-    'HKLM:\SYSTEM\CurrentControlSet\Control\SecureBoot',
-    'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\WDigest',
-    'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server',
-    'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters',
-    'HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters',
-    'HKCU:\Software\Policies\Microsoft\Office'
+# as whoever runs the rollback. A whole key is not narrow enough either: Lsa also holds
+# "Security Packages" and "Notification Packages" (DLLs loaded into LSASS), and the browser policy
+# keys hold ExtensionInstallForcelist. So each entry is one exact key (or, for keys named at run
+# time, an anchored pattern) with the exact value names written under it. Keep this in step with
+# Remediations\*.ps1; the tests round-trip every remediation that writes the registry through it.
+$script:CEUndoAllowedRegistryValues = @(
+    @{ Path = 'HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\Configuration'; Names = @('UpdatesEnabled') },
+    @{ Path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer'; Names = @('NoDriveTypeAutoRun', 'NoAutorun') },
+    @{ Path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+       Names = @('InactivityTimeoutSecs', 'EnableLUA', 'ConsentPromptBehaviorAdmin', 'ConsentPromptBehaviorUser', 'PromptOnSecureDesktop') },
+    @{ Path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit'; Names = @('ProcessCreationIncludeCmdLine_Enabled') },
+    @{ Path = 'HKLM:\SOFTWARE\Microsoft\WindowsUpdate\UX\Settings'
+       Names = @('PauseUpdatesExpiryTime', 'PauseUpdatesStartTime', 'PauseQualityUpdatesStartTime', 'PauseQualityUpdatesEndTime', 'PauseFeatureUpdatesStartTime', 'PauseFeatureUpdatesEndTime') },
+    @{ Path = 'HKLM:\SOFTWARE\Policies\Google\Chrome'; Names = @('SafeBrowsingProtectionLevel', 'DownloadRestrictions') },
+    @{ Path = 'HKLM:\SOFTWARE\Policies\Google\Update'; Names = @('UpdateDefault', 'Update{8A69D345-D564-463C-AFF1-A69D9E530F96}') },
+    @{ Path = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge'
+       Names = @('SmartScreenEnabled', 'SmartScreenPuaEnabled', 'PreventSmartScreenPromptOverride', 'PreventSmartScreenPromptOverrideForFiles') },
+    @{ Path = 'HKLM:\SOFTWARE\Policies\Microsoft\EdgeUpdate'; Names = @('UpdateDefault', 'Update{56EB18F8-B008-4CBD-B6D2-8C97FE7E9062}') },
+    @{ Path = 'HKLM:\SOFTWARE\Policies\Microsoft\office\16.0\common\officeupdate'; Names = @('enableautomaticupdates') },
+    @{ Path = 'HKLM:\SOFTWARE\Policies\Microsoft\PassportForWork\PINComplexity'; Names = @('MinimumPINLength', 'MaximumPINLength') },
+    @{ Path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender'; Names = @('DisableAntiSpyware', 'DisableAntiVirus') },
+    @{ Path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient'; Names = @('EnableMulticast') },
+    @{ Path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer'; Names = @('NoAutoplayfornonVolume') },
+    @{ Path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging'; Names = @('EnableScriptBlockLogging') },
+    @{ Path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'; Names = @('EnableSmartScreen', 'ShellSmartScreenLevel') },
+    @{ Path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate'; Names = @('DeferQualityUpdatesPeriodInDays') },
+    @{ Path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'; Names = @('NoAutoUpdate', 'AUOptions') },
+    @{ Path = 'HKLM:\SOFTWARE\Policies\Microsoft\WindowsStore'; Names = @('AutoDownload') },
+    @{ Path = 'HKLM:\SOFTWARE\Policies\Mozilla\Firefox'; Names = @('DisableAppUpdate') },
+    @{ Path = 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard'; Names = @('EnableVirtualizationBasedSecurity', 'RequirePlatformSecurityFeatures') },
+    @{ Path = 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity'; Names = @('Enabled') },
+    @{ Path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa'
+       Names = @('RunAsPPL', 'LsaCfgFlags', 'NoLMHash', 'LmCompatibilityLevel', 'RestrictAnonymous', 'RestrictAnonymousSAM') },
+    @{ Path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Remote Assistance'; Names = @('fAllowToGetHelp') },
+    @{ Path = 'HKLM:\SYSTEM\CurrentControlSet\Control\SecureBoot'; Names = @('AvailableUpdates') },
+    @{ Path = 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\WDigest'; Names = @('UseLogonCredential') },
+    @{ Path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server'; Names = @('fDenyTSConnections') },
+    @{ Path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'; Names = @('UserAuthentication') },
+    @{ Path = 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters'; Names = @('RequireSecuritySignature') },
+    # One subkey per network adapter, named at run time (Tcpip_{GUID}).
+    @{ Pattern = '^HKLM:\\SYSTEM\\CurrentControlSet\\Services\\NetBT\\Parameters\\Interfaces\\[A-Za-z0-9_{}-]+$'; Names = @('NetbiosOptions') },
+    @{ Pattern = '^HKCU:\\Software\\Policies\\Microsoft\\Office\\16\.0\\(word|excel|powerpoint)\\Security$'; Names = @('blockcontentexecutionfrominternet', 'VBAWarnings') }
 )
 $script:CEUndoAllowedRegistryKinds = @('String', 'ExpandString', 'Binary', 'DWord', 'MultiString', 'QWord', 'BinaryBase64')
 
-function Test-CEUndoRegistryPathAllowed {
-    <# Returns $null if an undo record may write this key, otherwise the reason it was refused. #>
-    param([string]$Path)
+function Test-CEUndoRegistryValueAllowed {
+    <# Returns $null if an undo record may write this value, otherwise the reason it was refused. #>
+    param([string]$Path, [string]$Name)
     if (-not $Path) { return 'the record has no registry path' }
-    # Reject anything that could walk out of an allowed prefix, or that the provider would expand.
+    if (-not $Name) { return "the record for '$Path' has no value name" }
+    # Reject anything that could walk out of an allowed key, or that the provider would expand.
     if ($Path -match '\.\.|\*|\?|/') { return "registry path '$Path' contains a wildcard or a relative segment" }
     $norm = $Path.TrimEnd('\')
-    foreach ($allowed in $script:CEUndoAllowedRegistryPaths) {
-        if ($norm -eq $allowed) { return $null }
-        if ($norm.StartsWith($allowed + '\', [StringComparison]::OrdinalIgnoreCase)) { return $null }
+    foreach ($allowed in $script:CEUndoAllowedRegistryValues) {
+        $keyMatches = if ($allowed.ContainsKey('Pattern')) { $norm -match $allowed.Pattern } else { $norm -eq $allowed.Path }
+        # Registry names are case-insensitive, and so are -eq, -match and -contains.
+        if ($keyMatches -and ($allowed.Names -contains $Name)) { return $null }
     }
-    return "registry path '$Path' is outside the keys this tool changes"
+    return "registry value '$Path\$Name' is not one this tool changes"
 }
 
 function Test-CEUndoCommandAllowed {
@@ -109,7 +131,7 @@ function Test-CEUndoCommandArgument {
     <#
         Argument rules for the allow-listed commands that can escalate. net can add an
         administrator, Set-Service can repoint a service binary, and Set-ItemProperty can write
-        any key, so each is held to the shape the shipped remediations actually generate.
+        any value, so each is held to the shape the shipped remediations actually generate.
     #>
     param([System.Management.Automation.Language.CommandAst]$Command, [string]$Name)
     $elements = @($Command.CommandElements)
@@ -136,17 +158,51 @@ function Test-CEUndoCommandArgument {
             return $null
         }
         '^Set-ItemProperty$' {
+            $keyPath = $null; $valueName = $null
             for ($i = 0; $i -lt $elements.Count; $i++) {
                 $e = $elements[$i]
-                if ($e -is [System.Management.Automation.Language.CommandParameterAst] -and $e.ParameterName -match '^(LiteralPath|Path)$') {
+                if ($e -is [System.Management.Automation.Language.CommandParameterAst] -and $e.ParameterName -match '^(LiteralPath|Path|Name)$') {
                     $value = if ($e.Argument) { [string]$e.Argument.Extent.Text } else { (& $text ($i + 1)) }
-                    return (Test-CEUndoRegistryPathAllowed ([string]$value).Trim("'" + '"'))
+                    $value = ([string]$value).Trim("'" + '"')
+                    if ($e.ParameterName -eq 'Name') { $valueName = $value } else { $keyPath = $value }
                 }
             }
-            return 'Set-ItemProperty in an undo command must name the key it writes'
+            if (-not $keyPath -or -not $valueName) { return 'Set-ItemProperty in an undo command must name the key and value it writes' }
+            return (Test-CEUndoRegistryValueAllowed -Path $keyPath -Name $valueName)
+        }
+        '^auditpol(\.exe)?$' {
+            # 'auditpol /restore /file:<backup>' is the only form generated, with the path as a literal.
+            $file = if ($elements.Count -eq 3 -and $elements[2] -is [System.Management.Automation.Language.StringConstantExpressionAst]) { [string]$elements[2].Value } else { '' }
+            if ((& $text 1) -ne '/restore' -or $file -notmatch '^/file:(.+)$') { return "only 'auditpol /restore /file:<backup>' is allowed in an undo command" }
+            return (Get-CEAuditPolicyBackupProblem -Path $Matches[1])
         }
         default { return $null }
     }
+}
+
+function Get-CEAuditPolicyBackupProblem {
+    <#
+        $null when an elevated rollback may hand this auditpol backup to auditpol /restore, otherwise
+        the reason it may not. auditpol applies whatever policy the file holds, so a backup a standard
+        user planted, or swapped in after the change, could switch security auditing off. When elevated
+        the backup must be a full local path, and both it and its folder must pass the data-path trust
+        test (Get-CEDataPathProblem: not a link, administrator-owned, no non-administrator write, delete,
+        permission or owner right). AuditPolicy-Set writes it into a locked folder in the data folder
+        for that reason. A standard user's rollback only affects what they can change anyway.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][string]$Path)
+    if (-not (Test-CEIsAdmin)) { return $null }
+    if ($Path -notmatch '^[A-Za-z]:\\' -or $Path -match '[*?]|(^|[\\/])\.\.?([\\/]|$)') {
+        return "the audit policy backup '$Path' is not a full local path"
+    }
+    $problems = @(Get-CEDataPathProblem -Path (Split-Path -Parent $Path)) + @(Get-CEDataPathProblem -Path $Path)
+    if ($problems.Count) {
+        return ("the audit policy backup '$Path' is not in a folder only administrators can change, so it may have been " +
+                "planted or swapped: $($problems -join '; '). Restore the audit policy by hand if needed")
+    }
+    return $null
 }
 
 function Register-CERemediation {
@@ -400,7 +456,7 @@ function Restore-CEUndoLog {
         foreach ($r in $records) {
             if ($r.Type -eq 'Registry') {
                 $target = "$($r.Path)\$($r.Name)"
-                $refused = Test-CEUndoRegistryPathAllowed ([string]$r.Path)
+                $refused = Test-CEUndoRegistryValueAllowed -Path ([string]$r.Path) -Name ([string]$r.Name)
                 if (-not $refused -and $r.Existed -and ($script:CEUndoAllowedRegistryKinds -notcontains [string]$r.Kind)) {
                     $refused = "value kind '$($r.Kind)' is not one this tool writes"
                 }

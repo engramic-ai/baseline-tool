@@ -76,7 +76,7 @@ function Get-CEAuditFailureRun {
     $run = [ordered]@{ FailedRuns = [long]0; FailingHours = [long]0 }
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $run }
     $record = $null
-    try { $record = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json } catch { $record = $null }
+    try { $record = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $record = $null }
     $runs = [long]0
     $raw = if ($record -and $record.PSObject.Properties['FailedRuns']) { [string]$record.FailedRuns } else { '' }
     if (-not [long]::TryParse($raw, [ref]$runs) -or $runs -lt 1) { $runs = 1 }
@@ -145,7 +145,7 @@ function Get-CEComplianceData {
     }
     $trusted = -not ($Elevated -and (Get-CEStatusTrustProblem -DataRoot $DataRoot))
     if ($trusted -and (Test-Path -LiteralPath $statusPath)) {
-        try { $status = Get-Content -LiteralPath $statusPath -Raw | ConvertFrom-Json } catch { $status = $null }
+        try { $status = Get-Content -LiteralPath $statusPath -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $status = $null }
     }
 
     # Failed runs since the last successful audit, from last-error.json (the trust check above covers

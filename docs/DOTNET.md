@@ -295,6 +295,15 @@ path: with `FILE_FLAG_OPEN_REPARSE_POINT`, so a link at its name is opened as it
 a folder, not a reparse point, owned by SYSTEM, Administrators or TrustedInstaller. Its access list is not judged:
 standard users may create folders in it, by design.
 
+It is held with `FILE_READ_ATTRIBUTES`, `READ_CONTROL` and `SYNCHRONIZE` alone: enough to read its attributes, owner
+and final path, and all that opening or creating the data folder relative to it, or renaming an item into it, needs
+of its handle. Standard users may write to ProgramData, so Windows honours their refusal to share it: one who opens
+it to list it, sharing nothing, stops every later open that would read, write or delete it until they let go. A
+handle with none of those rights is left out of sharing checks, so they cannot stop the store opening it. Such a
+handle does not stop ProgramData being renamed; the data folder held in it does, since Windows refuses to rename a
+folder while anything in it is open, and each held folder's final path is checked. Renaming ProgramData needs an
+administrator in any case.
+
 **Everything below it by handle.** Every other item is opened with `NtCreateFile`, by one plain name, relative to
 the handle of the folder it is in (`RootDirectory`), and with `FILE_OPEN_REPARSE_POINT`: no path is parsed, so no
 link on the way can redirect it, a link at the name is opened as the link, and the file system itself refuses
@@ -302,6 +311,10 @@ link on the way can redirect it, a link at the name is opened as the link, and t
 ignores a handle that may only read attributes or permissions), so none can be renamed, replaced or deleted while
 held, and the paths the store gives, such as a scratch folder's for a tool's command line, keep naming the folders
 that were checked. Each held folder's final path is checked too. Spike 1, below, records why.
+
+Standard users may read `config`, and so may hold it open to list it without sharing. Windows ignores a refusal to
+share reading from someone who may not write to what they hold, so that does not stop the store opening `config`.
+That was seen on build 26200; the Security suite checks it on each build it runs on.
 
 **Born locked.** A folder is made by `NtCreateFile` with `FILE_CREATE` and its security descriptor in the same
 call, relative to its parent's handle, and the handle that call returns is the one held: there is no moment when
@@ -323,6 +336,9 @@ listed, re-owned or repaired: a handle its maker kept still works, which is why 
 - Windows refuses to rename a folder while any file in it is open, so whoever made an untrusted folder can stop it
   being moved by holding a file in it open. The store tries six times over about three seconds, by its clock, then
   fails with a message and makes nothing in its place. That stops the set-up, and nothing untrusted is used.
+- A rename opens the folder it renames into, to add the name, so a standard user who holds ProgramData open without
+  sharing it stops a move aside the same way, and the message names ProgramData. That too stops the set-up, and
+  nothing untrusted is used.
 
 **Trust rules** (`DataFolderTrust` in Platform, as the module's `Get-CEDataPathProblem` and the Intune
 scripts judge): an item is trusted when it is not a reparse point and not stored online only; is owned by
@@ -388,7 +404,10 @@ or open each by its path without `FILE_SHARE_DELETE`, hold the handles, and conf
 `GetFinalPathNameByHandleW`.
 
 **Decision: both, each where it is strong.** ProgramData, the anchor, is opened by its path and confirmed by its
-final path, as before. Everything below it is opened by relative `NtCreateFile`, one plain name at a time, with
+final path, as before, and held with `FILE_READ_ATTRIBUTES`, `READ_CONTROL` and `SYNCHRONIZE` alone, which sharing
+checks ignore, so that a standard user who may write to it cannot keep the store out by holding it open without
+sharing. The relative opens and renames need no access on its handle, and the data folder held in it keeps it from
+being renamed. Everything below it is opened by relative `NtCreateFile`, one plain name at a time, with
 `FILE_OPEN_REPARSE_POINT`, and renamed by `NtSetInformationFile` relative to a held folder; folders stay held
 without `FILE_SHARE_DELETE`, so that the paths given to tools keep naming them, and are confirmed by their final
 paths. `OBJ_DONT_REPARSE` is not used: with one name at a time there is no folder on the way for it to guard, and a
@@ -420,7 +439,11 @@ program and from `PathWalkingTests`, which run wherever the tests run:
 | `FILE_OPEN_NO_RECALL` beside `FILE_DIRECTORY_FILE` | `STATUS_INVALID_PARAMETER`, so it is given for files only |
 | `NtSetInformationFile` rename with a folder's handle as `RootDirectory` | Renamed into that folder |
 | `SetFileInformationByHandle` rename with a `RootDirectory` | `ERROR_INVALID_PARAMETER` (87) |
+| Relative open, `FILE_CREATE` and rename, through a folder's handle that has only `FILE_READ_ATTRIBUTES`, `READ_CONTROL` and `SYNCHRONIZE` | Done: the folder's handle needs no access |
+| A folder held open to list it with no sharing, by an account that may write to it | A later open to list it: `ERROR_SHARING_VIOLATION` (32); one with only `FILE_READ_ATTRIBUTES`, `READ_CONTROL` and `SYNCHRONIZE`: opened; a rename into it: `STATUS_SHARING_VIOLATION` (0xC0000043) |
+| The same, by an account that may only read it | Its refusal to share reading is ignored: a later open to list it succeeds |
 | Renaming a folder held without `FILE_SHARE_DELETE` | `ERROR_SHARING_VIOLATION` (32) |
+| Renaming a folder held only with `FILE_READ_ATTRIBUTES`, `READ_CONTROL` and `SYNCHRONIZE` | Renamed: such a handle is left out of sharing checks |
 | Renaming a folder with a file open in it, shared for deletion or not | `ERROR_ACCESS_DENIED` (5) |
 | A child that denies this account everything, opened for `DELETE` and `FILE_READ_ATTRIBUTES` without `SYNCHRONIZE` | Opened, through its parent's rights; renamed and deleted through that handle |
 | The same child opened with `READ_CONTROL` or `SYNCHRONIZE` | `STATUS_ACCESS_DENIED` |
@@ -430,7 +453,9 @@ program and from `PathWalkingTests`, which run wherever the tests run:
 **Still to run on builds 14393, 17763 and 19045**, by running `PathWalkingTests` and the Security suite on lab
 machines of those builds: that relative `NtCreateFile` with `FILE_OPEN_REPARSE_POINT`, and `FILE_CREATE` with a
 security descriptor, behave as above; that `NtSetInformationFile` renames relative to a folder's handle; that a
-hostile child opens through its parent's rights; and which of `FileDispositionInformationEx`'s POSIX semantics
+hostile child opens through its parent's rights; that a holder who may only read a folder cannot refuse to share
+reading it (`PathWalkingTests`, and the attacker holding `config` in the Security suite), since on a build where
+it does not hold a standard user can stop the store opening `config`; and which of `FileDispositionInformationEx`'s POSIX semantics
 (1709) and read-only override (1809) each build takes, since the store falls back to the older deletion where they
 are missing (`ClassicDelete` in `SecureStoreHooks` tests that way on any build). `OBJ_DONT_REPARSE` is reported,
 not relied on: `PathWalkingTests` accepts `STATUS_REPARSE_POINT_ENCOUNTERED` or `STATUS_INVALID_PARAMETER` for it,

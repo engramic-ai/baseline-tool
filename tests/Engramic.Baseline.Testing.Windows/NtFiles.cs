@@ -17,12 +17,14 @@ public static unsafe partial class NtFiles
     public const uint ObjectNameInvalid = 0xC000_0033;
     public const uint ObjectNameNotFound = 0xC000_0034;
     public const uint ObjectNameCollision = 0xC000_0035;
+    public const uint SharingViolation = 0xC000_0043;
     public const uint ReparsePointEncountered = 0xC000_050B;
 
     /// <summary>OBJ_DONT_REPARSE: fail on any reparse point met while the name is parsed.</summary>
     public const uint DontReparse = 0x0000_1000;
 
     public const uint ListDirectory = 0x0000_0001;
+    public const uint Traverse = 0x0000_0020;
     public const uint ReadAttributes = 0x0000_0080;
     public const uint Delete = 0x0001_0000;
     public const uint ReadControl = 0x0002_0000;
@@ -30,6 +32,7 @@ public static unsafe partial class NtFiles
 
     public const uint ShareAll = 0x0000_0007;
     public const uint ShareReadWrite = 0x0000_0003;
+    public const uint ShareNone = 0x0000_0000;
 
     public const uint OpenIt = 1;
     public const uint CreateIt = 2;

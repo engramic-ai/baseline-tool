@@ -22,7 +22,9 @@ namespace Engramic.Baseline.Windows;
 /// <para>
 /// ProgramData (from the known-folder API, and on the drive Windows is installed on) is the one folder
 /// opened by its path: as itself, never through a link at its own name, and its final path must be the
-/// path that was opened, so no folder on the way is a link. Everything below it is opened one name at a
+/// path that was opened, so no folder on the way is a link. It is held with the right to read its
+/// attributes and permissions alone, which sharing checks ignore, so that a standard user holding it open
+/// cannot stop the store opening it. Everything below it is opened one name at a
 /// time, relative to the handle of the folder it is in, and as itself: no path is parsed, so no link on the
 /// way can be followed, and a link at the name is opened as the link. Folders are held without
 /// FILE_SHARE_DELETE, so they cannot be renamed or replaced while held and the paths the store gives keep
@@ -73,6 +75,14 @@ public sealed class SecureStore : ISecureStore
 
     /// <summary>What a held folder is opened with: to list it, pass through it, and read its attributes and security.</summary>
     private const uint FolderRights = FileListDirectory | FileTraverse | FileReadAttributes | ReadControl | Synchronize;
+
+    /// <summary>
+    /// What ProgramData is held with: to read its attributes, final path and owner, and nothing more. Opening
+    /// the data folder in it and renaming an item into it take no access on its handle. A handle that may not
+    /// read, write or delete is left out of sharing checks, so a standard user, who may write to ProgramData
+    /// and so has a refusal to share it honoured, cannot stop the store opening it by holding it open.
+    /// </summary>
+    private const uint ProgramDataRights = FileReadAttributes | ReadControl | Synchronize;
 
     /// <summary>What a file is read with.</summary>
     private const uint ReadRights = FileReadData | FileReadEa | FileReadAttributes | ReadControl | Synchronize;
@@ -404,15 +414,17 @@ public sealed class SecureStore : ISecureStore
     }
 
     /// <summary>
-    /// Opens a folder by its path as itself, never through a link at its own name, and so that it cannot be
-    /// renamed, replaced or deleted while the handle is held: ProgramData, the one folder opened by path.
+    /// Opens a folder by its path as itself, never through a link at its own name, with only the rights to
+    /// judge it (<see cref="ProgramDataRights"/>): ProgramData, the one folder opened by path. Such a handle
+    /// does not stop ProgramData being renamed; the data folder held in it does, since Windows refuses to
+    /// rename a folder while anything in it is open, and the final path of each folder held is checked.
     /// </summary>
     private static SafeFileHandle OpenByPath(string path, string what)
     {
-#pragma warning disable RS0030 // SecureStore: opens ProgramData by path as itself (OPEN_REPARSE_POINT) and without FILE_SHARE_DELETE, so it cannot be renamed or deleted while held; its final path is checked next
+#pragma warning disable RS0030 // SecureStore: opens ProgramData by path as itself (OPEN_REPARSE_POINT), for its attributes, owner and final path alone, which sharing checks ignore, so no one holding it open can keep the store out; its final path is checked next
         var folder = PInvoke.CreateFile(
             path,
-            FolderRights,
+            ProgramDataRights,
             ShareReadWrite,
             null,
             FILE_CREATION_DISPOSITION.OPEN_EXISTING,
@@ -860,8 +872,14 @@ public sealed class SecureStore : ISecureStore
             if (!IsTransient(error) || attempt >= Attempts)
             {
                 var what = aside is null ? "opened to move it aside" : $"moved aside to {aside}";
+
+                // A rename opens the folder it renames into, to add the name, and so waits on anyone who holds
+                // that folder open without sharing it.
+                var who = aside is not null && (WIN32_ERROR)error == WIN32_ERROR.ERROR_SHARING_VIOLATION
+                    ? $"Another process may hold {_programDataPath} open without sharing it"
+                    : "Another process may have it, or something in it, open";
                 throw new SecureStoreException(FileHandles.Failure(
-                    $"The untrusted {path} could not be {what} ({reason.TrimEnd('.')}), so nothing was made in its place. Another process may have it, or something in it, open",
+                    $"The untrusted {path} could not be {what} ({reason.TrimEnd('.')}), so nothing was made in its place. {who}",
                     error).Message);
             }
 

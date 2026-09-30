@@ -123,6 +123,98 @@ public sealed class PathWalkingTests : IDisposable
     }
 
     [Fact]
+    public void A_folder_s_handle_needs_no_access_to_open_create_or_rename_relative_to_it()
+    {
+        var parent = _tree.Folder("parent");
+        _tree.Folder(@"parent\existing");
+        _tree.Folder(@"parent\item");
+        using var folder = Native.Open(parent, NtFiles.ReadAttributes | NtFiles.ReadControl | NtFiles.Synchronize, asLink: true);
+        const uint Listing = NtFiles.ListDirectory | NtFiles.ReadAttributes | NtFiles.Synchronize;
+        const uint AsFolder = NtFiles.DirectoryFile | NtFiles.SynchronousIo | NtFiles.OpenReparsePoint;
+
+        var opened = NtFiles.Open(folder, "existing", Listing, NtFiles.ShareReadWrite, NtFiles.OpenIt, AsFolder, 0, out var existing);
+        var created = NtFiles.Open(folder, "created", Listing, NtFiles.ShareReadWrite, NtFiles.CreateIt, AsFolder, 0, out var made);
+        existing?.Dispose();
+        made?.Dispose();
+        Assert.Equal(NtFiles.Success, opened);
+        Assert.Equal(NtFiles.Success, created);
+        Assert.Equal(NtFiles.Success, NtFiles.Open(folder, "item", NtFiles.Delete | NtFiles.ReadAttributes, NtFiles.ShareAll, NtFiles.OpenIt, NtFiles.OpenReparsePoint, 0, out var item));
+        using (item)
+        {
+            Assert.Equal(NtFiles.Success, NtFiles.Rename(item!, folder, "renamed"));
+        }
+
+        Assert.Equal(["created", "existing", "renamed"], DataFolderFixture.Names(parent));
+    }
+
+    [Fact]
+    public void A_holder_who_may_write_to_a_folder_can_refuse_to_share_it_but_not_with_a_handle_that_reads_only_attributes_and_permissions()
+    {
+        var held = _tree.Folder("held");
+        var other = _tree.Folder("other");
+        _tree.Folder(@"other\item");
+        const uint AttributesAndPermissions = NtFiles.ReadAttributes | NtFiles.ReadControl | NtFiles.Synchronize;
+
+        using (Native.OpenWithShare(held, NtFiles.ListDirectory | NtFiles.Synchronize, NtFiles.ShareNone))
+        {
+            // ERROR_SHARING_VIOLATION for an open that lists it; a handle that may not read, write or delete it is
+            // left out of sharing checks. A rename into it opens it to add the name, and so is refused too.
+            Assert.Equal(32, Native.TryOpen(held, NtFiles.ListDirectory | NtFiles.Traverse | AttributesAndPermissions, NtFiles.ShareReadWrite));
+            Assert.Equal(0, Native.TryOpen(held, AttributesAndPermissions, NtFiles.ShareReadWrite));
+            using var target = Native.OpenWithShare(held, AttributesAndPermissions, NtFiles.ShareReadWrite);
+            using var from = Native.Open(other, AttributesAndPermissions, asLink: true);
+            Assert.Equal(NtFiles.Success, NtFiles.Open(from, "item", NtFiles.Delete | NtFiles.ReadAttributes, NtFiles.ShareAll, NtFiles.OpenIt, NtFiles.OpenReparsePoint, 0, out var item));
+            using (item)
+            {
+                Assert.Equal(NtFiles.SharingViolation, NtFiles.Rename(item!, target, "item"));
+            }
+        }
+
+        Assert.Equal(0, Native.TryOpen(held, NtFiles.ListDirectory | NtFiles.Synchronize, NtFiles.ShareReadWrite));
+    }
+
+    [Fact]
+    public void A_holder_who_may_only_read_a_folder_cannot_refuse_to_share_reading_it()
+    {
+        var folder = _tree.Folder("readable", $"D:P(A;OICI;0x1200a9;;;{Elevation.CurrentUser})");
+        try
+        {
+            using (Native.OpenWithShare(folder, NtFiles.ListDirectory | NtFiles.Synchronize, NtFiles.ShareNone))
+            {
+                // Windows ignores the refusal of a holder who may not write to what they hold: the rule that lets
+                // standard users, who may read the config folder, hold it open without stopping the store.
+                Assert.True(
+                    Native.TryOpen(folder, NtFiles.ListDirectory | NtFiles.Traverse | NtFiles.ReadAttributes | NtFiles.ReadControl | NtFiles.Synchronize, NtFiles.ShareReadWrite) == 0,
+                    $"The read-only-holder rule did not hold on Windows {Environment.OSVersion.Version}: a holder who may only read {folder} held it open without sharing, and an open that lists it was refused.");
+            }
+        }
+        finally
+        {
+            Acls.Reset(folder, TempTree.TreeAccess);
+        }
+    }
+
+    [Fact]
+    public void A_folder_held_only_for_its_attributes_and_permissions_can_be_renamed_but_not_with_a_folder_in_it_held()
+    {
+        var parent = _tree.Folder("parent");
+        var child = _tree.Folder(@"parent\child");
+
+        using (Native.OpenWithShare(parent, NtFiles.ReadAttributes | NtFiles.ReadControl | NtFiles.Synchronize, NtFiles.ShareReadWrite))
+        {
+            using (Native.OpenWithShare(child, NtFiles.ListDirectory | NtFiles.Synchronize, NtFiles.ShareReadWrite))
+            {
+                // ERROR_ACCESS_DENIED: Windows refuses to rename a folder while anything in it is open.
+                Assert.Equal(5, NtFiles.MoveByPath(parent, parent + "-moved"));
+            }
+
+            Assert.Equal(0, NtFiles.MoveByPath(parent, parent + "-moved"));
+        }
+
+        Assert.Equal(0, NtFiles.MoveByPath(parent + "-moved", parent));
+    }
+
+    [Fact]
     public void A_folder_held_without_FILE_SHARE_DELETE_cannot_be_renamed()
     {
         var held = _tree.Folder("held");

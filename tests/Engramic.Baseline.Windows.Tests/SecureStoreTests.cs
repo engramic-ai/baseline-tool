@@ -89,12 +89,37 @@ public sealed class SecureStoreTests : IDisposable
     {
         using (_fixture.Open())
         {
-            Assert.Throws<IOException>(() => Directory.Move(_fixture.DataFolder, _fixture.DataFolder + "-moved"));
-            Assert.Throws<IOException>(() => Directory.Move(_fixture.ProgramData, _fixture.ProgramData + "-moved"));
+            // ERROR_SHARING_VIOLATION: the data folder is held without FILE_SHARE_DELETE. ERROR_ACCESS_DENIED:
+            // ProgramData is held for its attributes and permissions alone, which sharing checks ignore, but
+            // Windows refuses to rename a folder while anything in it, here the data folder, is open.
+            Assert.Equal(32, NtFiles.MoveByPath(_fixture.DataFolder, _fixture.DataFolder + "-moved"));
+            Assert.Equal(5, NtFiles.MoveByPath(_fixture.ProgramData, _fixture.ProgramData + "-moved"));
         }
 
         Directory.Move(_fixture.DataFolder, _fixture.DataFolder + "-moved");
         Directory.Move(_fixture.DataFolder + "-moved", _fixture.DataFolder);
+    }
+
+    [Fact]
+    public void Opens_and_sets_up_the_data_folder_while_another_process_holds_ProgramData_open_without_sharing_it()
+    {
+        // This account may write to the fixture's ProgramData, as standard users may to the real one, so Windows
+        // honours its refusal to share: an open that would list the folder is refused while it is held.
+        using var holder = Native.OpenWithShare(_fixture.ProgramData, NtFiles.ListDirectory | NtFiles.Synchronize, NtFiles.ShareNone);
+        Assert.Equal(32, Native.TryOpen(_fixture.ProgramData, NtFiles.ListDirectory | NtFiles.Synchronize, NtFiles.ShareReadWrite));
+
+        using (var store = _fixture.Open())
+        {
+            store.WriteFile("status.json", "{}"u8);
+            Assert.Equal("{}"u8.ToArray(), store.ReadFile(DataFolder.Root, "status.json", 100));
+        }
+
+        using (var store = _fixture.Initialize())
+        {
+            Assert.Empty(store.Notices);
+        }
+
+        Assert.Equal(["cache", "config", "logs", "reports", "scratch", "status.json", "undo"], _fixture.Entries);
     }
 
     [Fact]

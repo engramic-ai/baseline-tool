@@ -1,4 +1,5 @@
 using System.Security.AccessControl;
+using System.Text;
 
 namespace Engramic.Baseline.Testing.Windows;
 
@@ -54,6 +55,27 @@ public sealed class TempTree : IDisposable
     {
         var path = PathOf(relative);
         System.IO.File.WriteAllText(path, text);
+        return path;
+    }
+
+    /// <summary>
+    /// Writes a new file in the tree with a security descriptor of its own from its birth, as an installer or
+    /// an administrator's deployment makes one: with only an owner, it takes the access list its folder gives.
+    /// </summary>
+    /// <param name="relative">Its path from the root; nothing may be there yet.</param>
+    /// <param name="text">What it holds, in UTF-8.</param>
+    /// <param name="sddl">The security descriptor in SDDL, such as O:BA.</param>
+    /// <returns>The full path.</returns>
+    public string File(string relative, string text, string sddl)
+    {
+        var path = PathOf(relative);
+        var security = new FileSecurity();
+        security.SetSecurityDescriptorSddlForm(sddl);
+        using (var stream = new FileInfo(path).Create(FileMode.CreateNew, FileSystemRights.Write | FileSystemRights.Read, FileShare.None, 4096, FileOptions.None, security))
+        {
+            stream.Write(Encoding.UTF8.GetBytes(text));
+        }
+
         return path;
     }
 

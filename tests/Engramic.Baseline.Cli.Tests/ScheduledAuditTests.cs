@@ -1,4 +1,5 @@
 using System.Security.Principal;
+using System.Text;
 using Engramic.Baseline.Controls;
 using Engramic.Baseline.Engine;
 using Engramic.Baseline.Model;
@@ -12,12 +13,25 @@ namespace Engramic.Baseline.Cli.Tests;
 
 /// <summary>
 /// The scheduled audit, with an account said to be SYSTEM, a data folder in memory and a mutex of the tests'
-/// own: its refusals, its exit codes, and the status.json it writes.
+/// own: its refusals, its exit codes, the config it reads, and the status.json it writes.
 /// </summary>
 public sealed class ScheduledAuditTests
 {
     private static readonly ProcessAccount LocalSystem = new(@"NT AUTHORITY\SYSTEM", IsAdministrator: true, IsLocalSystem: true);
     private static readonly DateTimeOffset AuditTime = new(2026, 9, 29, 14, 3, 49, TimeSpan.Zero);
+
+    /// <summary>
+    /// An administrator's os-lifecycle.json in which Windows 11 24H2, the device's release, is out of support, so
+    /// SU-01 fails with it; with the shipped file it warns, as support ends in 14 days.
+    /// </summary>
+    private const string EndedLifecycle = """
+        {
+          "lastReviewed": "2026-09-16", "reviewWarningDays": 90, "upcomingEndWarningDays": 60,
+          "windows11": [ { "build": 26100, "version": "24H2", "homePro": "2025-10-14", "enterprise": "2026-10-13" } ]
+        }
+        """;
+
+    private const string OverridePath = @"C:\ProgramData\EngramicBaseline\config\os-lifecycle.json";
 
     private readonly StringWriter _output = new();
     private readonly StringWriter _error = new();
@@ -45,6 +59,55 @@ public sealed class ScheduledAuditTests
         Assert.Equal(string.Empty, status.ReportFolder);
         Assert.True(_store.IsDisposed);
         Assert.Equal(1, _opens);
+    }
+
+    [Fact]
+    public void Judges_by_the_shipped_config_when_there_is_no_override()
+    {
+        ScheduledAudit.Run(Settings(), _output, _error);
+
+        Assert.Equal(FindingStatus.Warn, SU01());
+        Assert.Equal([(DataFolder.Config, ConfigFile.OsLifecycleName, ConfigTrustGate.MaxOverrideLength)], _store.Reads);
+        Assert.DoesNotContain("Config override", _output.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Reads_an_administrator_s_override_through_the_trust_gate_and_names_it()
+    {
+        _store.WriteFile(DataFolder.Config, ConfigFile.OsLifecycleName, Encoding.UTF8.GetBytes(EndedLifecycle));
+
+        var code = ScheduledAudit.Run(Settings(), _output, _error);
+
+        Assert.Equal(ScheduledAudit.Succeeded, code);
+        Assert.Equal(string.Empty, _error.ToString());
+        Assert.Equal(FindingStatus.Fail, SU01());
+        Assert.Contains("Config override used: " + OverridePath, Lines(_output));
+    }
+
+    [Fact]
+    public void Warns_of_an_override_the_data_folder_refuses_and_judges_by_the_shipped_file()
+    {
+        const string Reason = OverridePath + " is owned by S-1-5-21-1004336348-1177238915-682003330-1001, not SYSTEM, Administrators or TrustedInstaller.";
+        _store.FailRead(DataFolder.Config, ConfigFile.OsLifecycleName, new SecureStoreException(Reason));
+
+        var code = ScheduledAudit.Run(Settings(), _output, _error);
+
+        Assert.Equal(ScheduledAudit.Succeeded, code);
+        Assert.Equal("Warning: Ignoring the config override os-lifecycle.json and using the shipped copy: " + Reason, _error.ToString().TrimEnd());
+        Assert.Equal(FindingStatus.Warn, SU01());
+        Assert.DoesNotContain("Config override", _output.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Warns_of_an_override_that_does_not_meet_its_schema_and_judges_by_the_shipped_file()
+    {
+        _store.WriteFile(DataFolder.Config, ConfigFile.OsLifecycleName, Encoding.UTF8.GetBytes(EndedLifecycle + EndedLifecycle));
+
+        var code = ScheduledAudit.Run(Settings(), _output, _error);
+
+        Assert.Equal(ScheduledAudit.Succeeded, code);
+        Assert.StartsWith($"Warning: Ignoring the config override os-lifecycle.json and using the shipped copy: {OverridePath} is not valid JSON: ", _error.ToString(), StringComparison.Ordinal);
+        Assert.Equal(FindingStatus.Warn, SU01());
     }
 
     [Fact]
@@ -234,6 +297,30 @@ public sealed class ScheduledAuditTests
         Assert.Equal("S-1-5-32-544", new FileInfo(statusPath).GetAccessControl().GetOwner(typeof(SecurityIdentifier))!.Value);
         Assert.Equal([StatusFile.FileName], Directory.GetFileSystemEntries(dataFolder).Select(Path.GetFileName));
     }
+
+    [Fact]
+    public void Reads_an_administrator_s_override_from_the_locked_config_folder_through_the_real_SecureStore()
+    {
+        Assert.SkipUnless(Elevation.IsElevated, Elevation.NeedsElevation);
+        using var tree = new TempTree();
+        var programData = tree.Folder("ProgramData", Descriptors.ProgramDataLike);
+        var dataFolder = tree.Folder(@"ProgramData\EngramicBaseline", Descriptors.InstallerLocked);
+        tree.Folder(@"ProgramData\EngramicBaseline\config", Descriptors.InstallerLockedUsersRead);
+        var used = tree.File(@"ProgramData\EngramicBaseline\config\os-lifecycle.json", EndedLifecycle, "O:BA");
+        var seal = new FakeRegistry().Set(RegistryHive.LocalMachine, SecureStoreOptions.MachineSealKeyPath, SecureStoreOptions.MachineSealValueName, RegistryValue.FromText("0.3.2"));
+        var settings = Settings() with { OpenStore = () => SecureStore.Open(new SecureStoreOptions { ProgramDataPath = programData, Registry = seal, EventLog = new FakeEventLog() }) };
+
+        var code = ScheduledAudit.Run(settings, _output, _error);
+
+        Assert.Equal(ScheduledAudit.Succeeded, code);
+        Assert.Equal(string.Empty, _error.ToString());
+        Assert.Contains("Config override used: " + used, Lines(_output));
+        Assert.Equal(FindingStatus.Fail, StatusFile.Parse(File.ReadAllBytes(Path.Combine(dataFolder, StatusFile.FileName))).Checks["SU-01"].Status);
+    }
+
+    private static string[] Lines(StringWriter writer) => writer.ToString().ReplaceLineEndings("\n").TrimEnd().Split('\n');
+
+    private FindingStatus SU01() => StatusFile.Parse(_store.Files[StatusFile.FileName]).Checks["SU-01"].Status;
 
     private static CheckInfo Info(string id, CheckScope scope)
     {

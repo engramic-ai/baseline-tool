@@ -13,7 +13,9 @@ namespace Engramic.Baseline.Cli;
 /// </summary>
 /// <remarks>
 /// For development and for comparing the tool with the PowerShell module. It writes no file itself: files
-/// are written only into the machine data folder, through SecureStore, by the scheduled audit.
+/// are written only into the machine data folder, through SecureStore, by the scheduled audit. It reads only
+/// the config that ships with the tool: administrators' overrides are read by the scheduled audit, through
+/// the config trust gate, and the parity harness runs the module with an empty data folder to match.
 /// </remarks>
 internal static class AuditCommand
 {

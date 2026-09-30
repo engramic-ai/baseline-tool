@@ -38,7 +38,10 @@ internal sealed record ScheduledAuditSettings
     /// <summary>Gets the checks.</summary>
     public CheckCatalog Catalog { get; init; } = BuiltInChecks.CreateCatalog();
 
-    /// <summary>Gets the config the checks read: the shipped files, until administrators' overrides are read through SecureStore.</summary>
+    /// <summary>
+    /// Gets the config files that ship with the tool, in front of which the config trust gate puts each
+    /// administrator's override in the data folder that passes every rule (<see cref="ConfigTrustGate"/>).
+    /// </summary>
     public IConfigFiles Config { get; init; } = ShippedConfig.Files;
 
     /// <summary>Gets this device's settings: the process's account, the real registry, the system clock and SecureStore.</summary>

@@ -162,8 +162,9 @@ public sealed class ConfigTrustGateTests
     [MemberData(nameof(Unreadable))]
     public void An_override_that_cannot_be_read_is_not_replaced_by_the_shipped_file_and_the_checks_that_read_it_fail(string failure)
     {
-        // Standard users can bring these about for a while (holding the file or its folder open without sharing,
-        // locking part of it, an oplock): falling back to the shipped copy would let them undo the override unseen.
+        // Standard users can bring some of these about by locking part of the file or holding an oplock on it, and
+        // a process that may write to the file or its folder by holding either open without sharing: falling back
+        // to the shipped copy would let them undo the override unseen.
         var error = Failures[failure];
         _store.FailRead(DataFolder.Config, Name, error);
         var gate = Gate(LocalSystem);

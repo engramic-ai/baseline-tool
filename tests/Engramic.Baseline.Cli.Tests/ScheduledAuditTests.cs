@@ -105,7 +105,7 @@ public sealed class ScheduledAuditTests
     [Fact]
     public void Reports_the_checks_that_need_an_override_it_could_not_read_as_errors_rather_than_use_the_shipped_file()
     {
-        // As a standard user can bring about by holding the file open without sharing, which the config folder lets them.
+        // As another process that may write to the file can bring about by holding it open without sharing.
         const string Reason = "Could not read " + OverridePath + ": Could not open " + OverridePath + " to read it: The process cannot access the file because it is being used by another process (Win32 error 32).";
         _store.FailRead(DataFolder.Config, ConfigFile.OsLifecycleName, new SecureStoreException(Reason, isUnavailable: true, null));
 

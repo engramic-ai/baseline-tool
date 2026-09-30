@@ -381,11 +381,13 @@ does an untrusted folder, once it has been moved aside.
 A file that breaks a rule, or whose access list keeps this account out, is refused. One that cannot be opened or
 read at the time is not judged at all, and the `SecureStoreException` says so (`IsUnavailable`): the file or its
 folder held open by another process without sharing, part of the file locked, or a device error. Anyone who may
-read the file can do the first two, and standard users may read the `config` folder. Nor does the store wait on
-an oplock another process holds on the file or a folder it judges: those opens use `FILE_COMPLETE_IF_OPLOCKED`,
-so an open that would wait for the holder to acknowledge the break comes back at once and is tried again, like
-one refused for sharing, six times over about three seconds. A holder who never acknowledges would otherwise hold
-the read, and the lock the config trust gate holds while it reads, for as long as they liked.
+read the file can lock part of it, and standard users may read the `config` folder. Holding the file or its folder
+open without sharing stops the read only when the holder may write to what they hold: Windows ignores a refusal to
+share reading from a holder who may only read it. Nor does the store wait on an oplock another process holds on the
+file or a folder it judges: those opens use `FILE_COMPLETE_IF_OPLOCKED`, so an open that would wait for the holder
+to acknowledge the break comes back at once and is tried again, like one refused for sharing, six times over about
+three seconds. A holder who never acknowledges would otherwise hold the read, and the lock the config trust gate
+holds while it reads, for as long as they liked.
 
 **Scratch folders** (`CreateScratchFolder`) hold the files a Windows tool reads and writes, such as `secedit`'s
 INF and database: each is born locked under a random name in `scratch`, where the module's `New-CEScratchFolder`

@@ -32,11 +32,12 @@ namespace Engramic.Baseline.Engine;
 /// </para>
 /// <para>
 /// An override that could not be opened or read at all is not refused: nothing about it was judged, and what
-/// it holds is not known. Anyone who can read the config folder, standard users included, can bring that about
-/// for a while, by holding the file or the folder open without sharing, locking part of the file or holding an
-/// oplock on it, so falling back to the shipped copy would let them undo an administrator's override without a
-/// trace. Instead every read of that file in the run throws, so each check that needs it reports an Error
-/// finding, and the notice says why.
+/// it holds is not known. A standard user, who may only read the config folder and what is in it, can bring
+/// that about for as long as they like by locking part of the file or holding an oplock on it. A process that
+/// may write to the file or the folder can also do it by holding either open without sharing; Windows ignores
+/// that refusal from a holder who may only read. So falling back to the shipped copy would let them undo an
+/// administrator's override without a trace. Instead every read of that file in the run throws, so each check
+/// that needs it reports an Error finding, and the notice says why.
 /// </para>
 /// <para>
 /// Safe to use from more than one thread: the data folder is read one file at a time, as SecureStore needs.

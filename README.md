@@ -236,13 +236,13 @@ On managed devices, a file with the same name in `%ProgramData%\EngramicBaseline
 Install-Module Pester -MinimumVersion 5.5 -Scope CurrentUser
 Install-Module PSScriptAnalyzer -Scope CurrentUser
 
-.\tools\Invoke-PreFlight.ps1             # before every push: lint, tests on 5.1 and pwsh 7, app layout - as CI judges them
+.\tools\Invoke-PreFlight.ps1             # before every push: the .NET build and tests, hygiene, actionlint, lint, tests on 5.1 and pwsh 7, app layout - as CI judges them
 Invoke-Pester -Path .\tests -Output Detailed
 Invoke-ScriptAnalyzer -Path . -Recurse -Settings .\.github\PSScriptAnalyzerSettings.psd1
 .\tools\Export-ControlMapping.ps1      # regenerate docs/CONTROL-MAPPING.md
 ```
 
-`Invoke-PreFlight.ps1` runs the *Tests* jobs of `.github/workflows/ci.yml` on every PowerShell installed here and judges the unit tests by Pester's `Result`, not by counts (a discovery error is a failed container with zero failed tests). For the whole workflow, including the Intune rehearsal that installs and runs as SYSTEM, use the `ci` sandbox environment below, so a green on GitHub is a confirmation rather than the first run.
+`Invoke-PreFlight.ps1` runs the *Tests* jobs of `.github/workflows/ci.yml` on every PowerShell installed here and judges the unit tests by Pester's `Result`, not by counts (a discovery error is a failed container with zero failed tests). It also runs the .NET build and tests and the hygiene check of `.github/workflows/dotnet.yml`, and actionlint, and ends with one table and one verdict ([docs/DOTNET.md](docs/DOTNET.md#before-pushing-the-pre-flight)). For the whole workflow, including the Intune rehearsal that installs and runs as SYSTEM, use the `ci` sandbox environment below, so a green on GitHub is a confirmation rather than the first run.
 
 The tests mock Windows, simulating an insecure and a hardened device, so they also run on Linux. They also cover the status file, the compliance discovery script evaluated against both rules files, the Remediations detection script, and a real headless run of the scheduled audit.
 
@@ -289,7 +289,9 @@ person's Azure login, not a workflow credential.
 Bump `ModuleVersion` in `CEAudit.psd1` and `$required` in `intune/Detect-CEChecker.ps1` together - a unit test and the
 package build both check they match - commit, then run `tools/New-SignedRelease.ps1`. It runs the same lint and tests CI
 runs, signs every shipped script, verifies the result, and prints the tag and upload commands without running them.
-Pushing a `v*` tag only checks that the tag agrees with the module version; it publishes nothing.
+Pushing a `v*` tag only checks that the tag agrees with the version it releases, the module's or `baseline.exe`'s; it
+publishes nothing. `tools/New-SignedRelease.ps1 -DotNet` releases `baseline.exe` instead, signing only the files this
+repository built ([docs/DOTNET.md](docs/DOTNET.md#signing-baselineexe)).
 
 ### Adding a check
 

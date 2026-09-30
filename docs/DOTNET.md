@@ -28,6 +28,7 @@ This note covers the layout, the rules the build enforces, and how to build and 
 | `tests/parity/divergences.json` | The ledger of accepted differences between the module and `baseline.exe`, with the reason and scope of each. |
 | `tools/contracts` | Runs the unchanged Intune scripts on a status.json, and proves the contract end to end as SYSTEM in CI (below). |
 | `tools/ci` | Helpers for CI runners only, such as running a program as SYSTEM through a temporary scheduled task. |
+| `tools/Release.psm1` | What the release scripts beside it share: which PE files of a published folder this repository built, and what their signatures say (below). |
 
 Model, Platform, Engine and Controls target `net10.0` and must not depend on Windows, so their tests
 run on Linux too. Windows, the CLI and their tests target `net10.0-windows`. All build output goes
@@ -36,7 +37,9 @@ under `artifacts/`, never beside the sources.
 ## Rules the build enforces
 
 **One version.** `VersionPrefix` and `VersionSuffix` in `Directory.Build.props` are the only place the
-version is written. Every assembly and `baseline.exe --version` take it from there.
+version is written. Every assembly and `baseline.exe --version` take it from there. They are plain text under
+no condition, and no other build file sets a version (`VersionTests`), because a release tag is held to them
+exactly (below).
 
 **Warnings are errors**, and so are these analysers:
 
@@ -187,6 +190,33 @@ The hygiene check needs a clone that git can read:
 ```
 pwsh -NoProfile -File tools/hygiene/Test-Hygiene.ps1
 ```
+
+### Before pushing: the pre-flight
+
+One command runs what CI runs on the working tree, every step even after one fails, and ends with a table of
+the steps and one verdict:
+
+```
+powershell -ExecutionPolicy Bypass -File tools\Invoke-PreFlight.ps1 -ModulePath C:\modules -PesterVersion 6.2.0
+```
+
+| Job | Steps |
+|---|---|
+| .NET | `dotnet --version` is the SDK in `global.json`, then the locked restore, the build with warnings as errors and the tests, with the commands of the "Build and test (.NET)" job. A step is not run once one before it failed. |
+| Hygiene | `tools/hygiene/Test-Hygiene.ps1`, as the Hygiene job runs it. |
+| Workflows | `actionlint` on `.github/workflows`. No CI job runs it, so this is where a workflow change is linted. |
+| Tests (powershell), Tests (pwsh) | PSScriptAnalyzer, the Pester unit tests and the desktop app layout, the "Tests" jobs of `ci.yml`, in Windows PowerShell 5.1 and in pwsh 7 when it is installed. The unit tests are judged by Pester's result and failed containers, since a discovery error is a failed container with no failed test. |
+
+The verdict is FAILED, and the exit code 1, when any step failed. A step that cannot run on this machine, such
+as actionlint when it is not on `PATH` (pass `-ActionlintPath`), shows as skipped with the reason, and the
+verdict names it. `-SkipDotNet` leaves out the .NET steps on a machine without the SDK, and `-SkipLint` leaves
+out PSScriptAnalyzer. `-ModulePath` names a folder holding Pester and PSScriptAnalyzer, and `-PesterVersion`
+picks the Pester that CI resolves (6.x).
+
+It runs as the current user and changes nothing on the device. What needs a disposable machine is left to CI
+and the sandbox: the contract and parity runs as SYSTEM, and the Intune rehearsal
+(`tools\sandbox\New-SandboxRun.ps1 -Environment ci`). `tools\New-SignedRelease.ps1` runs the pre-flight before
+it builds anything.
 
 ## The audit command
 
@@ -414,13 +444,73 @@ dotnet build Baseline.slnx -c Release
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/parity/Compare-Parity.ps1 -Id SU-01
 ```
 
+## Signing baseline.exe
+
+A release of `baseline.exe` is the published folder, self-contained: the launcher and the assemblies this
+repository builds, and beside them the .NET runtime and the package assemblies. Every PE file in it must carry a
+valid, timestamped Authenticode signature, in the file itself: ours on what this repository built, Microsoft's
+on everything else, exactly as Microsoft signed it. Nothing of Microsoft's is signed again.
+
+**What is ours.** The `.deps.json` that `dotnet publish` writes lists every library with its kind. Ours are the
+assets of the libraries of kind `project`, and the launcher, `baseline.exe` beside `baseline.deps.json`
+(`Get-ReleaseOwnFile` in `tools/Release.psm1`). The runtime pack's files and the package assemblies are someone
+else's. A folder without a `.deps.json`, or one that names a file which is not there or lies outside the folder,
+is refused, so nothing is signed or judged on a guess.
+
+**Package assemblies stay as their publisher signed them.** ReadyToRun compiles an assembly into a new file, which
+drops its signature, so each package assembly is left out of it with `PublishReadyToRunExclude` in the command
+line's project (`System.CommandLine.dll` so far). A package assembly that loses its signature some other way fails
+the check below, which says why.
+
+**Signing.** `tools\Sign-Release.ps1 -IncludeExtensions .exe, .dll` signs only our files: with signtool and the
+Artifact Signing dlib (`-AzureMetadata`), or with `Set-AuthenticodeSignature` and a certificate (`-Thumbprint`,
+`-PfxPath`) for testing. Every signature is SHA256 and timestamped, and a PE signature without a timestamp fails.
+A PE file chosen for signing that already carries any signature is refused, not signed over, whatever the
+manifest says.
+
+**The check.** `tools\Test-ReleaseSignatures.ps1` looks at every PE file under a folder, `.exe` and `.dll` and any
+other file with a PE header, and fails, listing each problem file by file, unless:
+
+- each of ours is signed by our publisher (`-Publisher`, the organisation in the certificate, since Artifact
+  Signing issues a new certificate every few days) or certificate (`-Thumbprint`), verifies as Valid and is
+  timestamped. `-AllowUntrustedChain` also accepts, on ours alone, a chain that ends in a root the machine does not
+  trust, as a test certificate or a test profile gives;
+- every other PE file is signed by a certificate issued to Microsoft Corporation by a Microsoft authority, verifies
+  as Valid and is timestamped, whatever the switches say.
+
+With `-Unsigned` it checks a folder before signing: none of ours may be signed yet, and every other PE file must
+already carry Microsoft's signature. The "Build and test (.NET)" job runs that on what it publishes, so a package
+assembly that lost its signature fails the pull request, not the release.
+
+**A release.** `tools\New-SignedRelease.ps1 -DotNet -AzureMetadata <metadata>` runs the pre-flight, publishes
+`baseline.exe` from the committed tree with the SDK in `global.json`, runs the check with `-Unsigned`, signs ours,
+runs the check again with the publisher (`-Publisher`, Engramic Ltd by default), runs the signed
+`baseline.exe --version`, and writes the zip, its checksum, release notes and `release.json` to
+`build\release-dotnet`. It publishes nothing, and marks a build on an untrusted chain DO NOT PUBLISH. Without
+`-DotNet` it cuts the PowerShell release as before. Later, CI is to publish and attest the unsigned folder, and this
+script to verify that attestation before it signs anything; until then the folder is published on the machine that
+signs it.
+
+**The tag.** A `v*` tag must be `v` and the version of what it releases, exactly: the module's `ModuleVersion`, or
+`VersionPrefix` and `VersionSuffix` together (`v1.0.0-alpha.0`). The Release workflow checks it with
+`tools/Test-ReleaseTag.ps1`. A tag for the module is judged as before, whatever `Directory.Build.props` holds, and
+where there is none, only the module's version counts.
+
+**The sign-test sandbox.** `tools\sandbox\New-SandboxRun.ps1 -Environment sign-test` proves all of this on a clean
+Windows with a throwaway self-signed certificate made inside the sandbox: it installs the SDK in `global.json`,
+publishes `baseline.exe`, checks the unsigned folder, signs ours and shows that no runtime or package file changed
+and that a file carrying Microsoft's signature is refused, runs the check, catches a byte changed in a signed file,
+and runs `baseline.exe --version` and `baseline.exe audit --id SU-01` from the signed build. When
+`build\release-dotnet` holds a build signed by `New-SignedRelease.ps1 -DotNet`, it runs the same check and the
+same slice on that build too, as it was signed.
+
 ## CI
 
 `.github/workflows/dotnet.yml` runs on every pull request and on pushes to `main` and `feat/dotnet-port`:
 
 | Job | What it does |
 |---|---|
-| Build and test (.NET) | On Windows: the locked restore, the build with warnings as errors, the tests, `baseline.exe` published and run with `--version`, and the AOT canary published and run. |
+| Build and test (.NET) | On Windows: the locked restore, the build with warnings as errors, the tests, `baseline.exe` published and run with `--version`, the signatures of the published files checked before signing (`Test-ReleaseSignatures.ps1 -Unsigned`), and the AOT canary published and run. |
 | Unit tests (Linux) | Builds and tests the portable projects in `Baseline.Portable.slnf`. |
 | Contracts | On Windows: the contract tests (the golden files, and the Intune scripts in both hosts with the deliberate changes), then `baseline.exe` published self-contained under Program Files and `tools/contracts/Test-StatusContract.ps1`: the install, `scheduled-audit` as SYSTEM, and the Intune scripts on its status.json and the module's, as SYSTEM and as administrator. It uploads what its steps wrote only when it fails. |
 | Parity | On Windows: `baseline.exe` published the same way, and `Compare-Parity.ps1` for SU-01 as the elevated administrator and as SYSTEM, which fails on any difference the ledger does not explain. It uploads both comparisons only when it fails. |

@@ -8,7 +8,9 @@ name: Release
 # produce two different releases, and the unsigned one would look just as official.
 #
 # What this workflow does instead:
-#   on a tag        check the tag agrees with the module version, so a mistagged commit is caught
+#   on a tag        check the tag agrees with the version of what it releases, so a mistagged commit
+#                   is caught: the module's (src/CEAudit/CEAudit.psd1), or baseline.exe's, the one
+#                   version in Directory.Build.props, prefix and suffix (tools/Test-ReleaseTag.ps1)
 #   run by hand     build the package to prove it still builds, and keep it as an artefact
 #
 # Neither path creates a GitHub release or uploads anything a customer could install.
@@ -27,13 +29,13 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - name: Check tag matches module version
+      # The module's version, or baseline.exe's (VersionPrefix and VersionSuffix in Directory.Build.props).
+      - name: Check the tag matches the version it releases
         shell: powershell
-        run: |
-          $v = (Import-PowerShellDataFile ./src/CEAudit/CEAudit.psd1).ModuleVersion
-          if ("v$v" -ne $env:GITHUB_REF_NAME) { throw "Tag $env:GITHUB_REF_NAME does not match module version $v" }
-          Write-Host "Tag $env:GITHUB_REF_NAME matches module version $v"
+        run: ./tools/Test-ReleaseTag.ps1 -Tag $env:GITHUB_REF_NAME
 
       - name: Say where the release comes from
         shell: powershell
@@ -41,7 +43,8 @@ jobs:
           Write-Host 'This tag does not publish anything.'
           Write-Host 'Cut the release on a maintainer machine:'
           Write-Host '  .\tools\New-SignedRelease.ps1 -AzureMetadata <path to Artifact Signing metadata>'
-          Write-Host 'That signs every shipped script, verifies it, and prints the upload command.'
+          Write-Host '  (add -DotNet for a baseline.exe tag)'
+          Write-Host 'That signs what ships, verifies it, and prints the upload command.'
 
   unsigned-build:
     # Run by hand only. Proves the package still assembles; the result is UNSIGNED and is kept for
@@ -50,6 +53,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Build
         shell: powershell

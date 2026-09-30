@@ -82,6 +82,12 @@ jobs:
           if ($actual -ne $expected) { throw "baseline.exe --version printed '$actual', but Directory.Build.props says '$expected'" }
           "baseline.exe --version: $actual"
 
+      # A release signs only the files this repository built (tools/New-SignedRelease.ps1 -DotNet), so none of them
+      # may be signed yet, and every other PE file must already carry Microsoft's valid, timestamped signature. A
+      # package assembly compiled with ReadyToRun would have lost it.
+      - name: Check the signatures of the published files
+        run: ./tools/Test-ReleaseSignatures.ps1 -Path (Join-Path $env:RUNNER_TEMP 'baseline') -Unsigned
+
       - name: Publish the AOT canary (Native AOT, warnings as errors)
         run: dotnet publish tests/AotCanary/AotCanary.csproj --configuration Release --runtime win-x64 --no-restore --output "$env:RUNNER_TEMP/aot-canary"
 

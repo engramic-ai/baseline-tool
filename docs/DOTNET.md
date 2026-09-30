@@ -454,13 +454,13 @@ something else, in each host, for every change they can see:
 |---|---|
 | A key renamed (`autoFailCount`, a check's `status`, `ce-v3.3`) | They read those values, and the probe gives each a value they can tell from the one they fall back to. |
 | A check identifier's casing changed (`SU-03` to `su-03`) | The discovery script lists the failing checks by their keys, as written. |
-| The byte order mark removed | They read status.json without naming an encoding, so Windows PowerShell 5.1 reads a file without the mark in the ANSI code page, and the probe's `toolVersion`, which is not ASCII, arrives garbled. |
 
 PowerShell finds a property whatever its case (the discovery script itself asks for `SchemaVersion` and
 `AuditTime`), so a change to the casing of a fixed key such as `autoFailCount` cannot change what the scripts
-print. The tests say so, and the golden tests are what guard it, for every other reader of the file. If the
-scripts ever name UTF-8 when they read status.json, removing the mark stops changing their output and the
-tests say that too; the golden tests still guard the mark, which the scripts already in tenants need.
+print. The tests say so, and the golden tests are what guard it, for every other reader of the file. The
+same goes for the byte order mark: the scripts read status.json with `-Encoding UTF8`, so removing the mark
+doesn't change their output either. The golden tests still guard the mark, which copies of the scripts from
+before that change, already in tenants, need.
 
 **End to end, as SYSTEM.** `tools/contracts/Test-StatusContract.ps1`, which the Contracts job runs on its
 runner, installs with `intune/Install-CEChecker.ps1` and shows, step by step, that:

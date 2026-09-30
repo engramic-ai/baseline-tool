@@ -253,19 +253,22 @@ public sealed class SecureStoreAttackerTests : IDisposable
         // Standard users may write to ProgramData, so Windows honours the attacker's refusal to share it: an open
         // that would list it is refused while they hold it. The store holds it for its attributes and permissions
         // alone, which sharing checks ignore.
-        using var held = HoldWithoutSharing(_programData);
-        Assert.Equal(32, Native.TryOpen(_programData, NtFiles.ListDirectory | NtFiles.Synchronize, NtFiles.ShareReadWrite));
-
-        using (var store = Initialize())
+        using (HoldWithoutSharing(_programData))
         {
-            store.WriteFile("status.json", "{}"u8);
+            Assert.Equal(32, Native.TryOpen(_programData, NtFiles.ListDirectory | NtFiles.Synchronize, NtFiles.ShareReadWrite));
+
+            using (var store = Initialize())
+            {
+                store.WriteFile("status.json", "{}"u8);
+            }
+
+            using (var store = SecureStore.Open(Options()))
+            {
+                Assert.Equal("{}"u8.ToArray(), store.ReadFile(DataFolder.Root, "status.json", 1024));
+            }
         }
 
-        using (var store = SecureStore.Open(Options()))
-        {
-            Assert.Equal("{}"u8.ToArray(), store.ReadFile(DataFolder.Root, "status.json", 1024));
-        }
-
+        // Looking for quarantines lists ProgramData, which is such an open, so it waits for the attacker to let go.
         Assert.Empty(Quarantines());
         Assert.Empty(_events.Entries);
     }

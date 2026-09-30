@@ -13,10 +13,10 @@ This note covers the layout, the rules the build enforces, and how to build and 
 | `Directory.Build.props` | Settings for every project, including the one version of the product. |
 | `Directory.Packages.props` | The version of every package, set once. |
 | `src/Engramic.Baseline.Model` | Contracts: the status files, findings, changesets and config, and how they are written. |
-| `src/Engramic.Baseline.Platform` | The interfaces and records of the primitives (registry, files, processes, tokens and so on), and the trust rules of the data folder. |
+| `src/Engramic.Baseline.Platform` | The interfaces and records of the primitives (registry, files, processes, tokens, HTTP and so on), the trust rules of the data folder, and the rules that choose a service request's proxy. |
 | `src/Engramic.Baseline.Engine` | The check and fix contracts, the runner, the framework rollups, changesets and undo. |
 | `src/Engramic.Baseline.Controls` | The checks, the fixes, the readers that interpret what the primitives return, and the shipped config. |
-| `src/Engramic.Baseline.Windows` | The Windows primitives, calling Win32 through code that CsWin32 generates from `NativeMethods.txt`, including SecureStore and the audit mutex. |
+| `src/Engramic.Baseline.Windows` | The Windows primitives, calling Win32 through code that CsWin32 generates from `NativeMethods.txt`, including SecureStore, the audit mutex and the service client. |
 | `src/Engramic.Baseline.Cli` | `baseline.exe`, the command line. |
 | `tests/Engramic.Baseline.*.Tests` | xUnit v3 tests: one project for each library, and one for the command line. |
 | `tests/Engramic.Baseline.Contracts.Tests` | The status.json contract: golden files of its bytes, and the Intune scripts run on it (below). |
@@ -27,7 +27,7 @@ This note covers the layout, the rules the build enforces, and how to build and 
 | `tools/parity` | Compares the ported checks with the PowerShell module on a device (below). |
 | `tests/parity/divergences.json` | The ledger of accepted differences between the module and `baseline.exe`, with the reason and scope of each. |
 | `tools/contracts` | Runs the unchanged Intune scripts on a status.json, and proves the contract end to end as SYSTEM in CI (below). |
-| `tools/ci` | Helpers for CI runners only, such as running a program as SYSTEM through a temporary scheduled task. |
+| `tools/ci` | Helpers for CI runners only, such as running a program, or the SYSTEM tests of a test assembly, as SYSTEM through a temporary scheduled task. |
 | `tools/Release.psm1` | What the release scripts beside it share: which PE files of a published folder this repository built, and what their signatures say (below). |
 
 Model, Platform, Engine and Controls target `net10.0` and must not depend on Windows, so their tests
@@ -75,6 +75,7 @@ RS0030 and says what to use instead.
 | `SetAccessControl`, `SetOwner`, `FileSystemAclExtensions` | Access control is set only when an object is created, and nothing takes ownership | SecureStore; `MutexAcl.Create` and the like |
 | `Registry`, `RegistryKey` | Every read and write names its registry view | The registry primitive |
 | `System.Management` | Not AOT-ready | The CIM layer, in its own project |
+| `HttpClient`, `HttpClientHandler`, `SocketsHttpHandler` | A client made anywhere else would use .NET's default proxy, which follows environment variables and, as SYSTEM, SYSTEM's own Internet settings | The service client (`IServiceClient`) |
 | `Process.Start`, `ProcessStartInfo` | Tools must be resolved from System32 and signature-checked, never found through PATH | The trusted process runner |
 | Reading environment variables | Whoever starts the process sets them | A known folder or config |
 | `DateTime.Now`, `UtcNow`, `Today`, `DateTimeOffset.Now`, `UtcNow` | Tests must be able to set the time | `TimeProvider` |
@@ -83,8 +84,8 @@ RS0030 and says what to use instead.
 | Reflection-based `JsonSerializer` overloads | Not AOT-safe | A `JsonTypeInfo` from a source-generated `JsonSerializerContext` |
 
 **Exemptions.** A few audited classes, added as the port goes on, do these things safely: SecureStore,
-ProfileReader, the registry primitive and the trusted process runner. Only the files they live in may use
-a banned API, and only like this:
+ProfileReader, the registry primitive, the trusted process runner and the service client. Only the files they
+live in may use a banned API, and only like this:
 
 1. The file is listed in `src/BannedApiExemptions.txt`, with the reason.
 2. Each use sits between `#pragma warning disable RS0030 // <reason>` and `#pragma warning restore RS0030`,
@@ -138,8 +139,9 @@ CsWin32 is still 0.x and pinned to an exact version.
 **Config.** The shipped `config/*.json` files are built into `Engramic.Baseline.Controls` (`ShippedConfig`)
 from the repository's config folder, which the PowerShell module also reads. Nothing reads them from
 disk, so they cannot be changed beside the executable, and no file API is needed for them. A check that
-reads another file adds it there as an `EmbeddedResource`. Administrators' overrides, which replace a
-shipped file whole, will come through SecureStore and its trust checks, in front of the shipped copy.
+reads another file adds it there as an `EmbeddedResource`. Code reads the files through `IConfigFiles`, the seam
+where administrators' overrides, which replace a shipped file whole, will come in through SecureStore and its trust
+checks, in front of the shipped copy.
 
 **Text.** Sources are ASCII only (write other characters as escapes, such as `"\u00e9"` in C#),
 user-facing text is British English, and quotes are straight. The Hygiene check below enforces the first.
@@ -184,6 +186,12 @@ administrator. Run without elevation, they skip and say why. No test touches the
 registry key, a scheduled task or the product's mutex: folders are made under the temp folder with unique
 names and deleted by that exact path, the seal is read from a registry in memory, and mutexes have names
 of the tests' own.
+
+A few tests hold only as SYSTEM and change the machine, putting each change back: the service client's tests
+set the machine's WinHTTP proxy with netsh and add names to the hosts file. They are explicit, so a test run
+leaves them out unless it asks for them (`-explicit only`), and they skip unless they run as SYSTEM. The Tests as
+SYSTEM job runs them through `tools/ci/Test-AsSystem.ps1`, which counts a skip as a failure. Never run them as
+SYSTEM on a machine that is not there to be changed.
 
 The hygiene check needs a clone that git can read:
 
@@ -299,6 +307,83 @@ the module, whose `Get-Acl` drops entries it does not recognise, an entry of an 
 Tests give the ProgramData path, the seal's location and the clock (`SecureStoreOptions`). Still to come:
 creating the data folder and its subfolders locked, moving an untrusted one aside, scratch and undo
 folders, reading administrators' config overrides, and the attack suite run as SYSTEM.
+
+## The service client
+
+The tool's own requests, such as those to the firmware catalog, go through one service client, as the module's go
+through `14-ServiceClient.ps1`. Its contract is portable: `IServiceClient`, its request and response, and
+`ProxyChooser`, in Platform. On Windows, `ServiceClient` sends the requests and `WinHttpProxy` says what Windows says
+about proxies. `ServiceClient.cs` is the one file on `src/BannedApiExemptions.txt` that makes an `HttpClient` or a
+handler.
+
+**A request** is one GET:
+
+- to an https address, or plain http to this device (`localhost`, `127.0.0.1` or `::1`) for a development server.
+  Anything else is refused before a route is chosen, wherever the address came from. `ServiceUri.TryResolve` joins a
+  configured base address and a path, and says what is wrong in the module's words;
+- with `User-Agent: EngramicBaseline/<version>`, and `If-None-Match` when the caller holds a copy;
+- held to 1 to 600 seconds (20 by default) and 1 KB to 16 MB of body (64 KB by default), as in the module: a slower
+  or larger response fails it;
+- through a handler made for it alone, which sends the site nothing but the request: no Windows sign-in, no cookies,
+  no redirect followed (a 3xx comes back as it is) and nothing decompressed. The site's certificate is checked
+  against the operating system's trusted roots, with no pinning.
+
+A failure comes back as a response with status 0 and an error, never as an exception: the innermost message, then the
+module's hint, "If this device uses a proxy, set proxyUrl in network.json."
+
+**The route.** Each request's handler names its proxy, or has none. .NET's default proxy is never used: it follows
+environment variables (`HTTPS_PROXY` and the like) that whoever starts the process sets, and as SYSTEM it reads
+SYSTEM's own Internet settings. `ProxyChooser` takes the first of these that applies, and notes on the route what it
+passed over and why:
+
+1. An address on this device, or a name without a dot, goes direct.
+2. `proxyUrl` in `network.json`, when it is an http:// address. An https:// one is passed over with the module's
+   warning, since the file is shared with the module and Windows PowerShell cannot use one.
+3. The machine's WinHTTP proxy (`netsh winhttp set proxy`), from `WinHttpGetDefaultProxyConfiguration`, unless the
+   process runs as SYSTEM and `useWinHttpProxyWhenSystem` is false: direct when its bypass list names the host (with
+   `*` and `?`, and `<local>` for names without a dot); otherwise its http proxy for the scheme, or direct when it
+   names none for the scheme, as WinHTTP itself would.
+4. A PAC file: the one at `proxyAutoConfigUrl` when that is set, otherwise, when `proxyAutoDetect` is true, the one
+   WPAD finds through DHCP and DNS. `WinHttpGetProxyForUrl` asks it out of process only: the WinHTTP Web Proxy
+   Auto-Discovery service downloads and runs the script, never this process, and its server is never sent the
+   sign-in. The script is asked about the scheme, host and port alone, never the path or query, and the first http
+   proxy it names is used, or none when it says `DIRECT`. A lookup that finds nothing, fails, or gives no answer
+   within 10 seconds (or the request's own time, if that is shorter) goes direct with a note. A configured PAC file
+   that fails does not fall back to WPAD.
+5. Otherwise the request goes direct.
+
+**The Windows sign-in** (NTLM or Kerberos; as SYSTEM, the computer account's) goes to a proxy only when
+`proxyUseDefaultCredentials` is true, and never to one that WPAD found, since whoever answers WPAD on the local network
+could collect it. Such a proxy can be named in `proxyUrl`, or its PAC file in `proxyAutoConfigUrl`.
+
+**Settings.** `NetworkSettings`, in Engine, reads `network.json` through `IConfigFiles`: the shipped copy today, and an
+administrator's override once the config trust gate lands. A file that is missing or not valid gives the defaults,
+with the problem noted on every route.
+
+**Tests.** `ProxyChooser` is covered branch by branch with a fake of what Windows says, in the Platform tests, which
+run on Linux too. The Windows tests send real requests to servers on the loopback address: a site; a proxy that
+answers `CONNECT` and asks for NTLM, to see the sign-in sent only when it is allowed; and the host of PAC files, which
+the real WinHTTP service fetches. They only read the machine's own settings. Five explicit tests run as SYSTEM in the
+Tests as SYSTEM job: `network.json`'s proxy; the WinHTTP proxy set with netsh, and its bypass list; a named PAC file;
+a PAC file that WPAD finds through names added to the hosts file and a server on port 80; and plain http refused.
+
+**Differences from the module.** These are deliberate. Once SU-08, the check that asks the firmware catalog, is
+ported, any difference they make to its findings goes in the parity ledger.
+
+| The module | baseline.exe | Why |
+|---|---|---|
+| With no `proxyUrl`, as SYSTEM, uses the WinHTTP proxy if one is set; otherwise .NET's default proxy, from the account's own Internet settings | Uses the WinHTTP proxy for every account (as SYSTEM, unless `useWinHttpProxyWhenSystem` is false), then a PAC file, then goes direct, and never an account's own Internet settings | The default proxy follows environment variables, and as SYSTEM, SYSTEM's own settings. An account whose proxy is set only in its own Internet settings needs `proxyUrl`, `proxyAutoConfigUrl` or the WinHTTP proxy |
+| Has no PAC file or WPAD of its own | Reads `proxyAutoConfigUrl` and `proxyAutoDetect`, and asks the PAC file out of process, about the host alone, for up to 10 seconds | For networks that publish their proxy only in a PAC file. A script from the network never runs in the tool |
+| Sends the sign-in to the WinHTTP proxy always, and to `proxyUrl` with `proxyUseDefaultCredentials` | Sends it only with `proxyUseDefaultCredentials`, and never to a proxy that WPAD found | One setting decides whether the computer account's sign-in leaves the device |
+| Follows redirects | Returns the 3xx | Each request's proxy is chosen for its host, and plain http is refused |
+| Sends plain http to whatever address it is given; only a base address is checked when it is resolved | Refuses plain http, except to this device, in the client itself | The rule holds whatever a caller passes |
+| Splits a WinHTTP proxy list on semicolons alone | Splits it on white space too, as WinHTTP allows | It read `a:80 b:80` as one address, and used no proxy |
+| Reads `[` and `]` in a bypass entry as a set of characters (`-like`) | Takes them as written | WinHTTP's bypass list has no sets |
+| Treats names in the computer's own DNS domain, and its own addresses, as local (.NET's `BypassProxyOnLocal`) | Treats only this device's names, loopback addresses and names without a dot as local | Put the domain on the WinHTTP bypass list, or in a PAC file |
+| Reads `network.json` as PowerShell converts values: `1` and `"true"` are true, and `0` and `""` false | Reads a switch only from JSON `true` or `false`, and an address only from a string; any other value takes the default | A value of the wrong type costs only itself, and nothing reads as true that was not written so |
+| Uses the defaults silently when `network.json` cannot be read | Uses the defaults, with the problem noted on every route | Says why no proxy was used |
+| Words a timeout as .NET words the cancellation | Says the request timed out, and after how long | .NET's words for it name no timeout |
+| Returns the body as text | Returns it as bytes | Its callers parse JSON from UTF-8 |
 
 ## The scheduled audit
 
@@ -514,6 +599,7 @@ same slice on that build too, as it was signed.
 | Unit tests (Linux) | Builds and tests the portable projects in `Baseline.Portable.slnf`. |
 | Contracts | On Windows: the contract tests (the golden files, and the Intune scripts in both hosts with the deliberate changes), then `baseline.exe` published self-contained under Program Files and `tools/contracts/Test-StatusContract.ps1`: the install, `scheduled-audit` as SYSTEM, and the Intune scripts on its status.json and the module's, as SYSTEM and as administrator. It uploads what its steps wrote only when it fails. |
 | Parity | On Windows: `baseline.exe` published the same way, and `Compare-Parity.ps1` for SU-01 as the elevated administrator and as SYSTEM, which fails on any difference the ledger does not explain. It uploads both comparisons only when it fails. |
+| Tests as SYSTEM | On Windows: the Windows tests built, and the explicit ones with the trait `Context=System` run as SYSTEM through `tools/ci/Test-AsSystem.ps1`, which counts a skip as a failure and fails unless at least five ran and every one passed: the service client's proxies from `network.json`, the WinHTTP proxy netsh sets, a named PAC file and WPAD, the sign-in sent only where it is allowed, and plain http refused. It keeps the results when it fails. |
 | Hygiene | Every tracked text file is ASCII, and every URL host in `src/`, `tests/`, `tools/` and `docs/`, every `engramic-ai/` repository and every `engramic.ai` name anywhere is on `tools/hygiene/public-allowlist.txt`. |
 
 The PowerShell module's jobs stay in `ci.yml`.

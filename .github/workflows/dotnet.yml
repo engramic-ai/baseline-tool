@@ -1,7 +1,8 @@
 name: .NET
 
 # The .NET solution beside the PowerShell module: build, tests on Windows and Linux, the published
-# baseline.exe, the AOT canary, the status.json contract, parity with the module, and the hygiene checks.
+# baseline.exe, the AOT canary, the status.json contract, parity with the module, the tests that hold only as
+# SYSTEM, and the hygiene checks.
 # docs/DOTNET.md explains each job. The PowerShell module's own jobs are in ci.yml.
 
 on:
@@ -284,6 +285,61 @@ jobs:
           path: |
             ${{ runner.temp }}/parity
             ${{ runner.temp }}/parity-system
+          if-no-files-found: ignore
+          retention-days: 7
+
+  as-system:
+    name: Tests as SYSTEM
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # As in the build job: the exact SDK in global.json, alone in its folder.
+      - name: Read the SDK version from global.json
+        id: sdk
+        run: |
+          $version = (Get-Content -LiteralPath global.json -Raw | ConvertFrom-Json).sdk.version
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Install that SDK
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        env:
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
+        with:
+          dotnet-version: ${{ steps.sdk.outputs.version }}
+
+      - name: Check that the build uses that SDK
+        env:
+          SDK_VERSION: ${{ steps.sdk.outputs.version }}
+        run: |
+          $actual = dotnet --version
+          if ($actual -ne $env:SDK_VERSION) { throw "dotnet --version is $actual, but global.json names $env:SDK_VERSION" }
+
+      - name: Restore (locked)
+        run: dotnet restore Baseline.slnx --locked-mode
+
+      - name: Build the Windows tests (warnings as errors)
+        run: dotnet build tests/Engramic.Baseline.Windows.Tests/Engramic.Baseline.Windows.Tests.csproj --configuration Release --no-restore -warnaserror
+
+      # The explicit tests with the trait Context=System, run as SYSTEM through a temporary scheduled task. They
+      # change this runner and put it back: the service client's proxies from network.json, the WinHTTP proxy netsh
+      # sets, a named PAC file and one WPAD finds through the hosts file, and when the sign-in may go to a proxy.
+      - name: The SYSTEM tests, as SYSTEM
+        shell: powershell
+        run: ./tools/ci/Test-AsSystem.ps1 -TestAssembly (Join-Path $PWD 'artifacts\bin\Engramic.Baseline.Windows.Tests\release\Engramic.Baseline.Windows.Tests.dll') -Trait 'Context=System' -WorkPath "$env:RUNNER_TEMP\as-system" -MinimumTests 5
+
+      - name: Keep the results
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: as-system
+          path: ${{ runner.temp }}/as-system
           if-no-files-found: ignore
           retention-days: 7
 

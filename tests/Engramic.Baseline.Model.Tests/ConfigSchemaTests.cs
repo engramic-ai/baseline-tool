@@ -123,6 +123,28 @@ public sealed class ConfigSchemaTests
             ConfigFile.FindProblem("os-lifecycle.json", OverridePath, Encoding.UTF8.GetBytes(copy)));
     }
 
+    [Theory]
+    [InlineData("""{ "\ud800": 1 }""")]
+    [InlineData("""{ "lastReviewed": "2026-09-16", "reviewWarningDays": 90, "upcomingEndWarningDays": 60, "\udc00": 1 }""")]
+    [InlineData("""{ "lastReviewed": "2026-09-16", "reviewWarningDays": 90, "upcomingEndWarningDays": 60, "windows11": [ { "build": 26100, "x\ud800y": 1 } ] }""")]
+    public void A_member_named_by_an_escaped_lone_surrogate_is_refused_not_thrown(string copy)
+    {
+        // Plain ASCII, so it is UTF-8, and well formed JSON; but the name is no string, and reading it throws.
+        var problem = ConfigFile.FindProblem("os-lifecycle.json", OverridePath, Encoding.UTF8.GetBytes(copy));
+
+        Assert.StartsWith($"{OverridePath} is not valid JSON: ", problem, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("""{ "lastReviewed": "\ud800", "reviewWarningDays": 90, "upcomingEndWarningDays": 60 }""")]
+    [InlineData("""{ "lastReviewed": "2026-09-16", "reviewWarningDays": 90, "upcomingEndWarningDays": 60, "windows11": [ { "build": 26100, "version": "24H2\udc00" } ] }""")]
+    public void A_value_the_file_s_reader_reads_that_is_an_escaped_lone_surrogate_is_refused_not_thrown(string copy)
+    {
+        var problem = ConfigFile.FindProblem("os-lifecycle.json", OverridePath, Encoding.UTF8.GetBytes(copy));
+
+        Assert.StartsWith($"{OverridePath} is not a valid os-lifecycle.json: ", problem, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Nesting_as_deep_as_the_limit_passes_and_any_deeper_is_refused()
     {

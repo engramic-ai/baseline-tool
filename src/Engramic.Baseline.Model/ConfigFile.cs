@@ -87,7 +87,7 @@ public static class ConfigFile
             read(json);
             return null;
         }
-        catch (JsonException e)
+        catch (Exception e) when (e is JsonException or InvalidOperationException)
         {
             return $"{path} is not a valid {name}: {e.Message}";
         }
@@ -141,8 +141,10 @@ public static class ConfigFile
 
             return null;
         }
-        catch (JsonException e)
+        catch (Exception e) when (e is JsonException or InvalidOperationException)
         {
+            // GetString throws InvalidOperationException for a name that is an escaped lone surrogate, such as
+            // "\ud800", which is well formed JSON but no string.
             return $"{path} is not valid JSON: {e.Message}";
         }
     }

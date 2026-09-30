@@ -6,6 +6,7 @@
       "src\\Engramic.Baseline.Engine\\Engramic.Baseline.Engine.csproj",
       "src\\Engramic.Baseline.Model\\Engramic.Baseline.Model.csproj",
       "src\\Engramic.Baseline.Platform\\Engramic.Baseline.Platform.csproj",
+      "tests\\Engramic.Baseline.Contracts.Tests\\Engramic.Baseline.Contracts.Tests.csproj",
       "tests\\Engramic.Baseline.Controls.Tests\\Engramic.Baseline.Controls.Tests.csproj",
       "tests\\Engramic.Baseline.Engine.Tests\\Engramic.Baseline.Engine.Tests.csproj",
       "tests\\Engramic.Baseline.Invariants.Tests\\Engramic.Baseline.Invariants.Tests.csproj",

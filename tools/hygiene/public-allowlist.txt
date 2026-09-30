@@ -51,3 +51,6 @@ www.engramic.ai
 [non-ascii]
 docs/CONTROL-MAPPING.md; tools/Export-ControlMapping.ps1 writes it with a UTF-8 byte order mark
 docs/INTUNE.md; the deployment diagram draws its tree with box-drawing characters and arrows
+tests/Engramic.Baseline.Contracts.Tests/Golden/status-reader-probe.json; the exact bytes of status.json, which start with a UTF-8 byte order mark, with text beyond ASCII that a reader must decode as UTF-8
+tests/Engramic.Baseline.Contracts.Tests/Golden/status-su01-fail.json; the exact bytes of status.json, which start with a UTF-8 byte order mark
+tests/Engramic.Baseline.Contracts.Tests/Golden/status-su01-pass.json; the exact bytes of status.json, which start with a UTF-8 byte order mark

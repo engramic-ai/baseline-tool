@@ -1,0 +1,62 @@
+﻿{
+  "schemaVersion": 1,
+  "toolVersion": "1.0.0-alpha.0",
+  "scope": "Machine",
+  "platform": "windows",
+  "computerName": "DEVICE02",
+  "auditTime": "2026-09-29T14:03:49.1675407Z",
+  "runAs": "NT AUTHORITY\\SYSTEM",
+  "elevated": true,
+  "os": "Windows 10 22H2 Professional (19045.6456)",
+  "counts": {
+    "Pass": 0,
+    "Fail": 1,
+    "Warn": 0,
+    "Manual": 0,
+    "Info": 0,
+    "NotApplicable": 0,
+    "Skipped": 0,
+    "Error": 0
+  },
+  "autoFailCount": 1,
+  "autoFails": [
+    "SU-01"
+  ],
+  "checks": {
+    "SU-01": {
+      "status": "Fail",
+      "frameworks": [
+        "CE v3.3",
+        "CE+ TC2"
+      ],
+      "scope": "Machine",
+      "autoFail": true
+    }
+  },
+  "frameworks": {
+    "ce-v3.3": {
+      "label": "Cyber Essentials v3.3",
+      "applicable": 1,
+      "met": 0,
+      "attention": 1,
+      "confirm": 0,
+      "notApplicable": 0,
+      "metPct": 0
+    },
+    "ce-plus": {
+      "label": "Cyber Essentials Plus",
+      "tcs": {
+        "TC1": "Not assessed",
+        "TC2": "Likely fail",
+        "TC3": "Not assessed",
+        "TC4": "Not assessed",
+        "TC5": "Not assessed"
+      },
+      "onTrack": 0,
+      "total": 5
+    }
+  },
+  "hardware": null,
+  "packs": [],
+  "reportFolder": ""
+}

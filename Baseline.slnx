@@ -20,6 +20,7 @@
   <Folder Name="/tests/">
     <Project Path="tests/AotCanary/AotCanary.csproj" />
     <Project Path="tests/Engramic.Baseline.Cli.Tests/Engramic.Baseline.Cli.Tests.csproj" />
+    <Project Path="tests/Engramic.Baseline.Contracts.Tests/Engramic.Baseline.Contracts.Tests.csproj" />
     <Project Path="tests/Engramic.Baseline.Controls.Tests/Engramic.Baseline.Controls.Tests.csproj" />
     <Project Path="tests/Engramic.Baseline.Engine.Tests/Engramic.Baseline.Engine.Tests.csproj" />
     <Project Path="tests/Engramic.Baseline.Invariants.Tests/Engramic.Baseline.Invariants.Tests.csproj" />

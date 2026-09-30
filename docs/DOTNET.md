@@ -19,11 +19,15 @@ This note covers the layout, the rules the build enforces, and how to build and 
 | `src/Engramic.Baseline.Windows` | The Windows primitives, calling Win32 through code that CsWin32 generates from `NativeMethods.txt`, including SecureStore and the audit mutex. |
 | `src/Engramic.Baseline.Cli` | `baseline.exe`, the command line. |
 | `tests/Engramic.Baseline.*.Tests` | xUnit v3 tests: one project for each library, and one for the command line. |
+| `tests/Engramic.Baseline.Contracts.Tests` | The status.json contract: golden files of its bytes, and the Intune scripts run on it (below). |
 | `tests/Engramic.Baseline.Invariants.Tests` | Tests of the repository's own rules, described below. |
 | `tests/Engramic.Baseline.Testing` | Fakes and recorded responses that the tests share. |
 | `tests/Engramic.Baseline.Testing.Windows` | Windows fixtures: folders under the temp folder with the security descriptors a test gives, junctions, hard links and other reparse points, and mutexes of the tests' own. |
 | `tests/AotCanary` | Compiles the AOT-clean libraries with Native AOT and calls into each one. |
 | `tools/parity` | Compares the ported checks with the PowerShell module on a device (below). |
+| `tests/parity/divergences.json` | The ledger of accepted differences between the module and `baseline.exe`, with the reason and scope of each. |
+| `tools/contracts` | Runs the unchanged Intune scripts on a status.json, and proves the contract end to end as SYSTEM in CI (below). |
+| `tools/ci` | Helpers for CI runners only, such as running a program as SYSTEM through a temporary scheduled task. |
 
 Model, Platform, Engine and Controls target `net10.0` and must not depend on Windows, so their tests
 run on Linux too. Windows, the CLI and their tests target `net10.0-windows`. All build output goes
@@ -151,7 +155,10 @@ On Linux, use `Baseline.Portable.slnf` in place of `Baseline.slnx`.
 
 A hung test fails the run instead of holding it until CI gives up: once no test has finished for 30 seconds,
 the hang dump extension (`tests/Directory.Build.props`) dumps and stops the test process, and `TestResults/`
-gets the dump and a `_hang.log` that names the tests still running. Tests that wait on work on other threads,
+gets the dump and a `_hang.log` that names the tests still running. A project whose tests are slow by nature
+sets a longer `BaselineHangDumpTimeout` in its project file: the Contracts tests wait 10 minutes, since each of
+their Intune-reader runs starts Windows PowerShell five times and may take up to 210 seconds on a busy runner
+before it gives up (`IntuneReaders.cs` gives the measurements). Tests that wait on work on other threads,
 as the runner's tests do, give up on each wait after 10 seconds and say what they were waiting for, and they
 move a fake clock only once the code under test has started its timer on it.
 
@@ -291,14 +298,116 @@ Not ported yet: counting failed runs in last-error.json (only into a data folder
 checked, as the module does), the report folder and its retention, the log, events 1000 to 1003, and
 `excludeCheckIds` from an administrator's config.
 
+The Contracts job runs it as SYSTEM on its runner, in the data folder the installer makes (below).
+
+## The status.json contract
+
+The Intune discovery and detection scripts already deployed in tenants read status.json, schema 1, so its
+bytes are a contract. Three kinds of test hold it.
+
+**Golden files.** `tests/Engramic.Baseline.Contracts.Tests/Golden` holds the exact bytes `baseline.exe` writes
+for three documents: the scheduled audit as SYSTEM with SU-01 passing, the same with SU-01 failing, and a
+reader probe that uses every status, all three frameworks, the hardware block, a report folder and text
+beyond ASCII. The tests check that the product writes each one byte for byte and reads it back.
+`StatusContract` compares a file with its golden file and says where they differ: the byte order mark, UTF-8,
+every key by its exact name, casing and order, the kind and value of every value, the line ends, and then the
+bytes, so escaping and indentation cannot drift either. A golden file changes only with the contract, never
+to make a test pass. The golden files start with a byte order mark, so the hygiene allowlist names them.
+
+**The Intune scripts.** `tools/contracts/Invoke-IntuneReaders.ps1` runs `intune/Discover-CECompliance.ps1` and
+`Detect-CECompliance.ps1` from their files, unchanged, in 64-bit and 32-bit Windows PowerShell 5.1 (System32's
+and SysWOW64's), hidden, and returns what each reported as data: the exit code, the output, the discovery JSON
+or the detection line split into its parts, and the bitness, version and account each host said it ran as.
+Given a file, it copies it into a data folder of its own and points the hosts at it through `ProgramData`,
+where both scripts look; elevated, that folder is born locked as the installer makes the data folder, so the
+scripts' own trust check passes. With `-MachineDataFolder` they read the device's data folder, as under
+Intune. The discovery script starts the scheduled audit when status.json is old or unreadable, so each host
+first replaces `Get-ScheduledTask` and `Start-ScheduledTask` with stand-ins that record the attempt and fail,
+as they do where the task is missing: a test file never starts a real audit on the machine running it.
+
+The Intune-reader tests run both scripts on the golden documents as Baseline writes them at the time of the
+test, since the scripts measure the audit's age from the clock: both hosts must report the same, every value
+of the probe must come through, and `CEOSSupported` must follow SU-01. They skip where there is no Windows
+PowerShell, such as on Linux.
+
+**Deliberate changes.** The tests change a copy of the probe, never the product: a key renamed, a nested key
+renamed, a framework's key renamed, a check identifier's casing changed, a fixed key's casing changed, and the
+byte order mark removed. The golden comparison must name each change. The Intune scripts must report
+something else, in each host, for every change they can see:
+
+| Change | Why the Intune scripts see it |
+|---|---|
+| A key renamed (`autoFailCount`, a check's `status`, `ce-v3.3`) | They read those values, and the probe gives each a value they can tell from the one they fall back to. |
+| A check identifier's casing changed (`SU-03` to `su-03`) | The discovery script lists the failing checks by their keys, as written. |
+| The byte order mark removed | They read status.json without naming an encoding, so Windows PowerShell 5.1 reads a file without the mark in the ANSI code page, and the probe's `toolVersion`, which is not ASCII, arrives garbled. |
+
+PowerShell finds a property whatever its case (the discovery script itself asks for `SchemaVersion` and
+`AuditTime`), so a change to the casing of a fixed key such as `autoFailCount` cannot change what the scripts
+print. The tests say so, and the golden tests are what guard it, for every other reader of the file. If the
+scripts ever name UTF-8 when they read status.json, removing the mark stops changing their output and the
+tests say that too; the golden tests still guard the mark, which the scripts already in tenants need.
+
+**End to end, as SYSTEM.** `tools/contracts/Test-StatusContract.ps1`, which the Contracts job runs on its
+runner, installs with `intune/Install-CEChecker.ps1` and shows, step by step, that:
+
+1. `scheduled-audit` as SYSTEM refuses a data folder that does not exist, and creates none;
+2. the install's data folder is born locked (owned by Administrators, a protected access list of SYSTEM and
+   Administrators) and sealed;
+3. without the seal, `scheduled-audit` refuses the folder and writes nothing;
+4. it writes status.json with a byte order mark, in strict UTF-8, with every key as the golden file spells and
+   orders it, owned by Administrators, trusted by the discovery script's own check, and no temporary file left;
+5. three more runs replace it atomically: the file ID changes each time, and a reader polling throughout sees
+   only the old file or the new one, whole, and never no file;
+6. to 8. the Intune scripts, in both hosts, as SYSTEM and as the elevated administrator, report the same for it
+   as for the status.json that the installed module then writes for SU-01 in the same folder as SYSTEM
+   (`tools/contracts/Write-ModuleStatus.ps1`), apart from the tool version, which the ledger (below) ignores
+   (`tools/contracts/Compare-IntuneReaders.ps1`);
+9. with Users given write access to the data folder, `scheduled-audit` refuses it and leaves status.json alone;
+10. with a junction in the data folder's place, leading to an empty folder only SYSTEM and Administrators can
+    change, `scheduled-audit` opens the junction as itself, refuses it and writes nothing where it leads.
+
+Each step that takes something away puts it back, and the data folder is left as the install made it.
+
+It changes the machine, so it refuses to run unless elevated, and where the tool is installed or its data
+folder exists unless given `-Force`. Runs as SYSTEM go through `tools/ci/Invoke-AsSystem.ps1`: a temporary
+scheduled task, as the deployment rehearsal uses, with its wrapper and output in a folder only SYSTEM and
+Administrators can change.
+
+Without elevation, the golden and Intune-reader tests run as they are, and the reader comparison runs on
+files you make (the redirect from cmd):
+
+```
+dotnet test --project tests/Engramic.Baseline.Contracts.Tests -c Release
+artifacts\bin\Engramic.Baseline.Cli\release\baseline.exe audit --id SU-01 --json status > baseline.json
+powershell -ExecutionPolicy Bypass -File tools\contracts\Write-ModuleStatus.ps1 -Id SU-01 -Path module.json -DataRoot module-data
+powershell -ExecutionPolicy Bypass -File tools\contracts\Invoke-IntuneReaders.ps1 -StatusPath baseline.json -ResultPath readers-baseline.json
+powershell -ExecutionPolicy Bypass -File tools\contracts\Invoke-IntuneReaders.ps1 -StatusPath module.json -ResultPath readers-module.json
+powershell -ExecutionPolicy Bypass -File tools\contracts\Compare-IntuneReaders.ps1 -ModuleResultPath readers-module.json -BaselineResultPath readers-baseline.json
+```
+
 ## Comparing with the PowerShell module
 
 `tools/parity/Compare-Parity.ps1` runs the same checks in the untouched module, out of process in Windows
-PowerShell 5.1, and in `baseline.exe` on this device, then compares every field of every finding, every
-value of status.json and what the Intune discovery script reports for each. It ignores what differs by
-design (the tool version, times and paths), lists each difference it expects with the reason, and exits
-1 on any other difference. Run it as the account whose audit you want to compare: a standard user, an
-elevated administrator or SYSTEM.
+PowerShell 5.1, and in `baseline.exe` on this device, as the account that runs it, then compares: first the
+device context each tool saw (computer, account, elevation, Windows), since one difference there explains many
+after it; then every field of every finding and their order, every value of status.json and its byte order
+mark, and every value the Intune discovery and detection scripts report for each file in both hosts
+(`tools/contracts/Invoke-IntuneReaders.ps1`).
+
+Every accepted difference is in the ledger, `tests/parity/divergences.json`. An entry names the path it covers
+(and everything under it, with `*` for one part of a name, such as the host in `discovery[*]`); its kind,
+`ignored` for a value that differs by design and is not compared, such as the tool version and the audit time,
+or `explained` for a difference accepted until more is ported, such as the hardware block `baseline.exe` does
+not write yet; the reason; and the scope, the contexts (`standard user`, `elevated administrator`, `SYSTEM`)
+and checks (identifiers, or `*`) it applies to. The ledger is checked when it is read, and one that cannot be
+read stops the run. Anything else that differs is unexplained, and the gate is zero unexplained differences:
+the script exits 1 on any. An explained entry that explained nothing in a run is listed, to take off once no
+context or check needs it. `-ResultPath` writes every value compared, with its result and ledger entry, and
+the verdict, as JSON.
+
+Run it as the account whose audit you want to compare: a standard user, an elevated administrator or SYSTEM.
+The Parity job runs it for SU-01 as the elevated administrator and, through a temporary scheduled task, as
+SYSTEM.
 
 ```
 dotnet build Baseline.slnx -c Release
@@ -313,6 +422,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/parity/Compare-Parity.
 |---|---|
 | Build and test (.NET) | On Windows: the locked restore, the build with warnings as errors, the tests, `baseline.exe` published and run with `--version`, and the AOT canary published and run. |
 | Unit tests (Linux) | Builds and tests the portable projects in `Baseline.Portable.slnf`. |
+| Contracts | On Windows: the contract tests (the golden files, and the Intune scripts in both hosts with the deliberate changes), then `baseline.exe` published self-contained under Program Files and `tools/contracts/Test-StatusContract.ps1`: the install, `scheduled-audit` as SYSTEM, and the Intune scripts on its status.json and the module's, as SYSTEM and as administrator. It uploads what its steps wrote only when it fails. |
+| Parity | On Windows: `baseline.exe` published the same way, and `Compare-Parity.ps1` for SU-01 as the elevated administrator and as SYSTEM, which fails on any difference the ledger does not explain. It uploads both comparisons only when it fails. |
 | Hygiene | Every tracked text file is ASCII, and every URL host in `src/`, `tests/`, `tools/` and `docs/`, every `engramic-ai/` repository and every `engramic.ai` name anywhere is on `tools/hygiene/public-allowlist.txt`. |
 
 The PowerShell module's jobs stay in `ci.yml`.

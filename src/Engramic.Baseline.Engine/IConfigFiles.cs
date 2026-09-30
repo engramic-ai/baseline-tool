@@ -4,9 +4,9 @@ namespace Engramic.Baseline.Engine;
 /// Where the config files come from, by name, such as os-lifecycle.json.
 /// </summary>
 /// <remarks>
-/// The seam for administrators' overrides: today the only source is the copy shipped inside the tool.
-/// Overrides, read through the secure data folder and its trust checks, will replace a shipped file
-/// whole, as in the PowerShell tool.
+/// The seam for administrators' overrides: the copy shipped inside the tool is one source, and
+/// <see cref="ConfigTrustGate"/> puts in front of it an administrator's override that passes every rule,
+/// read through the secure data folder, which replaces the shipped file whole, as in the PowerShell tool.
 /// </remarks>
 public interface IConfigFiles
 {

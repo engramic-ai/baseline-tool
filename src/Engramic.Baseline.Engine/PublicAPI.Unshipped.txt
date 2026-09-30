@@ -7,6 +7,7 @@ const Engramic.Baseline.Engine.AuditRunner.NoResultActual = "Check returned no r
 const Engramic.Baseline.Engine.AuditRunner.SkippedActual = "Not run: requires an elevated (Run as administrator) PowerShell session." -> string!
 const Engramic.Baseline.Engine.AuditRunner.SkippedRecommendation = "Re-run the audit from an elevated PowerShell prompt." -> string!
 const Engramic.Baseline.Engine.AuditRunner.TimedOutRecommendation = "Run the audit again. If this check keeps running out of time, investigate manually." -> string!
+const Engramic.Baseline.Engine.ConfigTrustGate.MaxOverrideLength = 1048576 -> int
 const Engramic.Baseline.Engine.FindingIds.MaxSlugLength = 40 -> int
 const Engramic.Baseline.Engine.FrameworkTags.CePlusTC1 = "CE+ TC1" -> string!
 const Engramic.Baseline.Engine.FrameworkTags.CePlusTC2 = "CE+ TC2" -> string!
@@ -135,6 +136,11 @@ Engramic.Baseline.Engine.CheckSelection.Ids.init -> void
 Engramic.Baseline.Engine.CheckSelection.Matches(Engramic.Baseline.Engine.CheckInfo! check) -> bool
 Engramic.Baseline.Engine.CheckSelection.Scopes.get -> System.Collections.Generic.IReadOnlyList<Engramic.Baseline.Model.CheckScope>!
 Engramic.Baseline.Engine.CheckSelection.Scopes.init -> void
+Engramic.Baseline.Engine.ConfigTrustGate
+Engramic.Baseline.Engine.ConfigTrustGate.ConfigTrustGate(Engramic.Baseline.Engine.IConfigFiles! shipped, Engramic.Baseline.Platform.ISecureStore? store, Engramic.Baseline.Platform.ProcessAccount! account) -> void
+Engramic.Baseline.Engine.ConfigTrustGate.Notices.get -> System.Collections.Generic.IReadOnlyList<string!>!
+Engramic.Baseline.Engine.ConfigTrustGate.Overrides.get -> System.Collections.Generic.IReadOnlyList<string!>!
+Engramic.Baseline.Engine.ConfigTrustGate.Read(string! name) -> byte[]?
 Engramic.Baseline.Engine.DeviceContext
 Engramic.Baseline.Engine.DeviceContext.<Clone>$() -> Engramic.Baseline.Engine.DeviceContext!
 Engramic.Baseline.Engine.DeviceContext.AuditTime.get -> System.DateTimeOffset

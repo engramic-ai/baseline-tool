@@ -11,6 +11,7 @@ Expect("Model: source-generated JSON", ModelRoundTrip());
 Expect("Platform", Sid.TryParse("s-1-5-18", out var sid) && sid == Sid.LocalSystem && RegistryValue.FromDWord(7).Number == 7);
 Expect("Engine", CheckIds.IsWellFormed("SU-01") && !CheckIds.IsWellFormed("SU-1") && FindingIds.For("SU-01", "Lifecycle data") == "SU-01:Lifecycle-data");
 Expect("Engine: runner and rollups", await EngineRun());
+Expect("Engine: config trust gate", ConfigTrustGateDecides());
 Expect("Windows", ConsoleSession.GetActiveSessionId() is null or > 0);
 Expect("Windows: registry and account", WindowsReads());
 Expect("Platform: data folder trust", TrustRules());
@@ -76,6 +77,19 @@ static async Task<bool> EngineRun()
     return findings is [{ Status: FindingStatus.Pass }]
         && status.Frameworks.CeV33?.MetPct == 100
         && status.Frameworks.CePlus?.TestCases.TC2 == CePlusState.LikelyPass;
+}
+
+static bool ConfigTrustGateDecides()
+{
+    // An override that meets its schema replaces the shipped file; one that names a member twice does not.
+    var shipped = new CanaryConfigFiles("""{ "lastReviewed": "2026-09-16", "reviewWarningDays": 90, "upcomingEndWarningDays": 60 }""");
+    var system = new ProcessAccount(@"NT AUTHORITY\SYSTEM", IsAdministrator: true, IsLocalSystem: true);
+    using var valid = new CanaryStore("""{ "lastReviewed": "2026-01-01", "reviewWarningDays": 30, "upcomingEndWarningDays": 60 }""");
+    using var twice = new CanaryStore("""{ "lastReviewed": "2026-01-01", "reviewWarningDays": 30, "upcomingEndWarningDays": 60, "lastReviewed": "2020-01-01" }""");
+    var loaded = new ConfigTrustGate(shipped, valid, system);
+    var refused = new ConfigTrustGate(shipped, twice, system);
+    return new AuditConfig(loaded).OsLifecycle.LastReviewed == "2026-01-01" && loaded.Overrides.Count == 1
+        && new AuditConfig(refused).OsLifecycle.LastReviewed == "2026-09-16" && refused.Notices.Count == 1;
 }
 
 static bool WindowsReads()
@@ -155,4 +169,35 @@ internal sealed class NoEvents : IEventLog
 internal sealed class NoConfigFiles : IConfigFiles
 {
     public byte[]? Read(string name) => null;
+}
+
+/// <summary>The shipped os-lifecycle.json, and no other file.</summary>
+internal sealed class CanaryConfigFiles(string lifecycle) : IConfigFiles
+{
+    public byte[]? Read(string name) => name == ConfigFile.OsLifecycleName ? System.Text.Encoding.UTF8.GetBytes(lifecycle) : null;
+}
+
+/// <summary>A data folder in memory whose config folder holds one os-lifecycle.json.</summary>
+internal sealed class CanaryStore(string lifecycle) : ISecureStore
+{
+    public string RootPath => @"C:\ProgramData\EngramicBaseline";
+
+    public IReadOnlyList<string> Notices => [];
+
+    public byte[]? ReadFile(DataFolder folder, string name, int maxLength)
+    {
+        return folder == DataFolder.Config && name == ConfigFile.OsLifecycleName ? System.Text.Encoding.UTF8.GetBytes(lifecycle) : null;
+    }
+
+    public void WriteFile(string name, ReadOnlySpan<byte> content) => throw new NotSupportedException();
+
+    public void WriteFile(DataFolder folder, string name, ReadOnlySpan<byte> content) => throw new NotSupportedException();
+
+    public IScratchFolder CreateScratchFolder() => throw new NotSupportedException();
+
+    public IReadOnlyList<string> DeleteTree(DataFolder folder, string name) => throw new NotSupportedException();
+
+    public void Dispose()
+    {
+    }
 }

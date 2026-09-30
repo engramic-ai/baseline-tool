@@ -25,3 +25,20 @@ FlushFileBuffers
 SHGetKnownFolderPath
 FOLDERID_ProgramData
 CoTaskMemFree
+
+// The service client's proxies (WinHttpProxy): the machine's WinHTTP proxy, and what a PAC file says for an
+// address, asked out of process through the WinHTTP Web Proxy Auto-Discovery service.
+WinHttpGetDefaultProxyConfiguration
+WinHttpOpen
+WinHttpSetTimeouts
+WinHttpGetProxyForUrl
+WinHttpCloseHandle
+GlobalFree
+WINHTTP_PROXY_INFO
+WINHTTP_AUTOPROXY_OPTIONS
+WINHTTP_AUTOPROXY_AUTO_DETECT
+WINHTTP_AUTOPROXY_CONFIG_URL
+WINHTTP_AUTOPROXY_RUN_OUTPROCESS_ONLY
+WINHTTP_AUTO_DETECT_TYPE_DHCP
+WINHTTP_AUTO_DETECT_TYPE_DNS_A
+WINHTTP_ACCESS_TYPE

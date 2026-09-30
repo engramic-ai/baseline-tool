@@ -6,6 +6,7 @@
 //   ProfileReader    reading user profiles by handle, without following links
 //   the registry primitive, with an explicit 64-bit view
 //   the trusted process runner, for the few Windows tools that have no API
+//   the service client, the one place an HTTP request is sent, with the proxy it chose for it
 //
 // In a listed file, each use sits between "#pragma warning disable RS0030 // <why>" and
 // "#pragma warning restore RS0030", around as few lines as possible. Adding a file here, or a use to
@@ -17,3 +18,4 @@
 
 src/Engramic.Baseline.Windows/WindowsRegistry.cs; the registry primitive: opens a key read-only in the view its caller names and reads one value as stored
 src/Engramic.Baseline.Windows/SecureStore.cs; SecureStore, the machine data folder: opens ProgramData, the data folder and the files in it as themselves (never through a link) and checks each through its handle, creates new files exclusively, renames and deletes its own files through their handles, and asks the known-folder API for ProgramData, whose answer follows the environment, checking it against the Windows drive
+src/Engramic.Baseline.Windows/ServiceClient.cs; the service client: sends each request through an HttpClient and handler of its own, with the proxy it chose for that request and never .NET's default proxy, no redirects or cookies, and the Windows sign-in only for a proxy allowed it

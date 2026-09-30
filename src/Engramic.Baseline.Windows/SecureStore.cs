@@ -731,67 +731,86 @@ public sealed class SecureStore : ISecureStore
     /// Establishes a folder the store keeps at a name in a folder it holds: keeps what is there when it passes
     /// the check, deletes a link as a link, moves anything else aside out of the data folder, and makes the
     /// folder locked from birth when nothing is there and <paramref name="create"/> is set. Something that
-    /// appears at the name in the meantime is judged in turn.
+    /// appears at the name in the meantime is judged in turn. What was removed is told once it is known
+    /// whether a fresh folder was made in its place, in the order it was removed.
     /// </summary>
     /// <returns>The folder, held; null when it is missing and not to be made.</returns>
     private HeldFolder? Establish(SafeFileHandle parent, string name, string path, string? relative, Func<FileFacts, ItemSecurity, string?> judge, bool usersMayRead, bool create)
     {
-        var last = "something kept taking its place";
-        for (var attempt = 1; attempt <= Attempts; attempt++)
+        var removed = new List<Removal>();
+        var made = false;
+        try
         {
-            var error = OpenToJudge(parent, name, out var item, out var readable);
-            if (IsMissing(error))
+            var last = "something kept taking its place";
+            for (var attempt = 1; attempt <= Attempts; attempt++)
             {
-                if (!create)
+                var error = OpenToJudge(parent, name, out var item, out var readable);
+                if (IsMissing(error))
                 {
-                    return null;
+                    if (!create)
+                    {
+                        return null;
+                    }
+
+                    if (TryCreateFolder(parent, name, path, usersMayRead, FolderRights, out error) is { } created)
+                    {
+                        made = true;
+                        return created;
+                    }
+
+                    // Something appeared at the name after it was found missing, or is still being deleted: judge
+                    // it again, as whatever is there now.
+                    last = FileHandles.Failure("it could not be created", error).Message;
+                    continue;
                 }
 
-                if (TryCreateFolder(parent, name, path, usersMayRead, FolderRights, out error) is { } created)
+                if (item is null)
                 {
-                    return created;
+                    last = FileHandles.Failure("it could not be opened to check it (it may be open in another process)", error).Message;
+                    if (!IsTransient(error))
+                    {
+                        break;
+                    }
+
+                    Pause(attempt);
+                    continue;
                 }
 
-                // Something appeared at the name after it was found missing, or is still being deleted: judge it
-                // again, as whatever is there now.
-                last = FileHandles.Failure("it could not be created", error).Message;
-                continue;
-            }
-
-            if (item is null)
-            {
-                last = FileHandles.Failure("it could not be opened to check it (it may be open in another process)", error).Message;
-                if (!IsTransient(error))
+                string? problem;
+                try
                 {
-                    break;
+                    var facts = FileHandles.ReadFacts(item);
+                    problem = readable ? judge(facts, FileHandles.ReadSecurity(item)) : Unreadable(path);
+                }
+                catch
+                {
+                    item.Dispose();
+                    throw;
                 }
 
-                Pause(attempt);
-                continue;
-            }
+                if (problem is null)
+                {
+                    return Hold(item, path);
+                }
 
-            string? problem;
-            try
-            {
-                var facts = FileHandles.ReadFacts(item);
-                problem = readable ? judge(facts, FileHandles.ReadSecurity(item)) : Unreadable(path);
-            }
-            catch
-            {
                 item.Dispose();
-                throw;
+                if (Remove(parent, name, path, relative, problem) is { } removal)
+                {
+                    removed.Add(removal);
+                }
             }
 
-            if (problem is null)
-            {
-                return Hold(item, path);
-            }
-
-            item.Dispose();
-            Remove(parent, name, path, relative, problem);
+            throw new SecureStoreException($"Could not make a locked folder at {path}: {last.TrimEnd('.')}.");
         }
-
-        throw new SecureStoreException($"Could not make a locked folder at {path}: {last.TrimEnd('.')}.");
+        finally
+        {
+            foreach (var removal in removed)
+            {
+                Notify(removal.Aside is null
+                    ? DataFolderLayout.LinkRemovedNotice(path)
+                    : DataFolderLayout.MovedAsideNotice(path, removal.Aside, removal.Reason, replaced: made));
+            }
+        }
     }
 
     /// <summary>
@@ -827,10 +846,11 @@ public sealed class SecureStore : ISecureStore
     /// <summary>
     /// Removes an untrusted item from where the store keeps a folder, by its handle, without looking inside
     /// it: a link is deleted as a link, and anything else is renamed aside out of the data folder
-    /// (<see cref="DataFolderLayout.AsideName"/>). Either is a notice and event 1003. Tries again while another
-    /// process holds it or something in it open, then gives up.
+    /// (<see cref="DataFolderLayout.AsideName"/>). Either is for a notice and event 1003, which the caller
+    /// gives. Tries again while another process holds it or something in it open, then gives up.
     /// </summary>
-    private void Remove(SafeFileHandle parent, string name, string path, string? relative, string reason)
+    /// <returns>What was done; null when the item was already gone.</returns>
+    private Removal? Remove(SafeFileHandle parent, string name, string path, string? relative, string reason)
     {
         for (var attempt = 1; ; attempt++)
         {
@@ -838,7 +858,7 @@ public sealed class SecureStore : ISecureStore
             var error = OpenRelative(parent, name, RemoveRights, ShareAll, NTCREATEFILE_CREATE_DISPOSITION.FILE_OPEN, Asynchronous, null, out var item);
             if (IsMissing(error))
             {
-                return;
+                return null;
             }
 
             string? aside = null;
@@ -849,8 +869,7 @@ public sealed class SecureStore : ISecureStore
                     var facts = FileHandles.ReadFacts(item);
                     if (facts.IsReparsePoint && MarkForDeletion(item, facts) == 0)
                     {
-                        Notify(DataFolderLayout.LinkRemovedNotice(path));
-                        return;
+                        return new Removal(Aside: null, reason);
                     }
 
                     var asideName = DataFolderLayout.AsideName(DataFolderName, NewId(), relative);
@@ -858,8 +877,7 @@ public sealed class SecureStore : ISecureStore
                     error = Rename(item, _programData, asideName, replace: false);
                     if (error == 0)
                     {
-                        Notify(DataFolderLayout.MovedAsideNotice(path, aside, reason));
-                        return;
+                        return new Removal(aside, reason);
                     }
 
                     if ((WIN32_ERROR)error == WIN32_ERROR.ERROR_ALREADY_EXISTS && attempt < Attempts)
@@ -1224,6 +1242,11 @@ public sealed class SecureStore : ISecureStore
         using var timer = _time.CreateTimer(static state => ((ManualResetEventSlim)state!).Set(), elapsed, RetryDelays[Math.Min(attempt, RetryDelays.Length) - 1], Timeout.InfiniteTimeSpan);
         elapsed.Wait();
     }
+
+    /// <summary>An untrusted item removed from where the store keeps a folder, and why it was not trusted.</summary>
+    /// <param name="Aside">Where it was moved aside to; null for a link, deleted as a link.</param>
+    /// <param name="Reason">Why it was not trusted.</param>
+    private sealed record Removal(string? Aside, string Reason);
 
     /// <summary>A folder the store holds open without FILE_SHARE_DELETE, and its path as Windows spells it.</summary>
     private sealed class HeldFolder(SafeFileHandle handle, string path) : IDisposable

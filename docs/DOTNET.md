@@ -327,8 +327,10 @@ ProgramData), to `EngramicBaseline.untrusted-<id>` for the data folder itself an
 `EngramicBaseline.untrusted-<id>-<name>` for a folder in it, where `<id>` is 32 random hexadecimal digits: the names
 the module's `Get-CEDataAsidePath` and the installer's `Get-CEAsidePath` give. A name already taken is never
 replaced. A link is deleted as a link instead. Each is a notice (`Notices`) and Application event 1003 under the
-`EngramicBaseline` source, worded as the module words it and naming where the item went. Nothing untrusted is
-listed, re-owned or repaired: a handle its maker kept still works, which is why a fresh folder is made instead.
+`EngramicBaseline` source, worded as the module words it and naming where the item went. The module always says it
+"made a fresh, locked one in its place"; the store says so only once it has, and otherwise that nothing was made in
+its place, as when a read moves aside the folder it was to read from. Nothing untrusted is listed, re-owned or
+repaired: a handle its maker kept still works, which is why a fresh folder is made instead.
 
 - An item whose access list denies SYSTEM and Administrators everything is still moved: `DELETE` comes from the
   parent's `FILE_DELETE_CHILD`, and `FILE_READ_ATTRIBUTES` from its `FILE_LIST_DIRECTORY`, whatever the item's own

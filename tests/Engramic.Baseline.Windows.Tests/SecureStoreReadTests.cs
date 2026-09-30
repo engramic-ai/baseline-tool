@@ -222,7 +222,7 @@ public sealed class SecureStoreReadTests : IDisposable
     }
 
     [Fact]
-    public void Moves_aside_an_untrusted_folder_it_is_asked_to_read_from_and_reads_nothing()
+    public void Moves_aside_an_untrusted_folder_it_is_asked_to_read_from_reads_nothing_and_says_it_made_nothing_in_its_place()
     {
         _fixture.Tree.Folder(@"ProgramData\EngramicBaseline\config", TempTree.TreeAccess + "(A;OICI;FA;;;BU)");
         _fixture.Tree.File(@"ProgramData\EngramicBaseline\config\network.json", "{\"proxy\":\"planted\"}");
@@ -233,6 +233,8 @@ public sealed class SecureStoreReadTests : IDisposable
         var quarantine = Assert.Single(_fixture.Quarantines);
         Assert.EndsWith("-config", quarantine, StringComparison.Ordinal);
         Assert.Empty(_fixture.Entries);
-        Assert.Single(_fixture.Events.Entries);
+        var notice = $@"Moved an untrusted {_fixture.DataFolder}\config aside to {quarantine} ({_fixture.DataFolder}\config can be changed by S-1-5-32-545, not only administrators); nothing was made in its place. Nothing in it is used again; check it, then delete it.";
+        Assert.Equal([notice], store.Notices);
+        Assert.Equal([(1003, EventLogLevel.Warning, "Engramic Baseline - data folder: " + notice)], _fixture.Events.Entries);
     }
 }

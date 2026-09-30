@@ -214,6 +214,33 @@ public sealed class SecureStoreInitializeTests : IDisposable
         Assert.Empty(DataFolderFixture.Names(Path.Combine(_fixture.DataFolder, name)));
         Assert.DoesNotContain(Acls.Entries(Path.Combine(_fixture.DataFolder, name)), e => e.Contains("S-1-5-32-545 0x2 ", StringComparison.Ordinal));
         Assert.Contains($"aside to {quarantine} ({_fixture.DataFolder}\\{name} can be changed by S-1-5-32-545", Assert.Single(store.Notices), StringComparison.Ordinal);
+        Assert.EndsWith(" and made a fresh, locked one in its place. Nothing in it is used again; check it, then delete it.", store.Notices[0], StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Says_it_made_nothing_in_place_of_an_untrusted_folder_when_a_trusted_one_appeared_there_first()
+    {
+        _fixture.Tree.Folder(@"ProgramData\EngramicBaseline");
+        var logs = _fixture.Tree.Folder(@"ProgramData\EngramicBaseline\logs", TempTree.TreeAccess + "(A;OICI;0x2;;;BU)");
+        var hooks = new SecureStoreHooks
+        {
+            // Once the untrusted folder is gone, a trusted one takes the name before the store can make its own.
+            BeforeCreate = path =>
+            {
+                if (path == logs && !Directory.Exists(logs))
+                {
+                    Directory.CreateDirectory(logs);
+                }
+            },
+        };
+
+        using var store = _fixture.Initialize(hooks);
+
+        var quarantine = Assert.Single(_fixture.Quarantines);
+        Assert.Equal(
+            [$"Moved an untrusted {logs} aside to {quarantine} ({logs} can be changed by S-1-5-32-545, not only administrators); nothing was made in its place. Nothing in it is used again; check it, then delete it."],
+            store.Notices);
+        Assert.True(Directory.Exists(logs));
     }
 
     [Fact]

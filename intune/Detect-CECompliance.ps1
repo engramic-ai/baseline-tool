@@ -74,7 +74,7 @@ if (-not (Test-Path -LiteralPath $statusPath)) {
     exit 1
 }
 try {
-    $s = Get-Content -LiteralPath $statusPath -Raw | ConvertFrom-Json
+    $s = Get-Content -LiteralPath $statusPath -Raw -Encoding UTF8 | ConvertFrom-Json
 }
 catch {
     Write-Output "NO_DATA: status.json unreadable: $($_.Exception.Message)"

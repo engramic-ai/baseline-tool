@@ -68,7 +68,40 @@ public sealed class ConfigSchemaTests
     [InlineData(new byte[] { 0xEF, 0xBB, 0xBF, 0x7B, 0x22, 0xC0, 0xAF, 0x22, 0x3A, 0x31, 0x7D })]
     public void Text_that_is_not_UTF8_is_refused(byte[] copy)
     {
-        Assert.Equal($"{OverridePath} is not UTF-8 text.", ConfigFile.FindProblem("os-lifecycle.json", OverridePath, copy));
+        Assert.Equal(
+            $"{OverridePath} is not UTF-8 (line 1), so it may have been saved as ANSI; save it as UTF-8, for example with Set-Content -Encoding utf8.",
+            ConfigFile.FindProblem("os-lifecycle.json", OverridePath, copy));
+    }
+
+    [Fact]
+    public void A_copy_saved_as_ANSI_is_refused_with_the_line_that_is_not_UTF8()
+    {
+        // Windows PowerShell 5.1's Set-Content writes the ANSI code page, where a pound sign is the one byte A3.
+        byte[] copy =
+        [
+            .. Encoding.ASCII.GetBytes("{\r\n  \"lastReviewed\": \"2026-09-16\", \"reviewWarningDays\": 90, \"upcomingEndWarningDays\": 60,\r\n  \"notes\": \"Support costs "),
+            0xA3,
+            .. Encoding.ASCII.GetBytes("40 a device\"\r\n}\r\n"),
+        ];
+
+        Assert.Equal(
+            $"{OverridePath} is not UTF-8 (line 3), so it may have been saved as ANSI; save it as UTF-8, for example with Set-Content -Encoding utf8.",
+            ConfigFile.FindProblem("os-lifecycle.json", OverridePath, copy));
+    }
+
+    [Fact]
+    public void A_copy_saved_as_UTF16_is_refused_and_the_problem_says_so()
+    {
+        // What Windows PowerShell 5.1's > and Out-File write: a byte order mark, then UTF-16 little-endian.
+        byte[] littleEndian = [.. Encoding.Unicode.GetPreamble(), .. Encoding.Unicode.GetBytes(Valid)];
+        byte[] bigEndian = [.. Encoding.BigEndianUnicode.GetPreamble(), .. Encoding.BigEndianUnicode.GetBytes(Valid)];
+
+        Assert.Equal(
+            $"{OverridePath} is saved as UTF-16, as Windows PowerShell 5.1's > and Out-File save text, not as UTF-8; save it as UTF-8, for example with Set-Content -Encoding utf8.",
+            ConfigFile.FindProblem("os-lifecycle.json", OverridePath, littleEndian));
+        Assert.Equal(
+            $"{OverridePath} is saved as UTF-16 big-endian, not as UTF-8; save it as UTF-8, for example with Set-Content -Encoding utf8.",
+            ConfigFile.FindProblem("os-lifecycle.json", OverridePath, bigEndian));
     }
 
     [Fact]

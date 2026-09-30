@@ -223,7 +223,19 @@ public sealed class ConfigTrustGateTests
         var gate = Gate(LocalSystem);
 
         Assert.Equal(Bytes(Shipped), gate.Read(Name));
-        Assert.Equal([$"{Refused}{OverridePath} is not UTF-8 text."], gate.Notices);
+        Assert.Equal([$"{Refused}{OverridePath} is not UTF-8 (line 1), so it may have been saved as ANSI; save it as UTF-8, for example with Set-Content -Encoding utf8."], gate.Notices);
+    }
+
+    [Fact]
+    public void An_override_saved_as_UTF16_is_ignored_for_the_shipped_file_and_the_notice_says_how_to_save_it()
+    {
+        // As Windows PowerShell 5.1's Out-File writes it, which the module read and this tool does not.
+        _store.WriteFile(DataFolder.Config, Name, [.. Encoding.Unicode.GetPreamble(), .. Encoding.Unicode.GetBytes(Shipped)]);
+        var gate = Gate(LocalSystem);
+
+        Assert.Equal(Bytes(Shipped), gate.Read(Name));
+        Assert.Equal([$"{Refused}{OverridePath} is saved as UTF-16, as Windows PowerShell 5.1's > and Out-File save text, not as UTF-8; save it as UTF-8, for example with Set-Content -Encoding utf8."], gate.Notices);
+        Assert.Empty(gate.Overrides);
     }
 
     [Fact]

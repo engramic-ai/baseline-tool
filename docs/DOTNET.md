@@ -518,6 +518,13 @@ settings come through the gate once the gate is the `IConfigFiles` they are read
   overrides wherever the permissions pass.
 - An override that is not valid is refused and the shipped file used. In the module, one that `ConvertFrom-Json`
   cannot read stops the config load, and with it the audit.
+- An override must be UTF-8, with or without a byte order mark: one strict format for a file that SYSTEM trusts.
+  The module read overrides with `Get-Content -Raw`, which follows a UTF-16 byte order mark (what Windows
+  PowerShell 5.1's `>` and `Out-File` write) and in 5.1 reads a file without one as ANSI (what its `Set-Content`
+  writes), so an override saved either way loaded there. Here it is refused and the shipped file used, and the
+  notice and event 1003 say what was found and what to do: that the file is saved as UTF-16, or is not UTF-8 at a
+  given line and may be ANSI, and to save it as UTF-8, for example with `Set-Content -Encoding utf8`. ANSI text
+  with no character outside ASCII is already UTF-8, and loads.
 - An untrusted `config` folder is moved aside, with event 1003, rather than only ignored.
 - Each refused or unreadable override is also event 1003, not only a warning in the scheduled audit's output. An
   override that cannot be read fails the checks that need it, where in the module it stops the config load and

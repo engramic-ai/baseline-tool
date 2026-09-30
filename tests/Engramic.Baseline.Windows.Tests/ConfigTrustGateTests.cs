@@ -71,7 +71,7 @@ public sealed class ConfigTrustGateTests : IDisposable
     [InlineData("it is stored online only", "is stored online only, so opening it would fetch it from elsewhere.")]
     [InlineData("a folder is at its name", "is a folder, not a file.")]
     [InlineData("it is longer than the cap", "is 1048577 bytes long, more than the 1048576 bytes the tool reads from it.")]
-    [InlineData("it is not UTF-8", "is not UTF-8 text.")]
+    [InlineData("it is not UTF-8", "is not UTF-8 (line 1), so it may have been saved as ANSI; save it as UTF-8, for example with Set-Content -Encoding utf8.")]
     [InlineData("it names a member twice", "names lastReviewed more than once in one object (line 1), so which value counts is not clear.")]
     [InlineData("it is not what the file's reader accepts", "is not a valid os-lifecycle.json: ")]
     public void An_override_that_breaks_a_rule_is_ignored_for_the_shipped_file_and_logged(string rule, string reason)

@@ -360,6 +360,15 @@ It is read only when the trust rules pass for it and it is no longer than the le
 64 MiB; a longer file is refused, never cut short. A missing file, or a missing folder, reads as nothing, and so
 does an untrusted folder, once it has been moved aside.
 
+A file that breaks a rule, or whose access list keeps this account out, is refused. One that cannot be opened or
+read at the time is not judged at all, and the `SecureStoreException` says so (`IsUnavailable`): the file or its
+folder held open by another process without sharing, part of the file locked, or a device error. Anyone who may
+read the file can do the first two, and standard users may read the `config` folder. Nor does the store wait on
+an oplock another process holds on the file or a folder it judges: those opens use `FILE_COMPLETE_IF_OPLOCKED`,
+so an open that would wait for the holder to acknowledge the break comes back at once and is tried again, like
+one refused for sharing, six times over about three seconds. A holder who never acknowledges would otherwise hold
+the read, and the lock the config trust gate holds while it reads, for as long as they liked.
+
 **Scratch folders** (`CreateScratchFolder`) hold the files a Windows tool reads and writes, such as `secedit`'s
 INF and database: each is born locked under a random name in `scratch`, where the module's `New-CEScratchFolder`
 makes its own, held while in use, and deleted with everything in it when disposed. Nothing elevated writes to or
@@ -459,6 +468,14 @@ the run to log. Nothing is changed to get round a refusal. Each file is decided 
 and later reads give the same bytes. The gate may be read from several threads, and reads the data folder one file
 at a time, as SecureStore needs.
 
+**An override that cannot be read is not refused.** When SecureStore could not open or read it at all
+(`SecureStoreException.IsUnavailable`, above), nothing about it was judged and what it holds is not known. A
+standard user can bring that about for as long as they like, by holding the override or the `config` folder open
+without sharing, locking part of the override or holding an oplock on it, so falling back to the shipped copy
+would let them undo an administrator's override without a trace. Instead every read of that file in the run
+throws, each check that needs it reports an Error finding, and the gate's notice says why. Any other failure
+to read it counts the same way: only a refusal, by SecureStore's rules or the file's schema, uses the shipped copy.
+
 **A file joins with its schema.** A config file that joins the shipped config joins `ConfigFile`'s schemas in the
 same change: `ShippedConfigTests` fails while a shipped file has no schema, and the gate refuses every override of
 such a file. When `network.json` joins for the service client, its reader becomes its schema, and the proxy
@@ -473,14 +490,21 @@ settings come through the gate once the gate is the `IConfigFiles` they are read
 - An override that is not valid is refused and the shipped file used. In the module, one that `ConvertFrom-Json`
   cannot read stops the config load, and with it the audit.
 - An untrusted `config` folder is moved aside, with event 1003, rather than only ignored.
+- Each refused or unreadable override is also event 1003, not only a warning in the scheduled audit's output. An
+  override that cannot be read fails the checks that need it, where in the module it stops the config load and
+  with it the audit.
 
 **Tests.** `ConfigSchemaTests` (Model) hold each rule of the schema. `ConfigTrustGateTests` (Engine) hold the gate's
-rules with a data folder in memory, including each of SecureStore's refusals as `DataFolderTrust` words it. In the
-attack suite, `ConfigTrustGateTests` (Windows) plant an override that breaks each rule in a data folder of the
-tests' own and read it through the real SecureStore, without elevation; `ConfigTrustGateElevatedTests` use the
+rules with a data folder in memory, including each of SecureStore's refusals as `DataFolderTrust` words it, and
+each kind of read failure, which is not a refusal. In the attack suite, `ConfigTrustGateTests` (Windows) plant an
+override that breaks each rule in a data folder of the tests' own and read it through the real SecureStore, without
+elevation, and hold it up in each way a reader can (`Holders`: the override held open without sharing, locked in
+part, or under a batch oplock never acknowledged, and the `config` folder held open without sharing), which must
+fail the checks within the store's retries and never give the shipped copy; `ConfigTrustGateElevatedTests` use the
 product's rules in a data folder made as the installer makes it: an override that a standard user owns (the
 attacker plants it), that standard users can change, or that is a symbolic link, a junction or a hard link is
-refused and the shipped file used, and one owned by Administrators loads. The Security job runs them as the
+refused and the shipped file used, one owned by Administrators loads, and the attacker holding up an administrator's
+override in each of those ways does not get the shipped copy used in its place. The Security job runs them as the
 elevated administrator and as SYSTEM. `ScheduledAuditTests` (Cli) hold the scheduled audit's use of the gate, and,
 elevated, read an override through the real SecureStore.
 
@@ -501,7 +525,11 @@ installer registers still runs the module's script.
 4. It runs the machine checks (SU-01 so far), which read config through the config trust gate from the
    data folder it holds (above): it prints `Config override used: <path>` for each administrator's override
    in use, and writes `Warning: Ignoring the config override <name> and using the shipped copy: <reason>` to
-   standard error for each one refused, and carries on, as the module warns.
+   standard error for each one refused, and carries on, as the module warns. For an override it could not
+   read it writes `Warning: Could not read the config override <name>, ...`, and the checks that need it are
+   Error findings in status.json. Each of those warnings is also Application event 1003 under the
+   `EngramicBaseline` source, worded as SecureStore's notices are, so an administrator sees it without the
+   task's output.
 5. It writes status.json, UTF-8 with a byte order mark, with SecureStore's atomic write. A failed run
    leaves the old status.json, whose age then keeps growing, as in the module.
 
@@ -512,7 +540,7 @@ installer registers still runs the module's script.
 | 2 | Another audit, or an install, held the mutex for 30 minutes. |
 
 Not ported yet: counting failed runs in last-error.json (only into a data folder that was opened and
-checked, as the module does), the report folder and its retention, the log, events 1000 to 1003, and
+checked, as the module does), the report folder and its retention, the log, events 1000 to 1002, and
 `excludeCheckIds` from an administrator's config.
 
 The Contracts job runs it as SYSTEM on its runner, in the data folder the installer makes (below).

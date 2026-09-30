@@ -13,5 +13,6 @@ public interface IConfigFiles
     /// <summary>Reads a config file.</summary>
     /// <param name="name">The file name, such as os-lifecycle.json.</param>
     /// <returns>The bytes of the file, or null when there is no file of that name.</returns>
+    /// <exception cref="IOException">The file could not be read, and nothing is given in its place.</exception>
     byte[]? Read(string name);
 }

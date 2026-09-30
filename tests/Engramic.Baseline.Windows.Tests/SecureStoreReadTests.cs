@@ -55,6 +55,7 @@ public sealed class SecureStoreReadTests : IDisposable
         Assert.Equal(100, store.ReadFile(DataFolder.Cache, "exact.json", 100)!.Length);
         var e = Assert.Throws<SecureStoreException>(() => store.ReadFile(DataFolder.Cache, "longer.json", 100));
         Assert.Equal($@"{_fixture.DataFolder}\cache\longer.json is 101 bytes long, more than the 100 bytes the tool reads from it.", e.Message);
+        Assert.False(e.IsUnavailable);
     }
 
     [Fact]
@@ -151,6 +152,9 @@ public sealed class SecureStoreReadTests : IDisposable
             var e = Assert.Throws<SecureStoreException>(() => store.ReadFile(DataFolder.Config, "network.json", 1024));
 
             Assert.StartsWith($@"Could not read {Config}\network.json: Could not open {Config}\network.json to read it: Access is denied", e.Message, StringComparison.Ordinal);
+
+            // Its own access list keeps the tool out: a judgement of the file, not something passing.
+            Assert.False(e.IsUnavailable);
         }
         finally
         {
@@ -187,6 +191,36 @@ public sealed class SecureStoreReadTests : IDisposable
         var e = Assert.Throws<SecureStoreException>(() => Waits.AdvanceUntilDone(clock, () => store.ReadFile(DataFolder.Config, "network.json", 10)));
 
         Assert.Contains("The process cannot access the file because it is being used by another process", e.Message, StringComparison.Ordinal);
+        Assert.True(e.IsUnavailable);
+    }
+
+    [Theory]
+    [MemberData(nameof(Holders.Ways), MemberType = typeof(Holders))]
+    public void Says_a_file_someone_holds_up_could_not_be_read_rather_than_judging_it_or_waiting_for_them(string way)
+    {
+        var clock = new FakeTimeProvider();
+        _fixture.Time = clock;
+        using (var store = _fixture.Initialize())
+        {
+            store.WriteFile(DataFolder.Config, "network.json", "{}"u8);
+        }
+
+        using var fresh = _fixture.Open();
+
+        using (var holder = Holders.Hold(way, Path.Combine(Config, "network.json"), Config))
+        {
+            // Within the store's few seconds of retries, by its clock: an oplock that is never given up does not hold it.
+            var e = Assert.Throws<SecureStoreException>(() => Waits.AdvanceUntilDone(clock, () => fresh.ReadFile(DataFolder.Config, "network.json", 10)));
+
+            Assert.True(e.IsUnavailable, e.Message);
+            Assert.StartsWith("Could not read ", e.Message, StringComparison.Ordinal);
+            if (holder is Oplock oplock)
+            {
+                Assert.True(oplock.BreakRequested);
+            }
+        }
+
+        Assert.Equal("{}"u8.ToArray(), fresh.ReadFile(DataFolder.Config, "network.json", 10));
     }
 
     [Theory]

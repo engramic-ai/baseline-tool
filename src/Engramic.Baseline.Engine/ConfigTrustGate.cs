@@ -31,6 +31,14 @@ namespace Engramic.Baseline.Engine;
 /// the first time it is read, and every later read in the run gives the same bytes.
 /// </para>
 /// <para>
+/// An override that could not be opened or read at all is not refused: nothing about it was judged, and what
+/// it holds is not known. Anyone who can read the config folder, standard users included, can bring that about
+/// for a while, by holding the file or the folder open without sharing, locking part of the file or holding an
+/// oplock on it, so falling back to the shipped copy would let them undo an administrator's override without a
+/// trace. Instead every read of that file in the run throws, so each check that needs it reports an Error
+/// finding, and the notice says why.
+/// </para>
+/// <para>
 /// Safe to use from more than one thread: the data folder is read one file at a time, as SecureStore needs.
 /// </para>
 /// </remarks>
@@ -42,7 +50,7 @@ public sealed class ConfigTrustGate : IConfigFiles
     private readonly IConfigFiles _shipped;
     private readonly ISecureStore? _store;
     private readonly Lock _gate = new();
-    private readonly Dictionary<string, byte[]?> _decided = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, Decision> _decided = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<string> _notices = [];
     private readonly List<string> _overrides = [];
 
@@ -62,8 +70,8 @@ public sealed class ConfigTrustGate : IConfigFiles
     }
 
     /// <summary>
-    /// Gets why each override that is not used was refused, in the order the files were read: each names the
-    /// file, says the shipped copy is used instead, and gives the reason.
+    /// Gets why each override that is not used was refused, or could not be read, in the order the files were
+    /// read: each names the file, says what is used instead, and gives the reason.
     /// </summary>
     public IReadOnlyList<string> Notices
     {
@@ -90,34 +98,43 @@ public sealed class ConfigTrustGate : IConfigFiles
 
     /// <inheritdoc/>
     /// <remarks>An administrator's override when one passes every rule, and otherwise the shipped file.</remarks>
+    /// <exception cref="IOException">
+    /// There is an override of the file, but it could not be opened or read (<see cref="SecureStoreException.IsUnavailable"/>),
+    /// so neither it nor the shipped copy is given. Every read of the file in the run throws the same.
+    /// </exception>
     public byte[]? Read(string name)
     {
         ArgumentNullException.ThrowIfNull(name);
         lock (_gate)
         {
-            if (!_decided.TryGetValue(name, out var content))
+            if (!_decided.TryGetValue(name, out var decision))
             {
-                content = Decide(name);
-                _decided.Add(name, content);
+                decision = Decide(name);
+                _decided.Add(name, decision);
             }
 
-            return content is null ? null : [.. content];
+            if (decision.Unreadable is { } reason)
+            {
+                throw new IOException(reason);
+            }
+
+            return decision.Content is null ? null : [.. decision.Content];
         }
     }
 
-    private byte[]? Decide(string name)
+    private Decision Decide(string name)
     {
         var shipped = _shipped.Read(name);
         if (shipped is null || _store is null)
         {
-            return shipped;
+            return new Decision(shipped);
         }
 
         if (!ConfigFile.Names.Contains(name, StringComparer.OrdinalIgnoreCase))
         {
             // Every shipped file has a schema (ShippedConfigTests): this is for one that joined without it.
             _notices.Add($"Overrides of {name} are not read, and the shipped copy is used: this version has no schema to check one against.");
-            return shipped;
+            return new Decision(shipped);
         }
 
         var path = $@"{_store.RootPath}\{DataFolderLayout.NameOf(DataFolder.Config)}\{name}";
@@ -127,28 +144,48 @@ public sealed class ConfigTrustGate : IConfigFiles
         {
             candidate = _store.ReadFile(DataFolder.Config, name, MaxOverrideLength);
         }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        catch (SecureStoreException e) when (!e.IsUnavailable)
         {
             return Refuse(name, e.Message, shipped);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            // Not judged, only not read: anything else would let whoever held it up choose the shipped copy.
+            _notices.Add($"Could not read the config override {name}, so the checks that read it report an error and the shipped copy is not used in its place: {e.Message}");
+            return new Decision(null, $"The config override {path} could not be read, so the shipped copy is not used in its place: {e.Message}");
         }
 
         if (candidate is null)
         {
-            return shipped;
+            return new Decision(shipped);
         }
 
-        if (ConfigFile.FindProblem(name, path, candidate) is { } problem)
+        string? problem;
+        try
+        {
+            problem = ConfigFile.FindProblem(name, path, candidate);
+        }
+        catch (Exception e) when (e is not OutOfMemoryException)
+        {
+            // FindProblem gives every problem it knows as a sentence; this is for one it did not foresee.
+            problem = $"{path} could not be checked against its schema: {e.Message}";
+        }
+
+        if (problem is not null)
         {
             return Refuse(name, problem, shipped);
         }
 
         _overrides.Add(path);
-        return candidate;
+        return new Decision(candidate);
     }
 
-    private byte[] Refuse(string name, string reason, byte[] shipped)
+    private Decision Refuse(string name, string reason, byte[] shipped)
     {
         _notices.Add($"Ignoring the config override {name} and using the shipped copy: {reason}");
-        return shipped;
+        return new Decision(shipped);
     }
+
+    /// <summary>What the run reads for one file: its bytes, or why it cannot be read at all.</summary>
+    private sealed record Decision(byte[]? Content, string? Unreadable = null);
 }

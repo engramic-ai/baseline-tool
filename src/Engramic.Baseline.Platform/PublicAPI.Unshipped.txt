@@ -115,9 +115,11 @@ Engramic.Baseline.Platform.RegistryView
 Engramic.Baseline.Platform.RegistryView.Registry32 = 1 -> Engramic.Baseline.Platform.RegistryView
 Engramic.Baseline.Platform.RegistryView.Registry64 = 0 -> Engramic.Baseline.Platform.RegistryView
 Engramic.Baseline.Platform.SecureStoreException
+Engramic.Baseline.Platform.SecureStoreException.IsUnavailable.get -> bool
 Engramic.Baseline.Platform.SecureStoreException.SecureStoreException() -> void
 Engramic.Baseline.Platform.SecureStoreException.SecureStoreException(string! message) -> void
 Engramic.Baseline.Platform.SecureStoreException.SecureStoreException(string! message, System.Exception! innerException) -> void
+Engramic.Baseline.Platform.SecureStoreException.SecureStoreException(string! message, bool isUnavailable, System.Exception? innerException) -> void
 Engramic.Baseline.Platform.Sid
 Engramic.Baseline.Platform.Sid.<Clone>$() -> Engramic.Baseline.Platform.Sid!
 Engramic.Baseline.Platform.Sid.Equals(Engramic.Baseline.Platform.Sid? other) -> bool

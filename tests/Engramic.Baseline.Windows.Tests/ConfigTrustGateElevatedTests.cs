@@ -4,6 +4,7 @@ using Engramic.Baseline.Model;
 using Engramic.Baseline.Platform;
 using Engramic.Baseline.Testing;
 using Engramic.Baseline.Testing.Windows;
+using Microsoft.Extensions.Time.Testing;
 
 namespace Engramic.Baseline.Windows.Tests;
 
@@ -146,6 +147,35 @@ public sealed class ConfigTrustGateElevatedTests : IDisposable
         Assert.Single(_events.Entries);
         Assert.False(Directory.Exists(Config));
         Assert.Single(Directory.GetDirectories(_programData, SecureStore.DataFolderName + DataFolderLayout.UntrustedMarker + "*"));
+    }
+
+    [Theory]
+    [MemberData(nameof(Holders.Ways), MemberType = typeof(Holders))]
+    public void An_administrator_s_override_a_standard_user_holds_up_is_not_replaced_by_the_shipped_file(string way)
+    {
+        // The config folder lets Users read what is in it, so the attacker can open the override, or the folder, to
+        // stop the read; what they must not get is the shipped copy judged in its place without a trace.
+        Assert.SkipUnless(Attacker.IsAvailable, Attacker.Unavailable);
+        Arrange();
+        _tree.File(Relative(Override), OverrideText, "O:BA");
+        var clock = new FakeTimeProvider();
+
+        using var store = SecureStore.Open(new SecureStoreOptions { ProgramDataPath = _programData, Registry = DataFolderFixture.Sealed(), EventLog = _events, Time = clock });
+        var gate = new ConfigTrustGate(ShippedConfig.Files, store, CurrentProcess.ReadAccount());
+        using (var holder = Attacker.Run(() => Holders.Hold(way, Override, Config)))
+        {
+            var e = Assert.Throws<IOException>(() => Waits.AdvanceUntilDone(clock, () => _ = new AuditConfig(gate).OsLifecycle));
+
+            Assert.StartsWith($"The config override {Override} could not be read, so the shipped copy is not used in its place: ", e.Message, StringComparison.Ordinal);
+            if (holder is Oplock oplock)
+            {
+                Assert.True(oplock.BreakRequested);
+            }
+        }
+
+        Assert.StartsWith($"Could not read the config override {Name}, so the checks that read it report an error", Assert.Single(gate.Notices), StringComparison.Ordinal);
+        Assert.Empty(gate.Overrides);
+        Assert.Empty(_events.Entries);
     }
 
     /// <summary>Makes ProgramData, and the data folder and its config folder as the installer makes them.</summary>

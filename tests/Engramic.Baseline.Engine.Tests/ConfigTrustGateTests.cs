@@ -159,16 +159,46 @@ public sealed class ConfigTrustGateTests
     }
 
     [Theory]
-    [InlineData("the data folder cannot be read")]
-    [InlineData("access is denied")]
-    public void An_override_that_cannot_be_read_is_ignored_for_the_shipped_file_and_logged(string failure)
+    [MemberData(nameof(Unreadable))]
+    public void An_override_that_cannot_be_read_is_not_replaced_by_the_shipped_file_and_the_checks_that_read_it_fail(string failure)
     {
-        Exception error = failure == "access is denied" ? new UnauthorizedAccessException("Access is denied.") : new IOException("The device is not ready.");
+        // Standard users can bring these about for a while (holding the file or its folder open without sharing,
+        // locking part of it, an oplock): falling back to the shipped copy would let them undo the override unseen.
+        var error = Failures[failure];
         _store.FailRead(DataFolder.Config, Name, error);
         var gate = Gate(LocalSystem);
 
+        var e = Assert.Throws<IOException>(() => new AuditConfig(gate).OsLifecycle);
+
+        Assert.Equal($"The config override {OverridePath} could not be read, so the shipped copy is not used in its place: {error.Message}", e.Message);
+        Assert.Equal([$"Could not read the config override {Name}, so the checks that read it report an error and the shipped copy is not used in its place: {error.Message}"], gate.Notices);
+        Assert.Empty(gate.Overrides);
+    }
+
+    [Fact]
+    public void An_override_that_cannot_be_read_fails_every_read_of_it_in_the_run_and_is_logged_once()
+    {
+        _store.FailRead(DataFolder.Config, Name, Failures["held open by another process"]);
+        var gate = Gate(LocalSystem);
+
+        Assert.Throws<IOException>(() => gate.Read(Name));
+
+        // Whatever the data folder would give now, the run keeps to what it decided.
+        _store.FailRead(DataFolder.Config, Name, new InvalidOperationException("Not read again."));
+        _store.WriteFile(DataFolder.Config, Name, Bytes(Override));
+        Assert.Throws<IOException>(() => gate.Read(Name));
+        Assert.Single(_store.Reads);
+        Assert.Single(gate.Notices);
+    }
+
+    [Fact]
+    public void An_override_whose_member_is_named_by_an_escaped_lone_surrogate_is_refused_not_thrown()
+    {
+        _store.WriteFile(DataFolder.Config, Name, Bytes("""{ "\ud800": 1, "lastReviewed": "2026-01-01", "reviewWarningDays": 30, "upcomingEndWarningDays": 60 }"""));
+        var gate = Gate(LocalSystem);
+
         Assert.Equal(Bytes(Shipped), gate.Read(Name));
-        Assert.Equal([Refused + error.Message], gate.Notices);
+        Assert.StartsWith($"{Refused}{OverridePath} is not valid JSON: ", Assert.Single(gate.Notices), StringComparison.Ordinal);
     }
 
     [Theory]
@@ -265,6 +295,18 @@ public sealed class ConfigTrustGateTests
     }
 
     public static TheoryData<string> Accounts => ["SYSTEM", "an elevated administrator"];
+
+    public static TheoryData<string> Unreadable => [.. Failures.Keys];
+
+    /// <summary>What the data folder throws for an override it could not open or read, by what happened.</summary>
+    private static Dictionary<string, Exception> Failures { get; } = new()
+    {
+        ["held open by another process"] = new SecureStoreException(OverridePath + " could not be read: The process cannot access the file because it is being used by another process (Win32 error 32).", isUnavailable: true, null),
+        ["locked in part"] = new SecureStoreException(OverridePath + " could not be read: The process cannot access the file because another process has locked a portion of the file (Win32 error 33).", isUnavailable: true, null),
+        ["its folder could not be opened"] = new SecureStoreException("Could not read os-lifecycle.json: Could not make a locked folder at C:\\ProgramData\\EngramicBaseline\\config.", isUnavailable: true, null),
+        ["a device error"] = new IOException("The device is not ready."),
+        ["access denied, which the data folder should have judged"] = new UnauthorizedAccessException("Access is denied."),
+    };
 
     private static ProcessAccount Account(string name) => name == "SYSTEM" ? LocalSystem : Administrator;
 

@@ -36,6 +36,7 @@ public sealed class ScheduledAuditTests
     private readonly StringWriter _output = new();
     private readonly StringWriter _error = new();
     private readonly FakeSecureStore _store = new();
+    private readonly FakeEventLog _events = new();
     private readonly string _mutexName = TestMutexes.NewName();
     private int _opens;
 
@@ -96,6 +97,43 @@ public sealed class ScheduledAuditTests
         Assert.Equal("Warning: Ignoring the config override os-lifecycle.json and using the shipped copy: " + Reason, _error.ToString().TrimEnd());
         Assert.Equal(FindingStatus.Warn, SU01());
         Assert.DoesNotContain("Config override", _output.ToString(), StringComparison.Ordinal);
+
+        // Where an administrator sees it, not only in the task's output.
+        Assert.Equal([(1003, EventLogLevel.Warning, "Engramic Baseline - data folder: Ignoring the config override os-lifecycle.json and using the shipped copy: " + Reason)], _events.Entries);
+    }
+
+    [Fact]
+    public void Reports_the_checks_that_need_an_override_it_could_not_read_as_errors_rather_than_use_the_shipped_file()
+    {
+        // As a standard user can bring about by holding the file open without sharing, which the config folder lets them.
+        const string Reason = "Could not read " + OverridePath + ": Could not open " + OverridePath + " to read it: The process cannot access the file because it is being used by another process (Win32 error 32).";
+        _store.FailRead(DataFolder.Config, ConfigFile.OsLifecycleName, new SecureStoreException(Reason, isUnavailable: true, null));
+
+        var code = ScheduledAudit.Run(Settings(), _output, _error);
+
+        Assert.Equal(ScheduledAudit.Succeeded, code);
+        var su01 = StatusFile.Parse(_store.Files[StatusFile.FileName]).Checks["SU-01"];
+        Assert.Equal(FindingStatus.Error, su01.Status);
+        const string Notice = "Could not read the config override os-lifecycle.json, so the checks that read it report an error and the shipped copy is not used in its place: " + Reason;
+        Assert.Equal("Warning: " + Notice, _error.ToString().TrimEnd());
+        Assert.Equal([(1003, EventLogLevel.Warning, "Engramic Baseline - data folder: " + Notice)], _events.Entries);
+    }
+
+    [Fact]
+    public void Says_so_when_a_warning_cannot_be_written_to_the_event_log()
+    {
+        _store.FailRead(DataFolder.Config, ConfigFile.OsLifecycleName, new SecureStoreException(OverridePath + " has 2 names (hard links), not one, so it may also be a file somewhere else."));
+        _events.Refuses = true;
+
+        var code = ScheduledAudit.Run(Settings(), _output, _error);
+
+        Assert.Equal(ScheduledAudit.Succeeded, code);
+        Assert.Equal(
+            [
+                $"Warning: Ignoring the config override os-lifecycle.json and using the shipped copy: {OverridePath} has 2 names (hard links), not one, so it may also be a file somewhere else.",
+                "Warning: The warning above could not be written to the Application event log as event 1003.",
+            ],
+            Lines(_error));
     }
 
     [Fact]
@@ -266,6 +304,7 @@ public sealed class ScheduledAuditTests
         Assert.Equal(WindowsIdentity.GetCurrent().Name, settings.Account.Name);
         Assert.Same(TimeProvider.System, settings.Time);
         Assert.Equal(ToolVersion.Current, settings.ToolVersion);
+        Assert.Equal(WindowsEventLog.ProductSource, Assert.IsType<WindowsEventLog>(settings.EventLog).Source);
         Assert.Contains(settings.Catalog.Checks, c => c.Info.Id == "SU-01");
     }
 
@@ -345,6 +384,7 @@ public sealed class ScheduledAuditTests
         Registry = Windows11(),
         Time = new FakeTimeProvider(AuditTime),
         ComputerName = "DEVICE01",
+        EventLog = _events,
         OpenStore = () =>
         {
             _opens++;

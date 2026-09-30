@@ -22,7 +22,8 @@ namespace Engramic.Baseline.Cli;
 /// The checks read config through the config trust gate (<see cref="ConfigTrustGate"/>): an administrator's
 /// override in the data folder's config folder replaces a shipped file only when it passes every rule. The run
 /// names each override it used, and warns of each one it refused, naming why, as the module warns and carries
-/// on with the shipped file.
+/// on with the shipped file; and of each one it could not read, whose checks report an Error finding. Each
+/// warning is also Application event 1003, so that an administrator sees it without the task's output.
 /// </para>
 /// <para>
 /// The exit codes are the module's: <see cref="Succeeded"/>, <see cref="Failed"/> (also for a refusal to
@@ -31,7 +32,7 @@ namespace Engramic.Baseline.Cli;
 /// </para>
 /// <para>
 /// Not ported yet: counting failed runs in last-error.json, the report folder and its retention, the log,
-/// events 1000 to 1003, and excludeCheckIds from an administrator's config. Every failure ends in
+/// events 1000 to 1002, and excludeCheckIds from an administrator's config. Every failure ends in
 /// <see cref="Fail"/> and every success in <see cref="Succeed"/>, where those join, and the checks are
 /// chosen in <see cref="Selection"/>.
 /// </para>
@@ -129,6 +130,10 @@ internal static class ScheduledAudit
         foreach (var notice in config.Notices)
         {
             error.WriteLine("Warning: " + notice);
+            if (!settings.EventLog.Write(DataFolderLayout.NoticeEventId, EventLogLevel.Warning, DataFolderLayout.EventMessage(notice)))
+            {
+                error.WriteLine($"Warning: The warning above could not be written to the Application event log as event {DataFolderLayout.NoticeEventId}.");
+            }
         }
 
         var status = StatusBuilder.Build(findings, settings.Catalog, device, settings.ToolVersion);

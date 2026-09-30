@@ -23,6 +23,12 @@ internal sealed record ScheduledAuditSettings
     /// <summary>Gets the name of the computer.</summary>
     public required string ComputerName { get; init; }
 
+    /// <summary>
+    /// Gets the Application event log, under the tool's source on this device: where each config override that
+    /// is refused or cannot be read is recorded, as event 1003, for administrators to see.
+    /// </summary>
+    public required IEventLog EventLog { get; init; }
+
     /// <summary>Gets what opens and checks the data folder: SecureStore on this device.</summary>
     public required Func<ISecureStore> OpenStore { get; init; }
 
@@ -44,7 +50,7 @@ internal sealed record ScheduledAuditSettings
     /// </summary>
     public IConfigFiles Config { get; init; } = ShippedConfig.Files;
 
-    /// <summary>Gets this device's settings: the process's account, the real registry, the system clock and SecureStore.</summary>
+    /// <summary>Gets this device's settings: the process's account, the real registry, the system clock, the Application log and SecureStore.</summary>
     /// <returns>The settings.</returns>
     public static ScheduledAuditSettings ForThisDevice()
     {
@@ -56,6 +62,7 @@ internal sealed record ScheduledAuditSettings
             Registry = registry,
             Time = time,
             ComputerName = Environment.MachineName,
+            EventLog = new WindowsEventLog(WindowsEventLog.ProductSource),
             OpenStore = () => SecureStore.Open(SecureStoreOptions.ForMachine(registry, time)),
             ToolVersion = Cli.ToolVersion.Current,
         };

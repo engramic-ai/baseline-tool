@@ -35,6 +35,6 @@ public interface IScratchFolder : IDisposable
     /// <returns>The content, or null when there is no such file.</returns>
     /// <exception cref="ArgumentException"><paramref name="name"/> is not a plain file name.</exception>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="maxLength"/> is not positive, or is too large.</exception>
-    /// <exception cref="SecureStoreException">The file is not one the tool may trust, or cannot be read; the message says why.</exception>
+    /// <exception cref="SecureStoreException">The file is not one the tool may trust, or could not be opened or read at the time (<see cref="SecureStoreException.IsUnavailable"/>); the message says why.</exception>
     byte[]? ReadFile(string name, int maxLength);
 }

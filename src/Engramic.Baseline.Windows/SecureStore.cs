@@ -96,6 +96,15 @@ public sealed class SecureStore : ISecureStore
     private const NTCREATEFILE_CREATE_OPTIONS Synchronous = NTCREATEFILE_CREATE_OPTIONS.FILE_SYNCHRONOUS_IO_NONALERT;
     private const NTCREATEFILE_CREATE_OPTIONS Asynchronous = 0;
 
+    /// <summary>
+    /// Opens without waiting for another process to give up an oplock it holds on the item, which it may never
+    /// do: the open that would wait comes back at once, and is tried again like one refused for sharing.
+    /// </summary>
+    private const NTCREATEFILE_CREATE_OPTIONS NoOplockWait = NTCREATEFILE_CREATE_OPTIONS.FILE_COMPLETE_IF_OPLOCKED;
+
+    /// <summary>STATUS_OPLOCK_BREAK_IN_PROGRESS: the open succeeded without waiting, while another holder's oplock is being broken.</summary>
+    private const int OplockBreakInProgress = 0x0000_0108;
+
     /// <summary>How many times an operation that another process can hold up is tried.</summary>
     private const int Attempts = 6;
 
@@ -183,7 +192,19 @@ public sealed class SecureStore : ISecureStore
         ObjectDisposedException.ThrowIf(_disposed, this);
         ThrowIfNotPlainFileName(name);
         ThrowIfNotReadLength(maxLength);
-        return FolderFor(folder, create: false) is { } held ? Read(held, name, maxLength) : null;
+        HeldFolder? held;
+        try
+        {
+            held = FolderFor(folder, create: false);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            // The folder could not be opened and checked, or its untrusted namesake moved aside, so nothing in it
+            // was judged: what the file holds is not known.
+            throw new SecureStoreException($"Could not read {name}: {e.Message}", isUnavailable: true, e);
+        }
+
+        return held is null ? null : Read(held, name, maxLength);
     }
 
     /// <inheritdoc/>
@@ -490,7 +511,7 @@ public sealed class SecureStore : ISecureStore
         }
     }
 
-    private static bool IsTransient(int error) => (WIN32_ERROR)error is WIN32_ERROR.ERROR_ACCESS_DENIED or WIN32_ERROR.ERROR_SHARING_VIOLATION or WIN32_ERROR.ERROR_LOCK_VIOLATION;
+    private static bool IsTransient(int error) => (WIN32_ERROR)error is WIN32_ERROR.ERROR_ACCESS_DENIED or WIN32_ERROR.ERROR_SHARING_VIOLATION or WIN32_ERROR.ERROR_LOCK_VIOLATION or WIN32_ERROR.ERROR_OPLOCK_BREAK_IN_PROGRESS;
 
     private static bool IsMissing(int error) => (WIN32_ERROR)error is WIN32_ERROR.ERROR_FILE_NOT_FOUND or WIN32_ERROR.ERROR_PATH_NOT_FOUND;
 
@@ -500,7 +521,11 @@ public sealed class SecureStore : ISecureStore
     /// Opens or creates the item of one plain name in a folder, relative to the folder's handle and as itself:
     /// no path is parsed, a link at the name is opened as the link, and nothing stored online is recalled.
     /// </summary>
-    /// <returns>0 when <paramref name="item"/> was opened; otherwise the Win32 error.</returns>
+    /// <returns>
+    /// 0 when <paramref name="item"/> was opened; otherwise the Win32 error. With <see cref="NoOplockWait"/>, an
+    /// open that got in while another process's oplock was still being broken is closed again and gives
+    /// ERROR_OPLOCK_BREAK_IN_PROGRESS: reading or waiting on it could wait for that process for as long as it likes.
+    /// </returns>
     private static unsafe int OpenRelative(SafeFileHandle folder, string name, uint access, FILE_SHARE_MODE share, NTCREATEFILE_CREATE_DISPOSITION disposition, NTCREATEFILE_CREATE_OPTIONS options, byte[]? descriptor, out SafeFileHandle? item)
     {
         item = null;
@@ -532,7 +557,14 @@ public sealed class SecureStore : ISecureStore
                     return (int)PInvoke.RtlNtStatusToDosError(status);
                 }
 
-                item = new SafeFileHandle(handle, ownsHandle: true);
+                var opened = new SafeFileHandle(handle, ownsHandle: true);
+                if (status.Value == OplockBreakInProgress)
+                {
+                    opened.Dispose();
+                    return (int)WIN32_ERROR.ERROR_OPLOCK_BREAK_IN_PROGRESS;
+                }
+
+                item = opened;
                 return 0;
             }
         }
@@ -659,19 +691,20 @@ public sealed class SecureStore : ISecureStore
 
     /// <summary>
     /// Opens the item at a name to judge it, as itself: to list, read and hold it when this account may, and
-    /// otherwise with the least that removing it needs, which then says it could not be read.
+    /// otherwise with the least that removing it needs, which then says it could not be read. Neither open waits
+    /// for another process to give up an oplock on the item.
     /// </summary>
     private static int OpenToJudge(SafeFileHandle parent, string name, out SafeFileHandle? item, out bool readable)
     {
         readable = true;
-        var error = OpenRelative(parent, name, FolderRights, ShareReadWrite, NTCREATEFILE_CREATE_DISPOSITION.FILE_OPEN, Synchronous, null, out item);
+        var error = OpenRelative(parent, name, FolderRights, ShareReadWrite, NTCREATEFILE_CREATE_DISPOSITION.FILE_OPEN, Synchronous | NoOplockWait, null, out item);
         if ((WIN32_ERROR)error != WIN32_ERROR.ERROR_ACCESS_DENIED)
         {
             return error;
         }
 
         readable = false;
-        return OpenRelative(parent, name, RemoveRights, ShareAll, NTCREATEFILE_CREATE_DISPOSITION.FILE_OPEN, Asynchronous, null, out item);
+        return OpenRelative(parent, name, RemoveRights, ShareAll, NTCREATEFILE_CREATE_DISPOSITION.FILE_OPEN, Asynchronous | NoOplockWait, null, out item);
     }
 
     /// <summary>Opens the data folder the install made, checked and held, never created or moved.</summary>
@@ -1011,7 +1044,10 @@ public sealed class SecureStore : ISecureStore
 
     /// <summary>
     /// Reads a whole file in a held folder through its handle, after checking it through that handle: denying
-    /// writers while it is read, so it cannot change, and never reading beyond its checked length.
+    /// writers while it is read, so it cannot change, and never reading beyond its checked length. A file that
+    /// breaks a rule, or that denies this account the right to read it, is refused; one that cannot be opened or
+    /// read at the time (held open without sharing, locked in part, an oplock another process does not give up,
+    /// or a device error) gives a <see cref="SecureStoreException"/> that says so (<see cref="SecureStoreException.IsUnavailable"/>).
     /// </summary>
     private byte[]? Read(HeldFolder folder, string name, int maxLength)
     {
@@ -1024,7 +1060,7 @@ public sealed class SecureStore : ISecureStore
             SafeFileHandle? file;
             for (var attempt = 1; ; attempt++)
             {
-                var error = OpenRelative(folder.Handle, name, ReadRights, ShareRead, NTCREATEFILE_CREATE_DISPOSITION.FILE_OPEN, Synchronous, null, out file);
+                var error = OpenRelative(folder.Handle, name, ReadRights, ShareRead, NTCREATEFILE_CREATE_DISPOSITION.FILE_OPEN, Synchronous | NoOplockWait, null, out file);
                 if (file is not null)
                 {
                     break;
@@ -1035,7 +1071,13 @@ public sealed class SecureStore : ISecureStore
                     return null;
                 }
 
-                if (attempt >= Attempts || (WIN32_ERROR)error != WIN32_ERROR.ERROR_SHARING_VIOLATION)
+                if ((WIN32_ERROR)error == WIN32_ERROR.ERROR_ACCESS_DENIED)
+                {
+                    // Its own access list keeps this account out: a judgement of the file, not something passing.
+                    throw new SecureStoreException($"Could not read {path}: {FileHandles.Failure($"Could not open {path} to read it", error).Message}");
+                }
+
+                if (attempt >= Attempts || (WIN32_ERROR)error is not (WIN32_ERROR.ERROR_SHARING_VIOLATION or WIN32_ERROR.ERROR_OPLOCK_BREAK_IN_PROGRESS))
                 {
                     throw FileHandles.Failure($"Could not open {path} to read it", error);
                 }
@@ -1064,7 +1106,7 @@ public sealed class SecureStore : ISecureStore
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException && e is not SecureStoreException)
         {
-            throw new SecureStoreException($"Could not read {path}: {e.Message}", e);
+            throw new SecureStoreException($"Could not read {path}: {e.Message}", isUnavailable: true, e);
         }
     }
 

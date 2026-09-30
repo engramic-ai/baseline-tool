@@ -4,6 +4,7 @@ using Engramic.Baseline.Engine;
 using Engramic.Baseline.Model;
 using Engramic.Baseline.Platform;
 using Engramic.Baseline.Testing.Windows;
+using Microsoft.Extensions.Time.Testing;
 
 namespace Engramic.Baseline.Windows.Tests;
 
@@ -112,6 +113,36 @@ public sealed class ConfigTrustGateTests : IDisposable
         Assert.Contains("can be changed by S-1-5-32-545", Assert.Single(store.Notices), StringComparison.Ordinal);
         Assert.Single(_fixture.Events.Entries);
         Assert.Empty(gate.Overrides);
+    }
+
+    [Theory]
+    [MemberData(nameof(Holders.Ways), MemberType = typeof(Holders))]
+    public void An_override_someone_holds_up_is_not_replaced_by_the_shipped_file_and_the_checks_that_read_it_fail(string way)
+    {
+        // As this account here; ConfigTrustGateElevatedTests does the same as a standard user, whom the product's
+        // config folder lets read the file.
+        File.WriteAllText(Override, OverrideText);
+        var clock = new FakeTimeProvider();
+        _fixture.Time = clock;
+        using var store = _fixture.Open();
+        var gate = new ConfigTrustGate(ShippedConfig.Files, store, Elevated);
+
+        using (var holder = Holders.Hold(way, Override, Config))
+        {
+            var e = Assert.Throws<IOException>(() => Waits.AdvanceUntilDone(clock, () => _ = new AuditConfig(gate).OsLifecycle));
+
+            Assert.StartsWith($"The config override {Override} could not be read, so the shipped copy is not used in its place: Could not read ", e.Message, StringComparison.Ordinal);
+            if (holder is Oplock oplock)
+            {
+                Assert.True(oplock.BreakRequested);
+            }
+        }
+
+        // Decided once for the run: letting go later does not bring in either copy.
+        Assert.Throws<IOException>(() => gate.Read(Name));
+        Assert.StartsWith($"Could not read the config override {Name}, so the checks that read it report an error and the shipped copy is not used in its place: ", Assert.Single(gate.Notices), StringComparison.Ordinal);
+        Assert.Empty(gate.Overrides);
+        Assert.Empty(_fixture.Quarantines);
     }
 
     [Fact]

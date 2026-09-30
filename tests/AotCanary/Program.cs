@@ -16,6 +16,9 @@ Expect("Windows: registry and account", WindowsReads());
 Expect("Platform: data folder trust", TrustRules());
 Expect("Windows: SecureStore", SecureStoreRefusesAMissingFolder());
 Expect("Windows: audit mutex", AuditMutexTurns());
+Expect("Platform: service addresses and proxy rules", await ProxyRules());
+Expect("Windows: WinHTTP proxy", WinHttpReads());
+Expect("Windows: service client", await ServiceClientSends());
 
 Console.WriteLine(failures == 0 ? "AOT canary: all libraries ran." : $"AOT canary: {failures} failed.");
 return failures == 0 ? 0 : 1;
@@ -32,6 +35,7 @@ void Expect(string library, bool passed)
 static bool ModelRoundTrip()
 {
     var lifecycle = ConfigFile.ReadOsLifecycle("""{ "lastReviewed": "2026-09-16", "reviewWarningDays": 90, "upcomingEndWarningDays": 60 }"""u8);
+    var network = ConfigFile.ReadNetwork("""{ "proxyUrl": 8080, "proxyUseDefaultCredentials": "yes", "proxyAutoDetect": false }"""u8);
     var status = new StatusDocument
     {
         ToolVersion = "0.0.0",
@@ -47,7 +51,8 @@ static bool ModelRoundTrip()
         ReportFolder = string.Empty,
     };
     var read = StatusFile.Parse(StatusFile.ToBytes(status));
-    return lifecycle.ReviewWarningDays == 90 && read.ComputerName == "CANARY" && read.AutoFailCount == 1 && read.AuditTime == DateTimeOffset.UnixEpoch;
+    return lifecycle.ReviewWarningDays == 90 && read.ComputerName == "CANARY" && read.AutoFailCount == 1 && read.AuditTime == DateTimeOffset.UnixEpoch
+        && network == new NetworkConfig(ProxyAutoDetect: false);
 }
 
 static async Task<bool> EngineRun()
@@ -116,6 +121,59 @@ static bool AuditMutexTurns()
     return held is not null;
 }
 
+static async Task<bool> ProxyRules()
+{
+    var chooser = new ProxyChooser(new ProxySettings(), new CanaryProxy(), isSystem: true);
+    var route = await chooser.ChooseAsync(new Uri("https://baseline.engramic.ai/v1"), TimeSpan.FromSeconds(5));
+    var local = await chooser.ChooseAsync(new Uri("http://localhost:8787/v1"), TimeSpan.FromSeconds(5));
+    return ServiceUri.TryResolve("https://baseline.engramic.ai", "v1/firmware/dell/0CF1", out var uri, out _)
+        && uri.AbsolutePath == "/v1/firmware/dell/0CF1"
+        && !ServiceUri.TryResolve("http://baseline.engramic.ai", "v1", out _, out _)
+        && route is { Source: ProxySource.WinHttp, UseDefaultCredentials: false, Proxy.Port: 8080 }
+        && local is { Source: ProxySource.Local, IsDirect: true };
+}
+
+static bool WinHttpReads()
+{
+    // Read only: the machine's setting, whatever it is, is never changed.
+    var machine = new WinHttpProxy().ReadMachineProxy();
+    return machine is null || machine.Proxy.Length > 0;
+}
+
+static async Task<bool> ServiceClientSends()
+{
+    // A site on the loopback address that answers one request: the handler, HttpClient and the route, compiled ahead of time.
+    using var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+    listener.Start();
+    var port = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
+    var serving = Task.Run(async () =>
+    {
+        using var connection = await listener.AcceptTcpClientAsync();
+        var stream = connection.GetStream();
+        var head = new byte[4096];
+        var read = 0;
+        while (!System.Text.Encoding.ASCII.GetString(head, 0, read).Contains("\r\n\r\n", StringComparison.Ordinal) && read < head.Length)
+        {
+            var n = await stream.ReadAsync(head.AsMemory(read));
+            if (n == 0)
+            {
+                break;
+            }
+
+            read += n;
+        }
+
+        await stream.WriteAsync("HTTP/1.1 200 OK\r\nETag: \"canary\"\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"u8.ToArray());
+    });
+    var client = new ServiceClient(new ServiceClientOptions { Proxy = new ProxySettings(), IsSystem = false, SystemProxy = new CanaryProxy() });
+    var refused = await client.GetAsync(new ServiceRequest(new Uri("http://baseline.engramic.ai/v1")));
+    var response = await client.GetAsync(new ServiceRequest(new UriBuilder("http", "127.0.0.1", port, "v1").Uri) { Timeout = TimeSpan.FromSeconds(10) });
+    await serving.WaitAsync(TimeSpan.FromSeconds(10));
+    return refused is { StatusCode: 0, Route: null }
+        && response is { StatusCode: 200, ETag: "\"canary\"", Route.Source: ProxySource.Local }
+        && response.Body.Span.SequenceEqual("ok"u8);
+}
+
 /// <summary>A check that passes, to run the engine end to end.</summary>
 internal sealed class CanaryCheck : Check
 {
@@ -131,4 +189,12 @@ internal sealed class CanaryCheck : Check
 internal sealed class NoConfigFiles : IConfigFiles
 {
     public byte[]? Read(string name) => null;
+}
+
+/// <summary>What the canary says Windows says about proxies: a machine WinHTTP proxy, and no PAC file.</summary>
+internal sealed class CanaryProxy : ISystemProxy
+{
+    public MachineProxy? ReadMachineProxy() => new("proxy.contoso.com:8080", "<local>");
+
+    public Task<AutoProxyAnswer> FindAutoProxyAsync(Uri target, Uri? scriptUrl, TimeSpan timeout) => Task.FromResult(AutoProxyAnswer.NotFound("None."));
 }

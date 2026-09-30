@@ -51,7 +51,7 @@ public sealed class IntuneReaderTests
         var discover = Probe.Value.Runs.Single(r => r.Script == "Discover" && r.Bitness == "32-bit");
 
         Assert.Equal(0, discover.ExitCode);
-        // Text beyond ASCII arrives intact: the byte order mark tells Windows PowerShell 5.1 the file is UTF-8.
+        // Text beyond ASCII arrives intact: the scripts read status.json as UTF-8.
         Assert.Equal(ContractSamples.ProbeToolVersion, discover.Value("CEToolVersion"));
         Assert.Equal("0", discover.Value("CEAuditAgeHours"));
         Assert.Equal("false", discover.Value("CEAuditError"));

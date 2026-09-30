@@ -155,7 +155,10 @@ On Linux, use `Baseline.Portable.slnf` in place of `Baseline.slnx`.
 
 A hung test fails the run instead of holding it until CI gives up: once no test has finished for 30 seconds,
 the hang dump extension (`tests/Directory.Build.props`) dumps and stops the test process, and `TestResults/`
-gets the dump and a `_hang.log` that names the tests still running. Tests that wait on work on other threads,
+gets the dump and a `_hang.log` that names the tests still running. A project whose tests are slow by nature
+sets a longer `BaselineHangDumpTimeout` in its project file: the Contracts tests wait 10 minutes, since each of
+their Intune-reader runs starts Windows PowerShell five times and may take up to 210 seconds on a busy runner
+before it gives up (`IntuneReaders.cs` gives the measurements). Tests that wait on work on other threads,
 as the runner's tests do, give up on each wait after 10 seconds and say what they were waiting for, and they
 move a fake clock only once the code under test has started its timer on it.
 

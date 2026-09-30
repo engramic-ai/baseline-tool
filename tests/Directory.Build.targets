@@ -1,0 +1,11 @@
+<Project>
+  <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.targets', '$(MSBuildThisFileDirectory)../'))" />
+
+  <!--
+    The hang dump (Directory.Build.props). Its timeout is read here, after the project file, so that a test
+    project can set BaselineHangDumpTimeout for itself.
+  -->
+  <PropertyGroup Condition="$(MSBuildProjectName.EndsWith('.Tests'))">
+    <TestingPlatformCommandLineArguments>$(TestingPlatformCommandLineArguments) --hangdump --hangdump-timeout $(BaselineHangDumpTimeout)</TestingPlatformCommandLineArguments>
+  </PropertyGroup>
+</Project>

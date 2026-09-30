@@ -4,6 +4,16 @@
     deployed in tenants run on it in 64-bit and 32-bit Windows PowerShell 5.1. Portable, so the golden tests
     run on Linux too; the Intune-reader tests run only on Windows.
   -->
+  <PropertyGroup>
+    <!--
+      The Intune-reader tests start Windows PowerShell five times for each run, and a busy or cold machine can
+      take a minute over one (IntuneReaders.cs). A run gives up after 210 seconds and a test may wait for two,
+      so the hang dump here waits 10 minutes rather than 30 seconds: longer than any test that is only slow,
+      and still well inside the 30 minutes CI gives the job.
+    -->
+    <BaselineHangDumpTimeout>10m</BaselineHangDumpTimeout>
+  </PropertyGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\..\src\Engramic.Baseline.Model\Engramic.Baseline.Model.csproj" />
   </ItemGroup>

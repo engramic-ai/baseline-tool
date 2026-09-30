@@ -19,11 +19,12 @@
     <!-- A test project whose tests all vanished is a mistake, not a pass. -->
     <TestingPlatformCommandLineArguments>--minimum-expected-tests 1</TestingPlatformCommandLineArguments>
     <!--
-      A hung test fails the run instead of holding it until CI gives up: once no test has finished for 30
-      seconds, the test process is dumped and stopped, and TestResults gets the dump and a log naming the tests
-      still running. Every test takes well under a second.
+      A hung test fails the run instead of holding it until CI gives up: once no test has finished for this
+      long, the test process is dumped and stopped, and TestResults gets the dump and a log naming the tests
+      still running. Almost every test takes well under a second. A project whose tests take longer sets its
+      own in its project file, and Directory.Build.targets, read after the project file, passes it on.
     -->
-    <TestingPlatformCommandLineArguments>$(TestingPlatformCommandLineArguments) --hangdump --hangdump-timeout 30s</TestingPlatformCommandLineArguments>
+    <BaselineHangDumpTimeout>30s</BaselineHangDumpTimeout>
   </PropertyGroup>
 
   <ItemGroup Condition="$(MSBuildProjectName.EndsWith('.Tests'))">

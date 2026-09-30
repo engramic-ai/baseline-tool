@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Text.Json;
 using Engramic.Baseline.Model;
 
@@ -40,6 +41,27 @@ internal sealed record ReaderRun(
 /// </summary>
 internal static class IntuneReaders
 {
+    /// <summary>
+    /// How long the four hosts may take, from when the script starts them all at once: then the script stops
+    /// them and names the one that was late. A whole run takes 1.5 seconds on an idle 16-core machine (the
+    /// 32-bit hosts are the slowest, at 1.4 seconds each), 3.9 seconds pinned to one core, and 3 to 3.5 seconds
+    /// on CI's Windows runner. Under load it takes far longer: with 16 to 64 busy Windows PowerShell processes
+    /// on 16 cores, single runs took up to 64 seconds, and this project's 11 runs took up to 6.4 minutes in all;
+    /// on a cold runner, with the other test applications starting beside this one, one run took more than 25.
+    /// So this is nearly three times the slowest run measured: a slow machine passes, and a stuck host still
+    /// fails within minutes.
+    /// </summary>
+    private const int HostTimeoutSeconds = 180;
+
+    /// <summary>
+    /// How long the whole script may take: the hosts' time, plus starting the script's own Windows PowerShell
+    /// (up to 5 seconds under load) and reading the results, with room to spare, so that the script's own
+    /// timeout, which names the host, comes first. A test may wait for two runs (the shared probe, then its
+    /// own), so the Contracts project's hang dump waits longer than two of these
+    /// (Engramic.Baseline.Contracts.Tests.csproj).
+    /// </summary>
+    private static readonly TimeSpan ScriptTimeout = TimeSpan.FromSeconds(HostTimeoutSeconds + 30);
+
     private static readonly Lazy<string> Root = new(FindRoot);
 
     /// <summary>Gets why the scripts cannot run here, or null when they can.</summary>
@@ -79,6 +101,7 @@ internal static class IntuneReaders
                 "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
                 "-File", Path.Combine(Root.Value, "tools", "contracts", "Invoke-IntuneReaders.ps1"),
                 "-StatusPath", status, "-ResultPath", results, "-WorkPath", work.FullName,
+                "-TimeoutSeconds", HostTimeoutSeconds.ToString(CultureInfo.InvariantCulture),
             ];
             foreach (var argument in arguments)
             {
@@ -90,10 +113,10 @@ internal static class IntuneReaders
             using var process = Process.Start(start) ?? throw new InvalidOperationException("Windows PowerShell did not start.");
             var output = process.StandardOutput.ReadToEndAsync();
             var error = process.StandardError.ReadToEndAsync();
-            if (!process.WaitForExit(TimeSpan.FromSeconds(25)))
+            if (!process.WaitForExit(ScriptTimeout))
             {
                 process.Kill(entireProcessTree: true);
-                throw new TimeoutException("Invoke-IntuneReaders.ps1 did not finish within 25 seconds.");
+                throw new TimeoutException($"Invoke-IntuneReaders.ps1 did not finish within {ScriptTimeout.TotalSeconds} seconds.");
             }
 
             process.WaitForExit();

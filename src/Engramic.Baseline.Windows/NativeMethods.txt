@@ -16,12 +16,17 @@ GetSecurityDescriptorLength
 LocalFree
 GetSystemWindowsDirectory
 
-// SecureStore, the only file allowed the sensitive ones: CreateFile, SetFileInformationByHandle and
-// SHGetKnownFolderPath (src/BannedApiExemptions.txt).
+// SecureStore, the only file allowed the sensitive ones: CreateFile (ProgramData, by path), NtCreateFile
+// (everything below it, one name at a time relative to a held folder's handle), NtSetInformationFile
+// (renames, deletes and attributes through a handle) and SHGetKnownFolderPath (src/BannedApiExemptions.txt).
 CreateFile
-SetFileInformationByHandle
-FILE_RENAME_INFO
-FILE_DISPOSITION_INFO
+NtCreateFile
+NtSetInformationFile
+FILE_RENAME_INFORMATION
+FILE_DISPOSITION_INFORMATION
+FILE_DISPOSITION_INFORMATION_EX
+FILE_BASIC_INFORMATION
+RtlNtStatusToDosError
 FlushFileBuffers
 SHGetKnownFolderPath
 FOLDERID_ProgramData

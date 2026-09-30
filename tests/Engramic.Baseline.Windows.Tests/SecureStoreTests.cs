@@ -11,6 +11,7 @@ namespace Engramic.Baseline.Windows.Tests;
 /// SecureStore on real folders under the temp folder: what it accepts, what it refuses, and what an
 /// attacker's link, hard link or swap does to a write. None of these needs elevation.
 /// </summary>
+[Trait("Suite", "Security")]
 public sealed class SecureStoreTests : IDisposable
 {
     private readonly DataFolderFixture _fixture = new();
@@ -79,8 +80,8 @@ public sealed class SecureStoreTests : IDisposable
         Assert.False(security.AreAccessRulesProtected);
         Assert.All(rules, r => Assert.True(r.IsInherited));
         Assert.Equal(
-            new[] { "S-1-5-18", "S-1-5-32-544", Elevation.CurrentUser.Value }.Order(StringComparer.Ordinal),
-            rules.Select(r => r.IdentityReference.Value).Order(StringComparer.Ordinal));
+            Elevation.FullControl.Select(a => a.Value).Order(StringComparer.Ordinal),
+            rules.Select(r => r.IdentityReference.Value).Distinct().Order(StringComparer.Ordinal));
     }
 
     [Fact]
@@ -111,7 +112,7 @@ public sealed class SecureStoreTests : IDisposable
     {
         var missing = _fixture.Tree.PathOf("Missing");
 
-        var e = Assert.Throws<SecureStoreException>(() => SecureStore.Open(_fixture.Options with { ProgramDataPath = missing }, DataFolderFixture.Trust, null, null));
+        var e = Assert.Throws<SecureStoreException>(() => SecureStore.Open(_fixture.Options with { ProgramDataPath = missing }, DataFolderFixture.Rules, null));
 
         Assert.Equal($"The ProgramData folder {missing} does not exist. The fleet install creates the data folder locked; this tool does not create it.", e.Message);
     }
@@ -136,7 +137,7 @@ public sealed class SecureStoreTests : IDisposable
     [InlineData("")]
     public void Refuses_a_ProgramData_path_that_is_not_a_plain_full_local_path(string path)
     {
-        var e = Assert.Throws<SecureStoreException>(() => SecureStore.Open(_fixture.Options with { ProgramDataPath = path }, DataFolderFixture.Trust, null, null));
+        var e = Assert.Throws<SecureStoreException>(() => SecureStore.Open(_fixture.Options with { ProgramDataPath = path }, DataFolderFixture.Rules, null));
 
         Assert.Equal($"{path} is not a full path on a drive with a letter, so it is not used as the ProgramData folder.", e.Message);
     }
@@ -147,7 +148,7 @@ public sealed class SecureStoreTests : IDisposable
         var link = _fixture.Tree.PathOf("LinkedProgramData");
         Links.CreateJunction(link, _fixture.ProgramData);
 
-        var e = Assert.Throws<SecureStoreException>(() => SecureStore.Open(_fixture.Options with { ProgramDataPath = link }, DataFolderFixture.Trust, null, null));
+        var e = Assert.Throws<SecureStoreException>(() => SecureStore.Open(_fixture.Options with { ProgramDataPath = link }, DataFolderFixture.Rules, null));
 
         Assert.Equal($"{link} is a junction, symbolic link or other reparse point, so where it leads cannot be trusted.", e.Message);
     }
@@ -162,7 +163,7 @@ public sealed class SecureStoreTests : IDisposable
         Links.CreateJunction(link, real);
         var through = Path.Combine(link, "ProgramData");
 
-        var e = Assert.Throws<SecureStoreException>(() => SecureStore.Open(_fixture.Options with { ProgramDataPath = through }, DataFolderFixture.Trust, null, null));
+        var e = Assert.Throws<SecureStoreException>(() => SecureStore.Open(_fixture.Options with { ProgramDataPath = through }, DataFolderFixture.Rules, null));
 
         Assert.Equal($"{through} leads to {Path.Combine(real, "ProgramData")}, so a folder on the way is a link or was replaced.", e.Message);
     }
@@ -242,7 +243,7 @@ public sealed class SecureStoreTests : IDisposable
         var registry = new Testing.FakeRegistry().Set(RegistryHive.LocalMachine, @"SOFTWARE\Tests\Seal", "Sealed", RegistryValue.FromText("1.0.0"));
         _fixture.Registry = registry;
 
-        using var store = SecureStore.Open(_fixture.Options with { SealKeyPath = @"SOFTWARE\Tests\Seal", SealValueName = "Sealed" }, DataFolderFixture.Trust, null, null);
+        using var store = SecureStore.Open(_fixture.Options with { SealKeyPath = @"SOFTWARE\Tests\Seal", SealValueName = "Sealed" }, DataFolderFixture.Rules, null);
 
         Assert.Equal((RegistryHive.LocalMachine, RegistryView.Registry64, @"SOFTWARE\Tests\Seal", "Sealed"), Assert.Single(registry.Reads));
     }

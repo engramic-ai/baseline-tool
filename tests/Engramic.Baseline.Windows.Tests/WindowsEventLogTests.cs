@@ -41,4 +41,11 @@ public sealed class WindowsEventLogTests
         Assert.Throws<ArgumentNullException>(() => log.Write(1003, EventLogLevel.Warning, null!));
     }
 
+    [Fact]
+    public void The_machine_options_record_notices_in_the_Application_log_under_that_source()
+    {
+        var options = SecureStoreOptions.ForMachine(new Testing.FakeRegistry(), TimeProvider.System);
+
+        Assert.Equal(WindowsEventLog.ProductSource, Assert.IsType<WindowsEventLog>(options.EventLog).Source);
+    }
 }

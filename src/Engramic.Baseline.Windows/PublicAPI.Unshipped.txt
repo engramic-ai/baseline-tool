@@ -1,6 +1,7 @@
 #nullable enable
 const Engramic.Baseline.Windows.AuditMutex.MachineName = "Global\\EngramicBaselineAudit" -> string!
 const Engramic.Baseline.Windows.SecureStore.DataFolderName = "EngramicBaseline" -> string!
+const Engramic.Baseline.Windows.SecureStore.MaxReadLength = 67108864 -> int
 const Engramic.Baseline.Windows.SecureStoreOptions.MachineSealKeyPath = "SOFTWARE\\EngramicBaseline.DataRoot" -> string!
 const Engramic.Baseline.Windows.SecureStoreOptions.MachineSealValueName = "DataRootSealed" -> string!
 const Engramic.Baseline.Windows.WindowsEventLog.ProductSource = "EngramicBaseline" -> string!
@@ -9,12 +10,19 @@ Engramic.Baseline.Windows.AuditMutex.Dispose() -> void
 Engramic.Baseline.Windows.ConsoleSession
 Engramic.Baseline.Windows.CurrentProcess
 Engramic.Baseline.Windows.SecureStore
+Engramic.Baseline.Windows.SecureStore.CreateScratchFolder() -> Engramic.Baseline.Platform.IScratchFolder!
+Engramic.Baseline.Windows.SecureStore.DeleteTree(Engramic.Baseline.Platform.DataFolder folder, string! name) -> System.Collections.Generic.IReadOnlyList<string!>!
 Engramic.Baseline.Windows.SecureStore.Dispose() -> void
+Engramic.Baseline.Windows.SecureStore.Notices.get -> System.Collections.Generic.IReadOnlyList<string!>!
+Engramic.Baseline.Windows.SecureStore.ReadFile(Engramic.Baseline.Platform.DataFolder folder, string! name, int maxLength) -> byte[]?
 Engramic.Baseline.Windows.SecureStore.RootPath.get -> string!
+Engramic.Baseline.Windows.SecureStore.WriteFile(Engramic.Baseline.Platform.DataFolder folder, string! name, System.ReadOnlySpan<byte> content) -> void
 Engramic.Baseline.Windows.SecureStore.WriteFile(string! name, System.ReadOnlySpan<byte> content) -> void
 Engramic.Baseline.Windows.SecureStoreOptions
 Engramic.Baseline.Windows.SecureStoreOptions.<Clone>$() -> Engramic.Baseline.Windows.SecureStoreOptions!
 Engramic.Baseline.Windows.SecureStoreOptions.Equals(Engramic.Baseline.Windows.SecureStoreOptions? other) -> bool
+Engramic.Baseline.Windows.SecureStoreOptions.EventLog.get -> Engramic.Baseline.Platform.IEventLog!
+Engramic.Baseline.Windows.SecureStoreOptions.EventLog.init -> void
 Engramic.Baseline.Windows.SecureStoreOptions.ProgramDataPath.get -> string!
 Engramic.Baseline.Windows.SecureStoreOptions.ProgramDataPath.init -> void
 Engramic.Baseline.Windows.SecureStoreOptions.Registry.get -> Engramic.Baseline.Platform.IRegistry!
@@ -39,6 +47,7 @@ override Engramic.Baseline.Windows.SecureStoreOptions.ToString() -> string!
 static Engramic.Baseline.Windows.AuditMutex.TryAcquire(string! name, System.TimeSpan timeout) -> Engramic.Baseline.Windows.AuditMutex?
 static Engramic.Baseline.Windows.ConsoleSession.GetActiveSessionId() -> uint?
 static Engramic.Baseline.Windows.CurrentProcess.ReadAccount() -> Engramic.Baseline.Platform.ProcessAccount!
+static Engramic.Baseline.Windows.SecureStore.Initialize(Engramic.Baseline.Windows.SecureStoreOptions! options) -> Engramic.Baseline.Windows.SecureStore!
 static Engramic.Baseline.Windows.SecureStore.Open(Engramic.Baseline.Windows.SecureStoreOptions! options) -> Engramic.Baseline.Windows.SecureStore!
 static Engramic.Baseline.Windows.SecureStoreOptions.ForMachine(Engramic.Baseline.Platform.IRegistry! registry, System.TimeProvider! time) -> Engramic.Baseline.Windows.SecureStoreOptions!
 static Engramic.Baseline.Windows.SecureStoreOptions.operator !=(Engramic.Baseline.Windows.SecureStoreOptions? left, Engramic.Baseline.Windows.SecureStoreOptions? right) -> bool

@@ -60,8 +60,18 @@ Engramic.Baseline.Platform.IEventLog
 Engramic.Baseline.Platform.IEventLog.Write(int eventId, Engramic.Baseline.Platform.EventLogLevel level, string! message) -> bool
 Engramic.Baseline.Platform.IRegistry
 Engramic.Baseline.Platform.IRegistry.GetValue(Engramic.Baseline.Platform.RegistryHive hive, Engramic.Baseline.Platform.RegistryView view, string! keyPath, string! valueName) -> Engramic.Baseline.Platform.RegistryValue?
+Engramic.Baseline.Platform.IScratchFolder
+Engramic.Baseline.Platform.IScratchFolder.Path.get -> string!
+Engramic.Baseline.Platform.IScratchFolder.PathOf(string! name) -> string!
+Engramic.Baseline.Platform.IScratchFolder.ReadFile(string! name, int maxLength) -> byte[]?
+Engramic.Baseline.Platform.IScratchFolder.WriteFile(string! name, System.ReadOnlySpan<byte> content) -> void
 Engramic.Baseline.Platform.ISecureStore
+Engramic.Baseline.Platform.ISecureStore.CreateScratchFolder() -> Engramic.Baseline.Platform.IScratchFolder!
+Engramic.Baseline.Platform.ISecureStore.DeleteTree(Engramic.Baseline.Platform.DataFolder folder, string! name) -> System.Collections.Generic.IReadOnlyList<string!>!
+Engramic.Baseline.Platform.ISecureStore.Notices.get -> System.Collections.Generic.IReadOnlyList<string!>!
+Engramic.Baseline.Platform.ISecureStore.ReadFile(Engramic.Baseline.Platform.DataFolder folder, string! name, int maxLength) -> byte[]?
 Engramic.Baseline.Platform.ISecureStore.RootPath.get -> string!
+Engramic.Baseline.Platform.ISecureStore.WriteFile(Engramic.Baseline.Platform.DataFolder folder, string! name, System.ReadOnlySpan<byte> content) -> void
 Engramic.Baseline.Platform.ISecureStore.WriteFile(string! name, System.ReadOnlySpan<byte> content) -> void
 Engramic.Baseline.Platform.ItemSecurity
 Engramic.Baseline.Platform.ItemSecurity.<Clone>$() -> Engramic.Baseline.Platform.ItemSecurity!

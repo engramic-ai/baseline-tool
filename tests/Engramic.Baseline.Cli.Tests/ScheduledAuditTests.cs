@@ -223,7 +223,7 @@ public sealed class ScheduledAuditTests
         var programData = tree.Folder("ProgramData", Descriptors.ProgramDataLike);
         var dataFolder = tree.Folder(@"ProgramData\EngramicBaseline", Descriptors.InstallerLocked);
         var seal = new FakeRegistry().Set(RegistryHive.LocalMachine, SecureStoreOptions.MachineSealKeyPath, SecureStoreOptions.MachineSealValueName, RegistryValue.FromText("0.3.2"));
-        var settings = Settings() with { OpenStore = () => SecureStore.Open(new SecureStoreOptions { ProgramDataPath = programData, Registry = seal }) };
+        var settings = Settings() with { OpenStore = () => SecureStore.Open(new SecureStoreOptions { ProgramDataPath = programData, Registry = seal, EventLog = new FakeEventLog() }) };
 
         var code = ScheduledAudit.Run(settings, _output, _error);
 

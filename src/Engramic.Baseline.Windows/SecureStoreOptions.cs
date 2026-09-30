@@ -3,11 +3,12 @@ using Engramic.Baseline.Platform;
 namespace Engramic.Baseline.Windows;
 
 /// <summary>
-/// Where SecureStore finds the machine data folder and its seal, and the clock it waits by.
+/// Where SecureStore finds the machine data folder and its seal, where it records what it moves aside, and
+/// the clock it waits by.
 /// </summary>
 /// <remarks>
 /// <see cref="ForMachine"/> gives this device's. Everything is settable so that tests work in folders
-/// of their own, never in the real ProgramData folder or registry key.
+/// of their own, never in the real ProgramData folder, registry key or event log.
 /// </remarks>
 public sealed record SecureStoreOptions
 {
@@ -27,6 +28,12 @@ public sealed record SecureStoreOptions
     public required IRegistry Registry { get; init; }
 
     /// <summary>
+    /// Gets the event log that each untrusted item moved aside, and each link removed, is recorded in, as
+    /// event 1003: the Application log under the tool's source for the product.
+    /// </summary>
+    public required IEventLog EventLog { get; init; }
+
+    /// <summary>
     /// Gets the key of the seal under HKEY_LOCAL_MACHINE, read in the 64-bit view. Only administrators can
     /// write there, so a standard user cannot forge it.
     /// </summary>
@@ -35,12 +42,15 @@ public sealed record SecureStoreOptions
     /// <summary>Gets the name of the seal value: text that is not empty (the installer writes its version).</summary>
     public string SealValueName { get; init; } = MachineSealValueName;
 
-    /// <summary>Gets the clock SecureStore waits by between attempts to replace a file that is open.</summary>
+    /// <summary>
+    /// Gets the clock SecureStore waits by between attempts to replace, move aside or delete something another
+    /// process has open.
+    /// </summary>
     public TimeProvider Time { get; init; } = TimeProvider.System;
 
     /// <summary>
     /// Gets this device's: the ProgramData folder from the known-folder API, checked against the drive
-    /// Windows is installed on, and the installer's seal.
+    /// Windows is installed on, the installer's seal, and the Application log under the tool's source.
     /// </summary>
     /// <param name="registry">The registry primitive.</param>
     /// <param name="time">The clock.</param>
@@ -50,6 +60,12 @@ public sealed record SecureStoreOptions
     {
         ArgumentNullException.ThrowIfNull(registry);
         ArgumentNullException.ThrowIfNull(time);
-        return new SecureStoreOptions { ProgramDataPath = SecureStore.FindProgramData(), Registry = registry, Time = time };
+        return new SecureStoreOptions
+        {
+            ProgramDataPath = SecureStore.FindProgramData(),
+            Registry = registry,
+            EventLog = new WindowsEventLog(WindowsEventLog.ProductSource),
+            Time = time,
+        };
     }
 }

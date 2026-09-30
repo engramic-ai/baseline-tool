@@ -7,7 +7,9 @@ namespace Engramic.Baseline.Platform;
 /// </summary>
 /// <remarks>
 /// Nothing elevated writes to or reads back from the temp folder, which for SYSTEM is shared with other
-/// accounts: a tool is given paths in here instead. Not safe to use from more than one thread at a time.
+/// accounts: a tool is given paths in here instead. Use it, and dispose of it, while the store that made it
+/// is open: the store holds the folders above it, which keeps its path naming it. Not safe to use from more
+/// than one thread at a time.
 /// </remarks>
 public interface IScratchFolder : IDisposable
 {

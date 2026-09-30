@@ -15,7 +15,8 @@ public interface ISecureStore : IDisposable
 
     /// <summary>
     /// Gets what the store has done about items it could not trust, in order: each link it removed and
-    /// each item it moved aside, naming where it went. Each is also an event in the Application log.
+    /// each item it moved aside, naming where it went, each of which is also event 1003 in the Application
+    /// log; and what the deletion of a scratch folder had to leave in place, and why.
     /// </summary>
     IReadOnlyList<string> Notices { get; }
 

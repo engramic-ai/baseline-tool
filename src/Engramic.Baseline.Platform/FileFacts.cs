@@ -23,4 +23,7 @@ public sealed record FileFacts
 
     /// <summary>Gets whether it has the read-only attribute.</summary>
     public bool IsReadOnly { get; init; }
+
+    /// <summary>Gets the size of the file's content in bytes (its end of file); 0 for a folder.</summary>
+    public long Length { get; init; }
 }

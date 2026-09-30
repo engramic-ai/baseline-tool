@@ -3,6 +3,7 @@ const Engramic.Baseline.Windows.AuditMutex.MachineName = "Global\\EngramicBaseli
 const Engramic.Baseline.Windows.SecureStore.DataFolderName = "EngramicBaseline" -> string!
 const Engramic.Baseline.Windows.SecureStoreOptions.MachineSealKeyPath = "SOFTWARE\\EngramicBaseline.DataRoot" -> string!
 const Engramic.Baseline.Windows.SecureStoreOptions.MachineSealValueName = "DataRootSealed" -> string!
+const Engramic.Baseline.Windows.WindowsEventLog.ProductSource = "EngramicBaseline" -> string!
 Engramic.Baseline.Windows.AuditMutex
 Engramic.Baseline.Windows.AuditMutex.Dispose() -> void
 Engramic.Baseline.Windows.ConsoleSession
@@ -25,6 +26,10 @@ Engramic.Baseline.Windows.SecureStoreOptions.SealValueName.init -> void
 Engramic.Baseline.Windows.SecureStoreOptions.SecureStoreOptions() -> void
 Engramic.Baseline.Windows.SecureStoreOptions.Time.get -> System.TimeProvider!
 Engramic.Baseline.Windows.SecureStoreOptions.Time.init -> void
+Engramic.Baseline.Windows.WindowsEventLog
+Engramic.Baseline.Windows.WindowsEventLog.Source.get -> string!
+Engramic.Baseline.Windows.WindowsEventLog.WindowsEventLog(string! source) -> void
+Engramic.Baseline.Windows.WindowsEventLog.Write(int eventId, Engramic.Baseline.Platform.EventLogLevel level, string! message) -> bool
 Engramic.Baseline.Windows.WindowsRegistry
 Engramic.Baseline.Windows.WindowsRegistry.GetValue(Engramic.Baseline.Platform.RegistryHive hive, Engramic.Baseline.Platform.RegistryView view, string! keyPath, string! valueName) -> Engramic.Baseline.Platform.RegistryValue?
 Engramic.Baseline.Windows.WindowsRegistry.WindowsRegistry() -> void

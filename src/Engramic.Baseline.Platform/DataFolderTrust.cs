@@ -124,6 +124,48 @@ public sealed class DataFolderTrust
     }
 
     /// <summary>
+    /// Checks a folder in the data folder that the tool keeps, makes or walks, such as reports, a scratch
+    /// folder or a folder it is deleting: not a link, not stored online only, a folder, and trusted
+    /// (<see cref="FindSecurityProblem"/>). The data folder itself also needs its seal
+    /// (<see cref="FindDataFolderProblem"/>).
+    /// </summary>
+    /// <param name="path">The path, for the message.</param>
+    /// <param name="facts">What its handle tells.</param>
+    /// <param name="security">Its owner and access list.</param>
+    /// <returns>Null when it passes; otherwise the problem.</returns>
+    public string? FindFolderProblem(string path, FileFacts facts, ItemSecurity security)
+    {
+        ArgumentNullException.ThrowIfNull(path);
+        ArgumentNullException.ThrowIfNull(facts);
+        ArgumentNullException.ThrowIfNull(security);
+        return FindLinkProblem(path, facts)
+            ?? (facts.IsDirectory ? null : $"{path} is a file, not a folder.")
+            ?? FindSecurityProblem(path, security);
+    }
+
+    /// <summary>
+    /// Checks a file in the data folder before the tool reads it, such as an administrator's config
+    /// override or a cached answer: an ordinary file with one name, not a link and not stored online only,
+    /// owned by a trusted account and changeable by no one else, and no longer than the tool reads.
+    /// </summary>
+    /// <param name="path">The path, for the message.</param>
+    /// <param name="facts">What a handle open on the file itself tells.</param>
+    /// <param name="security">Its owner and access list.</param>
+    /// <param name="maxLength">The most bytes the tool reads from it.</param>
+    /// <returns>Null when it may be read; otherwise the problem.</returns>
+    public string? FindReadProblem(string path, FileFacts facts, ItemSecurity security, long maxLength)
+    {
+        ArgumentNullException.ThrowIfNull(path);
+        ArgumentNullException.ThrowIfNull(facts);
+        ArgumentNullException.ThrowIfNull(security);
+        return FindFileProblem(path, facts)
+            ?? FindSecurityProblem(path, security)
+            ?? (facts.Length <= maxLength
+                ? null
+                : string.Create(CultureInfo.InvariantCulture, $"{path} is {facts.Length} bytes long, more than the {maxLength} bytes the tool reads from it."));
+    }
+
+    /// <summary>
     /// Checks a file that a new one is about to replace: an ordinary file with one name that can be
     /// replaced. A link, a folder, a file with other names (hard links) or a read-only file is left alone.
     /// </summary>

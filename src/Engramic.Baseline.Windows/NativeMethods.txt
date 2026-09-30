@@ -5,10 +5,11 @@
 // src/BannedApiExemptions.txt allows; docs/DOTNET.md explains.
 WTSGetActiveConsoleSessionId
 
-// What a handle tells about the file or folder it is open on (FileHandles).
+// What a handle tells about the file or folder it is open on, and the names in a folder (FileHandles).
 GetFileInformationByHandleEx
 FILE_ATTRIBUTE_TAG_INFO
 FILE_STANDARD_INFO
+FILE_FULL_DIR_INFO
 GetFinalPathNameByHandle
 GetSecurityInfo
 GetSecurityDescriptorLength
@@ -25,3 +26,8 @@ FlushFileBuffers
 SHGetKnownFolderPath
 FOLDERID_ProgramData
 CoTaskMemFree
+
+// The Application event log (WindowsEventLog), as the PowerShell tool writes it.
+RegisterEventSource
+ReportEvent
+DeregisterEventSource

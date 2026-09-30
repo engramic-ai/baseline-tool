@@ -8,6 +8,8 @@ public sealed class DataFolderTrustTests
 {
     private const string DataFolder = @"C:\ProgramData\EngramicBaseline";
     private const string StatusJson = @"C:\ProgramData\EngramicBaseline\status.json";
+    private const string Reports = @"C:\ProgramData\EngramicBaseline\reports";
+    private const string Override = @"C:\ProgramData\EngramicBaseline\config\network.json";
     private const uint FullControl = 0x001F_01FF;
     private const uint ReadAndExecute = 0x0012_00A9;
 
@@ -284,6 +286,57 @@ public sealed class DataFolderTrustTests
         Assert.StartsWith($"{StatusJson} has 2 names", _trust.FindNewFileProblem(StatusJson, File with { LinkCount = 2 }, Locked()), StringComparison.Ordinal);
         Assert.StartsWith($"{StatusJson} is a junction", _trust.FindNewFileProblem(StatusJson, File with { IsReparsePoint = true }, Locked()), StringComparison.Ordinal);
         Assert.Equal($"{StatusJson} is a folder, not a file.", _trust.FindNewFileProblem(StatusJson, Folder, Locked()));
+    }
+
+    [Fact]
+    public void A_kept_folder_that_is_a_trusted_folder_passes()
+    {
+        Assert.Null(_trust.FindFolderProblem(Reports, Folder, Locked()));
+        Assert.Null(_trust.FindFolderProblem(Reports, Folder, Locked(Allow(Sid.Users, ReadAndExecute))));
+    }
+
+    [Fact]
+    public void A_kept_folder_needs_no_seal_but_is_refused_as_a_link_a_file_or_untrusted()
+    {
+        Assert.StartsWith($"{Reports} is a junction", _trust.FindFolderProblem(Reports, Folder with { IsReparsePoint = true }, Locked()), StringComparison.Ordinal);
+        Assert.StartsWith($"{Reports} is stored online only", _trust.FindFolderProblem(Reports, Folder with { IsOnlineOnly = true }, Locked()), StringComparison.Ordinal);
+        Assert.Equal($"{Reports} is a file, not a folder.", _trust.FindFolderProblem(Reports, File, Locked()));
+        Assert.Equal($"{Reports} can be changed by S-1-5-32-545, not only administrators.", _trust.FindFolderProblem(Reports, Folder, Locked(Allow(Sid.Users, 0x2))));
+        Assert.StartsWith($"{Reports} is owned by {User}", _trust.FindFolderProblem(Reports, Folder, Locked() with { Owner = User }), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_file_to_read_passes_when_it_is_ordinary_trusted_and_no_longer_than_the_limit()
+    {
+        Assert.Null(_trust.FindReadProblem(Override, File with { Length = 100 }, Locked(), maxLength: 100));
+        Assert.Null(_trust.FindReadProblem(Override, File, Locked(Allow(Sid.Users, ReadAndExecute)), maxLength: 1));
+    }
+
+    [Fact]
+    public void A_file_to_read_that_is_longer_than_the_limit_is_refused_not_cut_short()
+    {
+        Assert.Equal(
+            $"{Override} is 101 bytes long, more than the 100 bytes the tool reads from it.",
+            _trust.FindReadProblem(Override, File with { Length = 101 }, Locked(), maxLength: 100));
+    }
+
+    [Fact]
+    public void A_file_to_read_that_a_user_owns_or_can_change_or_is_linked_or_hard_linked_is_refused()
+    {
+        Assert.StartsWith($"{Override} is owned by {User}", _trust.FindReadProblem(Override, File, Locked() with { Owner = User }, 100), StringComparison.Ordinal);
+        Assert.Equal($"{Override} can be changed by S-1-5-32-545, not only administrators.", _trust.FindReadProblem(Override, File, Locked(Allow(Sid.Users, 0x2)), 100));
+        Assert.StartsWith($"{Override} is a junction", _trust.FindReadProblem(Override, File with { IsReparsePoint = true }, Locked(), 100), StringComparison.Ordinal);
+        Assert.StartsWith($"{Override} has 2 names", _trust.FindReadProblem(Override, File with { LinkCount = 2 }, Locked(), 100), StringComparison.Ordinal);
+        Assert.StartsWith($"{Override} is stored online only", _trust.FindReadProblem(Override, File with { IsOnlineOnly = true }, Locked(), 100), StringComparison.Ordinal);
+        Assert.Equal($"{Override} is a folder, not a file.", _trust.FindReadProblem(Override, Folder, Locked(), 100));
+    }
+
+    [Fact]
+    public void A_file_s_problems_come_before_its_security_and_its_length()
+    {
+        var problem = _trust.FindReadProblem(Override, File with { LinkCount = 2, Length = 1000 }, Locked() with { Owner = User }, 100);
+
+        Assert.StartsWith($"{Override} has 2 names", problem, StringComparison.Ordinal);
     }
 
     [Fact]

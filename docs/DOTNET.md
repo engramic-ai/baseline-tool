@@ -497,11 +497,13 @@ at a time, as SecureStore needs.
 
 **An override that cannot be read is not refused.** When SecureStore could not open or read it at all
 (`SecureStoreException.IsUnavailable`, above), nothing about it was judged and what it holds is not known. A
-standard user can bring that about for as long as they like, by holding the override or the `config` folder open
-without sharing, locking part of the override or holding an oplock on it, so falling back to the shipped copy
-would let them undo an administrator's override without a trace. Instead every read of that file in the run
-throws, each check that needs it reports an Error finding, and the gate's notice says why. Any other failure
-to read it counts the same way: only a refusal, by SecureStore's rules or the file's schema, uses the shipped copy.
+standard user can bring that about for as long as they like, by locking part of the override or holding an oplock
+on it, so falling back to the shipped copy would let them undo an administrator's override without a trace.
+Holding the override or the `config` folder open without sharing does the same for a process that may write to
+them; from a standard user, who may only read them, Windows ignores that refusal. Instead every read of that file
+in the run throws, each check that needs it reports an Error finding, and the gate's notice says why. Any other
+failure to read it counts the same way: only a refusal, by SecureStore's rules or the file's schema, uses the
+shipped copy.
 
 **A file joins with its schema.** A config file that joins the shipped config joins `ConfigFile`'s schemas in the
 same change: `ShippedConfigTests` fails while a shipped file has no schema, and the gate refuses every override of
@@ -530,8 +532,9 @@ part, or under a batch oplock never acknowledged, and the `config` folder held o
 fail the checks within the store's retries and never give the shipped copy; `ConfigTrustGateElevatedTests` use the
 product's rules in a data folder made as the installer makes it: an override that a standard user owns (the
 attacker plants it), that standard users can change, or that is a symbolic link, a junction or a hard link is
-refused and the shipped file used, one owned by Administrators loads, and the attacker holding up an administrator's
-override in each of those ways does not get the shipped copy used in its place. The Security job runs them as the
+refused and the shipped file used, one owned by Administrators loads, the attacker locking an administrator's
+override or holding an oplock on it does not get the shipped copy used in its place, and the attacker holding the
+override or the `config` folder open without sharing does not stop it loading. The Security job runs them as the
 elevated administrator and as SYSTEM. `ScheduledAuditTests` (Cli) hold the scheduled audit's use of the gate, and,
 elevated, read an override through the real SecureStore.
 

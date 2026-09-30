@@ -150,11 +150,11 @@ public sealed class ConfigTrustGateElevatedTests : IDisposable
     }
 
     [Theory]
-    [MemberData(nameof(Holders.Ways), MemberType = typeof(Holders))]
+    [MemberData(nameof(Holders.ReadOnlyHolderWays), MemberType = typeof(Holders))]
     public void An_administrator_s_override_a_standard_user_holds_up_is_not_replaced_by_the_shipped_file(string way)
     {
-        // The config folder lets Users read what is in it, so the attacker can open the override, or the folder, to
-        // stop the read; what they must not get is the shipped copy judged in its place without a trace.
+        // The config folder lets Users read what is in it, so the attacker can lock the override or hold an oplock
+        // on it to stop the read; what they must not get is the shipped copy judged in its place without a trace.
         Assert.SkipUnless(Attacker.IsAvailable, Attacker.Unavailable);
         Arrange();
         _tree.File(Relative(Override), OverrideText, "O:BA");
@@ -176,6 +176,41 @@ public sealed class ConfigTrustGateElevatedTests : IDisposable
         Assert.StartsWith($"Could not read the config override {Name}, so the checks that read it report an error", Assert.Single(gate.Notices), StringComparison.Ordinal);
         Assert.Empty(gate.Overrides);
         Assert.Empty(_events.Entries);
+    }
+
+    [Theory]
+    [MemberData(nameof(Holders.WaysIgnoredFromReadOnlyHolder), MemberType = typeof(Holders))]
+    public void An_administrator_s_override_loads_while_a_standard_user_holds_it_or_its_folder_open_without_sharing(string way)
+    {
+        // Windows ignores a refusal to share reading from a holder who may not write to what they hold, and Users may
+        // only read the config folder and what is in it.
+        Assert.SkipUnless(Attacker.IsAvailable, Attacker.Unavailable);
+        Arrange();
+        _tree.File(Relative(Override), OverrideText, "O:BA");
+        var clock = new FakeTimeProvider();
+
+        using var store = SecureStore.Open(new SecureStoreOptions { ProgramDataPath = _programData, Registry = DataFolderFixture.Sealed(), EventLog = _events, Time = clock });
+        var gate = new ConfigTrustGate(ShippedConfig.Files, store, CurrentProcess.ReadAccount());
+        OsLifecycle? lifecycle = null;
+        IOException? refused = null;
+        using (Attacker.Run(() => Holders.Hold(way, Override, Config)))
+        {
+            try
+            {
+                Waits.AdvanceUntilDone(clock, () => lifecycle = new AuditConfig(gate).OsLifecycle);
+            }
+            catch (IOException e)
+            {
+                refused = e;
+            }
+        }
+
+        Assert.True(
+            refused is null,
+            $"The read-only-holder rule did not hold on Windows {Environment.OSVersion.Version}: a standard user who may only read {Override} held {way}, and the override could not be read: {refused?.Message}");
+        Assert.Equal("2026-01-01", lifecycle?.LastReviewed);
+        Assert.Equal([Override], gate.Overrides);
+        Assert.Empty(gate.Notices);
     }
 
     /// <summary>Makes ProgramData, and the data folder and its config folder as the installer makes them.</summary>

@@ -119,8 +119,9 @@ public sealed class ConfigTrustGateTests : IDisposable
     [MemberData(nameof(Holders.Ways), MemberType = typeof(Holders))]
     public void An_override_someone_holds_up_is_not_replaced_by_the_shipped_file_and_the_checks_that_read_it_fail(string way)
     {
-        // As this account here; ConfigTrustGateElevatedTests does the same as a standard user, whom the product's
-        // config folder lets read the file.
+        // As this account here, which may write to the fixture's folders, so Windows honours each refusal to share;
+        // ConfigTrustGateElevatedTests holds as a standard user, whom the product's config folder lets only read the
+        // file, which leaves the lock and the oplock.
         File.WriteAllText(Override, OverrideText);
         var clock = new FakeTimeProvider();
         _fixture.Time = clock;

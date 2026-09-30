@@ -3,9 +3,11 @@ using Engramic.Baseline.Testing.Windows;
 namespace Engramic.Baseline.Windows.Tests;
 
 /// <summary>
-/// The ways anyone who may read a file in the config folder, standard users included, can stop SecureStore reading
-/// it for as long as they like, without being able to change it: each opened as the account of the thread that
-/// calls <see cref="Hold"/>, and held until disposed.
+/// The ways a reader of a file in the config folder can stop SecureStore reading it for as long as they like,
+/// without changing it: each opened as the account of the thread that calls <see cref="Hold"/>, and held until
+/// disposed. Windows honours a refusal to share reading only from a holder who may write to what they hold, so a
+/// standard user, who may only read the config folder and what is in it, has the lock and the oplock alone
+/// (<see cref="ReadOnlyHolderWays"/>); the tests' own account may write to its folders, so it has all four.
 /// </summary>
 internal static class Holders
 {
@@ -14,7 +16,14 @@ internal static class Holders
     public const string FileOplocked = "an oplock on the file that is never given up";
     public const string FolderHeldOpen = "its folder held open without sharing";
 
+    /// <summary>Gets every way, for a holder who may write to the file and its folder.</summary>
     public static TheoryData<string> Ways => [FileHeldOpen, FileLocked, FileOplocked, FolderHeldOpen];
+
+    /// <summary>Gets the ways that still stop a read when the holder may only read the file and its folder.</summary>
+    public static TheoryData<string> ReadOnlyHolderWays => [FileLocked, FileOplocked];
+
+    /// <summary>Gets the ways Windows ignores from a holder who may only read the file and its folder: refusals to share.</summary>
+    public static TheoryData<string> WaysIgnoredFromReadOnlyHolder => [FileHeldOpen, FolderHeldOpen];
 
     /// <summary>Holds the file, or the folder it is in, in one of the <see cref="Ways"/>.</summary>
     /// <param name="way">How.</param>

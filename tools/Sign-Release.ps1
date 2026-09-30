@@ -30,7 +30,9 @@
                       Artifact Signing Certificate Profile Signer role, and an Endpoint in the
                       metadata matching the account's region or every sign returns 403. Those
                       certificates are valid for three days, so the timestamp is what keeps a
-                      signature verifying afterwards.
+                      signature verifying afterwards. Unless the metadata carries an AccessToken
+                      or excludes AzureCliCredential, sign in with az login first: this checks
+                      the login before signing anything.
 
     -Thumbprint and -PfxPath sign scripts and PE files with Set-AuthenticodeSignature. An installer
     (.msi) needs the Azure path, which signs everything with signtool.
@@ -212,14 +214,10 @@ if ($PSCmdlet.ParameterSetName -eq 'Azure') {
     # and the interactive one waits with no window. That looks exactly like a hung signtool. Name
     # the ones to skip in the metadata's ExcludeCredentials so only the intended login is tried.
     $meta = Get-Content -LiteralPath $AzureMetadata -Raw
-    # The Azure CLI credential shells out to az, so it fails with "Azure CLI not installed" when
-    # az is missing from THIS process's PATH - which is what a shell opened before installing it
-    # looks like. signtool reports that only as an internal error, so say it plainly here.
-    $usesCli = ($meta -notmatch 'AccessToken') -and -not $env:AZURE_CLIENT_ID
-    if ($usesCli -and -not (Get-Command az -ErrorAction SilentlyContinue)) {
-        Write-Warning ('az is not on PATH for this process, so the Azure CLI login cannot be used. ' +
-            'Open a new shell, or add the CLI directory to PATH before signing.')
-    }
+    # A login that cannot work - az missing from this window's PATH, or signed out - fails in
+    # signtool only as an internal error, once for every file. Say it plainly, before signing any.
+    $loginProblem = Get-ReleaseAzureLoginProblem -Path $AzureMetadata
+    if ($loginProblem) { throw $loginProblem }
     if ($meta -notmatch 'ExcludeCredentials') {
         Write-Warning ("$AzureMetadata has no ExcludeCredentials list. If signing hangs with no output, " +
             "that is the credential chain blocking, not the service.")

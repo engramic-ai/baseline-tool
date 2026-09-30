@@ -482,7 +482,10 @@ With `-Unsigned` it checks a folder before signing: none of ours may be signed y
 already carry Microsoft's signature. The "Build and test (.NET)" job runs that on what it publishes, so a package
 assembly that lost its signature fails the pull request, not the release.
 
-**A release.** `tools\New-SignedRelease.ps1 -DotNet -AzureMetadata <metadata>` runs the pre-flight, publishes
+**A release.** `tools\New-SignedRelease.ps1 -DotNet -AzureMetadata <metadata>` first checks the signing login:
+unless the metadata carries an `AccessToken` or excludes `AzureCliCredential`, that is the Azure CLI's, so `az`
+must be on the window's PATH and signed in (`az login`), or it stops in seconds instead of after the build. It then
+runs the pre-flight, publishes
 `baseline.exe` from the committed tree with the SDK in `global.json`, runs the check with `-Unsigned`, signs ours,
 runs the check again with the publisher (`-Publisher`, Engramic Ltd by default), runs the signed
 `baseline.exe --version`, and writes the zip, its checksum, release notes and `release.json` to

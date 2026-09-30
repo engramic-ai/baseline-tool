@@ -24,7 +24,8 @@
     where the sign-test sandbox finds it and runs the slice from it.
 .PARAMETER AzureMetadata
     The Artifact Signing metadata JSON naming the account, region endpoint and certificate
-    profile. Keep it out of the repository; it identifies the signing setup.
+    profile. Keep it out of the repository; it identifies the signing setup. The login it leaves
+    (usually the Azure CLI's, so az login first) is checked before the tests and the build.
 .PARAMETER AllowUntrustedChain
     Accept a chain that does not reach a trusted root, which is what a test profile issues. The
     output is marked DO-NOT-PUBLISH.
@@ -89,11 +90,10 @@ Write-Host ("Commit    : {0}{1}" -f $commit, $(if ($dirty.Count) { ' (DIRTY)' } 
 Write-Host ("Signing   : {0}" -f $AzureMetadata)
 Write-Host ("Output    : {0}" -f $OutputPath)
 
-# The Azure CLI credential shells out to az, and a shell whose PATH predates installing the CLI
-# fails with "Azure CLI not installed", which signtool reports only as an internal error.
-if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
-    Write-Warning 'az is not on PATH for this process. If signing fails with an internal error, that is why: open a new shell.'
-}
+# Signing comes after the tests and the build, and a login that cannot work fails there only as
+# signtool's "internal error". Find that out now, in seconds.
+$loginProblem = Get-ReleaseAzureLoginProblem -Path $AzureMetadata
+if ($loginProblem) { throw $loginProblem }
 
 # --- the same checks CI would run -------------------------------------------------------------
 if (-not $SkipPreFlight) {

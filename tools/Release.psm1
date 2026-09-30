@@ -2,7 +2,7 @@
 <#
 .SYNOPSIS
     What the release scripts share: which PE files in a published folder this repository built, what their
-    signatures say, the version of baseline.exe, and running signtool.
+    signatures say, the version of baseline.exe, running signtool, and checking its Azure login first.
 .DESCRIPTION
     Used by tools\Sign-Release.ps1, tools\Test-ReleaseSignatures.ps1, tools\Test-ReleaseTag.ps1 and
     tools\New-SignedRelease.ps1. Nothing here changes a file, except the signtool that
@@ -353,5 +353,56 @@ function Invoke-ReleaseSignTool {
     [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = $output }
 }
 
+function Invoke-ReleaseAzCli {
+    <#
+    .SYNOPSIS
+        Runs the Azure CLI with the arguments given and returns its exit code and what it printed, or $null when az
+        is not on this process's PATH.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string[]]$ArgumentList)
+    $az = Get-Command az -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $az) { return $null }
+    # az writes its errors to stderr, which under 'Stop' would end the script in Windows PowerShell 5.1.
+    $ErrorActionPreference = 'Continue'
+    $output = @(& $az.Source @ArgumentList 2>&1 | ForEach-Object { [string]$_ })
+    [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = $output }
+}
+
+function Get-ReleaseAzureLoginProblem {
+    <#
+    .SYNOPSIS
+        Why Artifact Signing could not sign in with the metadata given, or $null when nothing stops it.
+    .DESCRIPTION
+        The signing dlib signs in with DefaultAzureCredential, less the credential types the metadata's
+        ExcludeCredentials names. With no AccessToken in the metadata and no service principal in AZURE_CLIENT_ID,
+        the login it reaches is the Azure CLI's. When that fails, signtool says only "SignerSign() failed", once
+        for every file and after the whole build. So this asks az for an Artifact Signing token the way the dlib
+        will, and a missing or signed-out CLI stops a release in seconds. The token is never printed.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][string]$Path)
+    try { $metadata = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop }
+    catch { return "$Path is not readable JSON, so signtool could not read it either." }
+    if ([string](Get-ReleaseJsonValue $metadata 'AccessToken')) { return $null }
+    if ($env:AZURE_CLIENT_ID) { return $null }
+    $excluded = @(Get-ReleaseJsonValue $metadata 'ExcludeCredentials' | ForEach-Object { [string]$_ })
+    if ($excluded -contains 'AzureCliCredential') { return $null }
+    $otherLogin = 'If you sign in some other way, name AzureCliCredential in the metadata''s ExcludeCredentials.'
+    $result = Invoke-ReleaseAzCli -ArgumentList @('account', 'get-access-token', '--resource', 'https://codesigning.azure.net', '--output', 'none')
+    if ($null -eq $result) {
+        return ('The Azure CLI (az) is not on PATH in this window, and it is the login the signing metadata leaves. ' +
+            'A window keeps the PATH it started with, so one opened before the CLI was installed cannot find it: ' +
+            'open a new one (closing the terminal app first if it has been open since), or reload PATH in this one. ' + $otherLogin)
+    }
+    if ($result.ExitCode -ne 0) {
+        return ('The Azure CLI could not get an Artifact Signing token, so signing would fail. az said: ' +
+            ((@($result.Output) | Where-Object { $_ }) -join ' ') + ' Run az login, then try again. ' + $otherLogin)
+    }
+    return $null
+}
+
 Export-ModuleMember -Function Test-ReleasePEFile, Get-ReleasePEFile, Get-ReleaseOwnFile, Get-ReleaseNamePart, Get-ReleaseSignature,
-    Test-ReleaseMicrosoftSignature, Get-ReleaseSignatureReport, Get-ReleaseDotNetVersion, Invoke-ReleaseSignTool
+    Test-ReleaseMicrosoftSignature, Get-ReleaseSignatureReport, Get-ReleaseDotNetVersion, Invoke-ReleaseSignTool,
+    Get-ReleaseAzureLoginProblem

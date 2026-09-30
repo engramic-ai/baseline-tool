@@ -1,4 +1,5 @@
 using System.Globalization;
+using Engramic.Baseline.Engine;
 using Engramic.Baseline.Model;
 
 namespace Engramic.Baseline.Controls.Tests;
@@ -8,7 +9,7 @@ public sealed class ShippedConfigTests
     [Fact]
     public void The_shipped_files_are_the_repository_s_config_folder_byte_for_byte()
     {
-        Assert.Equal(["os-lifecycle.json"], ShippedConfig.Names);
+        Assert.Equal(["network.json", "os-lifecycle.json"], ShippedConfig.Names);
         foreach (var name in ShippedConfig.Names)
         {
             Assert.Equal(File.ReadAllBytes(Path.Combine(RepositoryRoot(), "config", name)), ShippedConfig.Files.Read(name));
@@ -42,6 +43,19 @@ public sealed class ShippedConfigTests
         Assert.Equal(servers.Count, servers.Select(r => r.Build).Distinct().Count());
         Assert.True(lifecycle.ReviewWarningDays > 0 && lifecycle.UpcomingEndWarningDays > 0);
         Assert.False(string.IsNullOrEmpty(lifecycle.Source));
+    }
+
+    [Fact]
+    public void The_shipped_network_settings_name_no_proxy_and_leave_WinHTTP_and_WPAD_on()
+    {
+        var settings = NetworkSettings.Read(ShippedConfig.Files);
+
+        Assert.Equal(string.Empty, settings.ProxyUrl);
+        Assert.False(settings.ProxyUseDefaultCredentials);
+        Assert.True(settings.UseWinHttpProxyWhenSystem);
+        Assert.Equal(string.Empty, settings.ProxyAutoConfigUrl);
+        Assert.True(settings.ProxyAutoDetect);
+        Assert.Empty(settings.Problems);
     }
 
     private static string RepositoryRoot()

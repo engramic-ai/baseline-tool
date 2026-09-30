@@ -11,6 +11,7 @@ namespace Engramic.Baseline.Model;
 [JsonSerializable(typeof(StatusDocument))]
 [JsonSerializable(typeof(FindingsDocument))]
 [JsonSerializable(typeof(OsLifecycle))]
+[JsonSerializable(typeof(NetworkConfig))]
 internal sealed partial class ModelJsonContext : JsonSerializerContext;
 
 /// <summary>
@@ -50,6 +51,8 @@ internal static class ModelJson
     public static JsonTypeInfo<FindingsDocument> FindingsReader => Reader.FindingsDocument;
 
     public static JsonTypeInfo<OsLifecycle> OsLifecycleReader => Reader.OsLifecycle;
+
+    public static JsonTypeInfo<NetworkConfig> NetworkReader => Reader.NetworkConfig;
 
     /// <summary>Writes a document as a file: UTF-8 with a byte order mark, ending with a line end.</summary>
     public static byte[] ToFileBytes<T>(T document, JsonTypeInfo<T> typeInfo)

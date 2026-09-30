@@ -170,6 +170,7 @@ Engramic.Baseline.Engine.FindingIds
 Engramic.Baseline.Engine.FrameworkTags
 Engramic.Baseline.Engine.IConfigFiles
 Engramic.Baseline.Engine.IConfigFiles.Read(string! name) -> byte[]?
+Engramic.Baseline.Engine.NetworkSettings
 Engramic.Baseline.Engine.NotReadKind
 Engramic.Baseline.Engine.NotReadKind.Existence = 2 -> Engramic.Baseline.Engine.NotReadKind
 Engramic.Baseline.Engine.NotReadKind.FileContent = 1 -> Engramic.Baseline.Engine.NotReadKind
@@ -251,6 +252,7 @@ static Engramic.Baseline.Engine.DeviceContext.operator ==(Engramic.Baseline.Engi
 static Engramic.Baseline.Engine.FindingIds.For(string! checkId, string? subject) -> string!
 static Engramic.Baseline.Engine.FindingIds.Slug(string! subject) -> string!
 static Engramic.Baseline.Engine.FrameworkTags.All.get -> System.Collections.Generic.IReadOnlyList<string!>!
+static Engramic.Baseline.Engine.NetworkSettings.Read(Engramic.Baseline.Engine.IConfigFiles! files) -> Engramic.Baseline.Platform.ProxySettings!
 static Engramic.Baseline.Engine.NotReadRecord.operator !=(Engramic.Baseline.Engine.NotReadRecord? left, Engramic.Baseline.Engine.NotReadRecord? right) -> bool
 static Engramic.Baseline.Engine.NotReadRecord.operator ==(Engramic.Baseline.Engine.NotReadRecord? left, Engramic.Baseline.Engine.NotReadRecord? right) -> bool
 static Engramic.Baseline.Engine.StatusBuilder.Build(System.Collections.Generic.IReadOnlyList<Engramic.Baseline.Model.Finding!>! findings, Engramic.Baseline.Engine.CheckCatalog! catalog, Engramic.Baseline.Engine.DeviceContext! device, string! toolVersion, string! reportFolder = "") -> Engramic.Baseline.Model.StatusDocument!

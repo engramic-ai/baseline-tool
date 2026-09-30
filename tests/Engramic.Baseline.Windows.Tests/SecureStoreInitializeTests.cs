@@ -214,6 +214,33 @@ public sealed class SecureStoreInitializeTests : IDisposable
         Assert.Empty(DataFolderFixture.Names(Path.Combine(_fixture.DataFolder, name)));
         Assert.DoesNotContain(Acls.Entries(Path.Combine(_fixture.DataFolder, name)), e => e.Contains("S-1-5-32-545 0x2 ", StringComparison.Ordinal));
         Assert.Contains($"aside to {quarantine} ({_fixture.DataFolder}\\{name} can be changed by S-1-5-32-545", Assert.Single(store.Notices), StringComparison.Ordinal);
+        Assert.EndsWith(" and made a fresh, locked one in its place. Nothing in it is used again; check it, then delete it.", store.Notices[0], StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Says_it_made_nothing_in_place_of_an_untrusted_folder_when_a_trusted_one_appeared_there_first()
+    {
+        _fixture.Tree.Folder(@"ProgramData\EngramicBaseline");
+        var logs = _fixture.Tree.Folder(@"ProgramData\EngramicBaseline\logs", TempTree.TreeAccess + "(A;OICI;0x2;;;BU)");
+        var hooks = new SecureStoreHooks
+        {
+            // Once the untrusted folder is gone, a trusted one takes the name before the store can make its own.
+            BeforeCreate = path =>
+            {
+                if (path == logs && !Directory.Exists(logs))
+                {
+                    Directory.CreateDirectory(logs);
+                }
+            },
+        };
+
+        using var store = _fixture.Initialize(hooks);
+
+        var quarantine = Assert.Single(_fixture.Quarantines);
+        Assert.Equal(
+            [$"Moved an untrusted {logs} aside to {quarantine} ({logs} can be changed by S-1-5-32-545, not only administrators); nothing was made in its place. Nothing in it is used again; check it, then delete it."],
+            store.Notices);
+        Assert.True(Directory.Exists(logs));
     }
 
     [Fact]
@@ -310,6 +337,37 @@ public sealed class SecureStoreInitializeTests : IDisposable
         Assert.Equal(["held.txt"], _fixture.Entries);
         Assert.Empty(_fixture.Quarantines);
         Assert.Empty(_fixture.Events.Entries);
+    }
+
+    [Fact]
+    public void Makes_nothing_in_place_of_an_untrusted_folder_it_cannot_move_while_ProgramData_is_held_without_sharing()
+    {
+        _fixture.Tree.Folder(@"ProgramData\EngramicBaseline");
+        _fixture.Registry = new FakeRegistry();
+        var clock = new FakeTimeProvider();
+        _fixture.Time = clock;
+        var attempts = 0;
+
+        // A rename opens the folder it renames into, to add the name, so it waits on whoever holds that folder
+        // open without sharing it: here this account, which may write to the fixture's ProgramData as standard
+        // users may to the real one.
+        using (Native.OpenWithShare(_fixture.ProgramData, NtFiles.ListDirectory | NtFiles.Synchronize, NtFiles.ShareNone))
+        {
+            var e = Assert.Throws<SecureStoreException>(() => Waits.AdvanceUntilDone(clock, () => _fixture.Initialize(new SecureStoreHooks { BeforeMoveAside = (_, attempt) => attempts = attempt }).Dispose()));
+
+            Assert.StartsWith($"The untrusted {_fixture.DataFolder} could not be moved aside to {_fixture.ProgramData}\\EngramicBaseline.untrusted-", e.Message, StringComparison.Ordinal);
+            Assert.Contains($"so nothing was made in its place. Another process may hold {_fixture.ProgramData} open without sharing it: ", e.Message, StringComparison.Ordinal);
+            Assert.EndsWith("(Win32 error 32).", e.Message, StringComparison.Ordinal);
+        }
+
+        Assert.Equal(6, attempts);
+        Assert.Empty(_fixture.Entries);
+        Assert.Empty(_fixture.Quarantines);
+        Assert.Empty(_fixture.Events.Entries);
+
+        using var store = _fixture.Initialize();
+        Assert.Single(_fixture.Quarantines);
+        Assert.Equal(KeptFolders, _fixture.Entries);
     }
 
     [Fact]

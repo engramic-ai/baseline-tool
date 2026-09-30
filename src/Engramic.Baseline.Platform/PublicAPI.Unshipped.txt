@@ -149,7 +149,7 @@ static Engramic.Baseline.Platform.DataFolderLayout.EventMessage(string! notice) 
 static Engramic.Baseline.Platform.DataFolderLayout.IsAsideName(string! name) -> bool
 static Engramic.Baseline.Platform.DataFolderLayout.KeptFolderNames.get -> System.Collections.Generic.IReadOnlyList<string!>!
 static Engramic.Baseline.Platform.DataFolderLayout.LinkRemovedNotice(string! path) -> string!
-static Engramic.Baseline.Platform.DataFolderLayout.MovedAsideNotice(string! path, string! aside, string! reason) -> string!
+static Engramic.Baseline.Platform.DataFolderLayout.MovedAsideNotice(string! path, string! aside, string! reason, bool replaced) -> string!
 static Engramic.Baseline.Platform.DataFolderLayout.NameOf(Engramic.Baseline.Platform.DataFolder folder) -> string!
 static Engramic.Baseline.Platform.DataFolderLayout.UsersMayRead(string! keptFolderName) -> bool
 static Engramic.Baseline.Platform.DataFolderTrust.FindReplaceProblem(string! path, Engramic.Baseline.Platform.FileFacts! facts) -> string?

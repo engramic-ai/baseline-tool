@@ -1,7 +1,9 @@
+using System.ComponentModel;
 using Engramic.Baseline.Platform;
 using Engramic.Baseline.Testing;
 using Engramic.Baseline.Testing.Windows;
 using Microsoft.Extensions.Time.Testing;
+using Microsoft.Win32.SafeHandles;
 
 namespace Engramic.Baseline.Windows.Tests;
 
@@ -204,6 +206,71 @@ public sealed class SecureStoreAttackerTests : IDisposable
     }
 
     [Fact]
+    public void An_attacker_holding_the_config_folder_open_without_sharing_stops_nothing_since_they_may_only_read_it()
+    {
+        Arrange();
+        using (var first = Initialize())
+        {
+            first.WriteFile(DataFolder.Config, "network.json", "{}"u8);
+        }
+
+        var config = Path.Combine(DataRoot, "config");
+        using var held = HoldWithoutSharing(config);
+        SecureStoreException? refused = null;
+        try
+        {
+            using (var store = Initialize())
+            {
+                Assert.Equal("{}"u8.ToArray(), store.ReadFile(DataFolder.Config, "network.json", 1024));
+            }
+
+            using (var store = SecureStore.Open(Options()))
+            {
+                Assert.Equal("{}"u8.ToArray(), store.ReadFile(DataFolder.Config, "network.json", 1024));
+            }
+        }
+        catch (SecureStoreException e)
+        {
+            refused = e;
+        }
+
+        // Windows ignores a refusal to share reading from a holder who may not write to what they hold. Where it
+        // does not, a standard user can stop the store opening the config folder, which they may read.
+        Assert.True(
+            refused is null,
+            $"The read-only-holder rule did not hold on Windows {Environment.OSVersion.Version}: a standard user who may only read {config} held it open without sharing, and the store could not open it: {refused?.Message}");
+        Assert.Empty(Quarantines());
+    }
+
+    [Fact]
+    public void An_attacker_holding_ProgramData_open_without_sharing_stops_neither_Initialize_nor_Open()
+    {
+        Arrange();
+        using (Initialize())
+        {
+        }
+
+        // Standard users may write to ProgramData, so Windows honours the attacker's refusal to share it: an open
+        // that would list it is refused while they hold it. The store holds it for its attributes and permissions
+        // alone, which sharing checks ignore.
+        using var held = HoldWithoutSharing(_programData);
+        Assert.Equal(32, Native.TryOpen(_programData, NtFiles.ListDirectory | NtFiles.Synchronize, NtFiles.ShareReadWrite));
+
+        using (var store = Initialize())
+        {
+            store.WriteFile("status.json", "{}"u8);
+        }
+
+        using (var store = SecureStore.Open(Options()))
+        {
+            Assert.Equal("{}"u8.ToArray(), store.ReadFile(DataFolder.Root, "status.json", 1024));
+        }
+
+        Assert.Empty(Quarantines());
+        Assert.Empty(_events.Entries);
+    }
+
+    [Fact]
     public void A_reparse_point_the_attacker_made_in_place_of_the_data_folder_is_deleted_as_itself()
     {
         Arrange();
@@ -239,6 +306,25 @@ public sealed class SecureStoreAttackerTests : IDisposable
     {
         Assert.SkipUnless(Attacker.IsAvailable, Attacker.Unavailable);
         _programData = _tree.Folder("ProgramData", Descriptors.RealProgramData);
+    }
+
+    /// <summary>
+    /// Opens a folder as the attacker to list it, sharing nothing, as a standard user who wants to stop others
+    /// can: tried again for a moment while something else, such as a scan, has it open.
+    /// </summary>
+    private static SafeFileHandle HoldWithoutSharing(string path)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                return Attacker.Run(() => Native.OpenWithShare(path, NtFiles.ListDirectory | NtFiles.Synchronize, NtFiles.ShareNone));
+            }
+            catch (Win32Exception e) when (e.NativeErrorCode == 32 && attempt < 20)
+            {
+                Thread.Sleep(50 * attempt);
+            }
+        }
     }
 
     private SecureStore Initialize() => SecureStore.Initialize(Options());

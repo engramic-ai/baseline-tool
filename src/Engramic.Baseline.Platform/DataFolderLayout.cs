@@ -17,7 +17,8 @@ namespace Engramic.Baseline.Platform;
 /// </para>
 /// <para>
 /// Each item moved aside, and each link removed, is a notice, and an event in the Application log with
-/// the identifier <see cref="NoticeEventId"/>, worded as the module words it.
+/// the identifier <see cref="NoticeEventId"/>, worded as the module words it, except that a move aside
+/// that makes nothing in the item's place says so.
 /// </para>
 /// </remarks>
 public static partial class DataFolderLayout
@@ -99,17 +100,25 @@ public static partial class DataFolderLayout
         return name.Contains(UntrustedMarker, StringComparison.OrdinalIgnoreCase);
     }
 
-    /// <summary>The notice for an untrusted item moved aside, as the module's Move-CEDataItemAsideWithNotice words it.</summary>
+    /// <summary>
+    /// The notice for an untrusted item moved aside: as the module's Move-CEDataItemAsideWithNotice words it
+    /// when a fresh, locked folder was made in its place, and saying that nothing was when none was, as when a
+    /// read moves aside the folder it was to read from.
+    /// </summary>
     /// <param name="path">Where the item was.</param>
     /// <param name="aside">Where it is now.</param>
     /// <param name="reason">Why it was not trusted: a sentence, whose full stop is dropped.</param>
+    /// <param name="replaced">Whether a fresh, locked folder was made in its place.</param>
     /// <returns>The notice.</returns>
-    public static string MovedAsideNotice(string path, string aside, string reason)
+    public static string MovedAsideNotice(string path, string aside, string reason, bool replaced)
     {
         ArgumentNullException.ThrowIfNull(path);
         ArgumentNullException.ThrowIfNull(aside);
         ArgumentNullException.ThrowIfNull(reason);
-        return $"Moved an untrusted {path} aside to {aside} ({reason.TrimEnd('.', ' ')}) and made a fresh, locked one in its place. Nothing in it is used again; check it, then delete it.";
+        var moved = $"Moved an untrusted {path} aside to {aside} ({reason.TrimEnd('.', ' ')})";
+        return replaced
+            ? $"{moved} and made a fresh, locked one in its place. Nothing in it is used again; check it, then delete it."
+            : $"{moved}; nothing was made in its place. Nothing in it is used again; check it, then delete it.";
     }
 
     /// <summary>The notice for a link removed from where the tool keeps a folder, as the installer's Remove-CELink words it.</summary>

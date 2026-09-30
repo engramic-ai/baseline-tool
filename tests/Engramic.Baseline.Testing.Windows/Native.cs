@@ -47,6 +47,17 @@ public static unsafe partial class Native
     }
 
     /// <summary>
+    /// Tries to open a folder or file as itself, sharing only what <paramref name="share"/> says, and closes it
+    /// again: whether another holder's sharing lets such an open through.
+    /// </summary>
+    /// <returns>0 when it opened, otherwise the Win32 error.</returns>
+    public static int TryOpen(string path, uint access, uint share)
+    {
+        using var handle = CreateFile(path, access, share, IntPtr.Zero, OpenExisting, BackupSemantics | OpenReparsePoint, IntPtr.Zero);
+        return handle.IsInvalid ? Marshal.GetLastPInvokeError() : 0;
+    }
+
+    /// <summary>
     /// Replaces the access list of the item a handle is open on, through the handle, as a holder of a handle
     /// opened with WRITE_DAC can whatever the item's access list says now.
     /// </summary>

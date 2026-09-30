@@ -86,15 +86,25 @@ public sealed class DataFolderLayoutTests
     }
 
     [Fact]
-    public void Words_a_move_aside_and_its_event_as_the_module_does()
+    public void Words_a_move_aside_and_its_event_as_the_module_does_when_a_fresh_folder_was_made_in_its_place()
     {
-        var notice = DataFolderLayout.MovedAsideNotice(@"C:\ProgramData\EngramicBaseline", @"C:\ProgramData\EngramicBaseline.untrusted-" + Id, @"C:\ProgramData\EngramicBaseline is owned by S-1-5-32-545, not SYSTEM, Administrators or TrustedInstaller.");
+        var notice = DataFolderLayout.MovedAsideNotice(@"C:\ProgramData\EngramicBaseline", @"C:\ProgramData\EngramicBaseline.untrusted-" + Id, @"C:\ProgramData\EngramicBaseline is owned by S-1-5-32-545, not SYSTEM, Administrators or TrustedInstaller.", replaced: true);
 
         Assert.Equal(
             $@"Moved an untrusted C:\ProgramData\EngramicBaseline aside to C:\ProgramData\EngramicBaseline.untrusted-{Id} (C:\ProgramData\EngramicBaseline is owned by S-1-5-32-545, not SYSTEM, Administrators or TrustedInstaller) and made a fresh, locked one in its place. Nothing in it is used again; check it, then delete it.",
             notice);
         Assert.Equal("Engramic Baseline - data folder: " + notice, DataFolderLayout.EventMessage(notice));
         Assert.Equal(1003, DataFolderLayout.NoticeEventId);
+    }
+
+    [Fact]
+    public void Says_so_when_a_move_aside_made_nothing_in_its_place()
+    {
+        var notice = DataFolderLayout.MovedAsideNotice(@"C:\ProgramData\EngramicBaseline\config", $@"C:\ProgramData\EngramicBaseline.untrusted-{Id}-config", @"C:\ProgramData\EngramicBaseline\config can be changed by S-1-5-32-545, not only administrators.", replaced: false);
+
+        Assert.Equal(
+            $@"Moved an untrusted C:\ProgramData\EngramicBaseline\config aside to C:\ProgramData\EngramicBaseline.untrusted-{Id}-config (C:\ProgramData\EngramicBaseline\config can be changed by S-1-5-32-545, not only administrators); nothing was made in its place. Nothing in it is used again; check it, then delete it.",
+            notice);
     }
 
     [Fact]

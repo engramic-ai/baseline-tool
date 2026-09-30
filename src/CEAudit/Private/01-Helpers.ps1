@@ -448,6 +448,33 @@ function Remove-CEDataTree {
     return $complete
 }
 
+function New-CEScratchFolder {
+    <#
+        A new, empty, GUID-named folder for the files a native tool writes and the tool reads back
+        (secedit's INF and database, auditpol's backup), returned as a full path. Elevated on Windows
+        it is <data folder>\<Area>\<guid>, each level made locked at birth by Initialize-CEDataFolder,
+        so no standard user can predict, pre-create, read or swap those files. The shared temp folder
+        (C:\Windows\Temp for SYSTEM) allowed all of that. Otherwise it is made under the user's own temp
+        folder: a standard user only affects their own session. Delete it with Remove-CEDataTree.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][ValidatePattern('^[A-Za-z0-9-]+$')][string]$Area)
+    $name = [guid]::NewGuid().ToString('N')
+    if ((Test-CEIsWindows) -and (Test-CEIsAdmin)) {
+        $root = Get-CEDataRoot
+        Initialize-CEDataFolder -Path $root | Out-Null
+        $parent = Join-Path $root $Area
+        Initialize-CEDataFolder -Path $parent | Out-Null
+        $dir = (Resolve-CEDataPath -Path (Join-Path $parent $name)).Path
+        Initialize-CEDataFolder -Path $dir | Out-Null
+        return $dir
+    }
+    $dir = Join-Path ([IO.Path]::GetTempPath()) "ceaudit-$name"
+    New-Item -ItemType Directory -Path $dir | Out-Null
+    return $dir
+}
+
 function Write-CEEventEntry {
     <#
         Writes one entry to the Application event log under the EngramicBaseline source. Uses the

@@ -7208,6 +7208,205 @@ Describe 'Undo command safety (Test-CEUndoCommandAllowed)' {
     }
 }
 
+Describe 'Native tool scratch and backup files stay out of shared folders' {
+    # secedit and auditpol write files that are read back as administrator or SYSTEM. In the shared temp
+    # folder (C:\Windows\Temp for SYSTEM) or next to an undo log a standard user can write, those files
+    # could be predicted, planted or swapped. Elevated, they go in GUID-named folders locked at birth in
+    # the data folder, and the rollback refuses an audit policy backup that is not in one.
+    BeforeAll {
+        # Elevated on Windows, with a birth descriptor a standard user can apply (no owner) and every
+        # folder judged trusted: what the locked-folder path does is covered by its own Describe. Text,
+        # so that it is compiled and dot-sourced inside the module (InModuleScope), not in this file.
+        $global:CETestScratchElevated = @'
+param($Root)
+$script:CEDataRootOverride = $Root
+Mock Test-CEIsWindows { $true }
+Mock Test-CEIsAdmin { $true }
+Mock Get-CELockedFolderProblem { '' }
+Mock New-CELockedDirectorySecurity { $s = New-Object Security.AccessControl.DirectorySecurity; $s.SetSecurityDescriptorSddlForm('D:(A;OICI;FA;;;WD)'); $s }
+'@
+    }
+    AfterAll { Remove-Variable -Scope Global -Name CETestScratchElevated, CETestScratchSeen -ErrorAction SilentlyContinue }
+
+    It 'elevated, makes a new GUID-named folder locked at birth in the data folder' {
+        $root = Join-Path $TestDrive 'scr-new'
+        InModuleScope CEAudit -Parameters @{ Root = $root; Setup = $global:CETestScratchElevated } {
+            param($Root, $Setup)
+            . ([scriptblock]::Create($Setup)) $Root
+            try {
+                $first = New-CEScratchFolder -Area 'scratch'
+                $first | Should -Match ('^' + [regex]::Escape((Join-Path $Root 'scratch')) + '\\[0-9a-f]{32}$')
+                Test-Path -LiteralPath $first -PathType Container | Should -BeTrue
+                @(Get-ChildItem -LiteralPath $first -Force).Count | Should -Be 0
+                # The data folder, the area folder and the GUID folder were each made with the locked descriptor.
+                Should -Invoke New-CELockedDirectorySecurity -Times 3 -Exactly
+                $second = New-CEScratchFolder -Area 'scratch'
+                $second | Should -Not -Be $first
+                Should -Invoke New-CELockedDirectorySecurity -Times 4 -Exactly
+            }
+            finally { $script:CEDataRootOverride = $null }
+        }
+    }
+
+    It 'not elevated, makes a new GUID-named folder in the user temp folder' {
+        InModuleScope CEAudit {
+            Mock Test-CEIsAdmin { $false }
+            Mock New-CELockedDirectorySecurity { throw 'not expected' }
+            $d = New-CEScratchFolder -Area 'scratch'
+            try {
+                (Split-Path -Parent $d).TrimEnd('\') | Should -Be ([IO.Path]::GetTempPath()).TrimEnd('\')
+                Split-Path -Leaf $d | Should -Match '^ceaudit-[0-9a-f]{32}$'
+                Test-Path -LiteralPath $d -PathType Container | Should -BeTrue
+            }
+            finally { if ($d -and (Test-Path -LiteralPath $d)) { [IO.Directory]::Delete($d, $false) } }
+        }
+    }
+
+    It 'elevated, the secedit export goes in a locked scratch folder that is deleted afterwards' {
+        $root = Join-Path $TestDrive 'scr-export'
+        InModuleScope CEAudit -Parameters @{ Root = $root; Setup = $global:CETestScratchElevated } {
+            param($Root, $Setup)
+            . ([scriptblock]::Create($Setup)) $Root
+            try {
+                $global:CETestScratchSeen = @()
+                Mock Invoke-CENative {
+                    $global:CETestScratchSeen += $ArgumentList[2]
+                    Set-Content -LiteralPath $ArgumentList[2] -Value @('[System Access]', 'PasswordComplexity = 1')
+                    [pscustomobject]@{ ExitCode = 0; Output = @() }
+                }
+                $policy = Get-CESecurityPolicy
+                $policy['PasswordComplexity'] | Should -Be '1'
+                $inf = $global:CETestScratchSeen[0]
+                $inf | Should -Match ('^' + [regex]::Escape((Join-Path $Root 'scratch')) + '\\[0-9a-f]{32}\\secpol\.inf$')
+                Test-Path -LiteralPath (Split-Path -Parent $inf) | Should -BeFalse -Because 'the scratch folder is deleted once read'
+            }
+            finally { $script:CEDataRootOverride = $null }
+        }
+    }
+
+    It 'elevated, the secedit /configure INF and database go in a locked scratch folder that is deleted afterwards' {
+        $root = Join-Path $TestDrive 'scr-configure'
+        InModuleScope CEAudit -Parameters @{ Root = $root; Setup = $global:CETestScratchElevated } {
+            param($Root, $Setup)
+            . ([scriptblock]::Create($Setup)) $Root
+            try {
+                $global:CETestScratchSeen = @()
+                Mock Invoke-CENative {
+                    $global:CETestScratchSeen += [pscustomobject]@{ Db = $ArgumentList[2]; Cfg = $ArgumentList[4]; CfgExists = (Test-Path -LiteralPath $ArgumentList[4]) }
+                    Set-Content -LiteralPath $ArgumentList[2] -Value 'db'
+                    [pscustomobject]@{ ExitCode = 0; Output = @() }
+                }
+                # The module-level tripwire mocks Set-CESecurityPolicyValue; call the real function.
+                $real = Get-Command -Name Set-CESecurityPolicyValue -CommandType Function
+                & $real -Name 'PasswordComplexity' -Value 0
+                $seen = $global:CETestScratchSeen[0]
+                $seen.CfgExists | Should -BeTrue
+                $dir = Split-Path -Parent $seen.Cfg
+                $dir | Should -Match ('^' + [regex]::Escape((Join-Path $Root 'scratch')) + '\\[0-9a-f]{32}$')
+                Split-Path -Parent $seen.Db | Should -Be $dir
+                Test-Path -LiteralPath $dir | Should -BeFalse -Because 'the scratch folder is deleted afterwards'
+            }
+            finally { $script:CEDataRootOverride = $null }
+        }
+    }
+
+    It 'elevated, AuditPolicy-Set writes its backup in a locked GUID folder in the data folder, not next to the undo log' {
+        $root = Join-Path $TestDrive 'scr-auditpol'
+        $undoDir = Join-Path $TestDrive 'scr-auditpol-undo'
+        New-Item -ItemType Directory -Path $undoDir | Out-Null
+        InModuleScope CEAudit -Parameters @{ Root = $root; UndoDir = $undoDir; Setup = $global:CETestScratchElevated } {
+            param($Root, $UndoDir, $Setup)
+            . ([scriptblock]::Create($Setup)) $Root
+            try {
+                Mock Get-CEDeviceContext { New-TestContext }
+                Mock Invoke-CENative {
+                    if ($ArgumentList[0] -eq '/backup') { Set-Content -LiteralPath ($ArgumentList[1] -replace '^/file:', '') -Value 'Machine Name,Policy Target' }
+                    [pscustomobject]@{ ExitCode = 0; Output = @() }
+                }
+                $r = Invoke-CERemediation -Id 'AuditPolicy-Set' -Parameters @{ Subcategories = @('0cce922b-69ae-11d9-bed3-505054503030|Success') } -UndoDirectory $UndoDir -Confirm:$false
+                $r.Status | Should -Be 'Applied' -Because $r.Message
+                $cmd = [string](@($r.Undo | Where-Object { $_.Type -eq 'Command' })[0].Command)
+                $cmd -match "^auditpol\.exe /restore /file:'(.+)'$" | Should -BeTrue -Because $cmd
+                $backup = $Matches[1]
+                $backup | Should -Match ('^' + [regex]::Escape((Join-Path $Root 'backups')) + '\\[0-9a-f]{32}\\auditpol-backup-\d{8}-\d{6}\.csv$')
+                Test-Path -LiteralPath $backup | Should -BeTrue
+                @(Get-ChildItem -LiteralPath $UndoDir -Force).Count | Should -Be 0 -Because 'nothing is written next to the undo log'
+                # The generated undo command passes the rollback's checks when its folder is trusted.
+                Mock Get-CEDataPathProblem { }
+                Test-CEUndoCommandAllowed $cmd | Should -BeNullOrEmpty
+            }
+            finally { $script:CEDataRootOverride = $null }
+        }
+    }
+
+    It 'an elevated rollback refuses a planted or swapped audit policy backup, and restores a trusted one' {
+        $trusted = Join-Path $TestDrive 'bk-trusted'
+        $planted = Join-Path $TestDrive 'bk-planted'
+        foreach ($d in $trusted, $planted) { New-Item -ItemType Directory -Path $d | Out-Null }
+        $files = [ordered]@{
+            C001 = Join-Path $planted 'auditpol-backup-20260101-000000.csv'   # planted in a folder a standard user can write
+            C002 = Join-Path $trusted 'linked.csv'                            # swapped for a link
+            C003 = Join-Path $trusted 'swapped.csv'                           # swapped for a file a standard user owns
+            C004 = Join-Path $trusted 'auditpol-backup-20260101-000001.csv'   # the real one
+        }
+        foreach ($f in $files.Values) { Set-Content -LiteralPath $f -Value 'Machine Name,Policy Target' }
+        $log = Join-Path $trusted 'undo.json'
+        [pscustomobject]@{
+            ComputerName = $env:COMPUTERNAME
+            Items        = @($files.Keys | ForEach-Object {
+                    [pscustomobject]@{ ItemId = $_; Undo = @([pscustomobject]@{ Type = 'Command'; Description = 'Restore previous audit policy'; Command = "auditpol.exe /restore /file:'$($files[$_])'" }) }
+                })
+        } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $log -Encoding UTF8
+        InModuleScope CEAudit -Parameters @{ Log = $log; Good = $files.C004; Planted = $planted } {
+            param($Log, $Good, $Planted)
+            Mock Test-CEIsAdmin { $true }
+            Mock Test-CEIsWindows { $true }
+            Mock Test-CEDataLink { $Path -like '*linked.csv' }
+            Mock Get-CEPathAclProblem {
+                # Only the folder is writable: the planted file itself looks trusted, so the refusal must come from the folder test.
+                if ($Path.TrimEnd('\') -like '*\bk-planted') { return "$Path is writable by S-1-5-21-1-2-3-1001" }
+                if ($Path -like '*swapped.csv') { return "$Path is owned by S-1-5-21-1-2-3-1001" }
+            }
+            Mock Write-Host { }
+            Mock auditpol.exe { }
+            $warnings = @()
+            Restore-CEUndoLog -Path $Log -Confirm:$false -WarningVariable warnings -WarningAction SilentlyContinue
+            Should -Invoke auditpol.exe -Times 1 -Exactly
+            Should -Invoke auditpol.exe -Times 1 -Exactly -ParameterFilter { ($args -join ' ') -eq "/restore /file:$Good" }
+            $refused = @($warnings | Where-Object { "$_" -match 'Refusing to run undo command.*planted or swapped' })
+            $refused.Count | Should -Be 3 -Because ($warnings -join "`n")
+            $c001 = @($refused | Where-Object { "$_" -match 'C001' })
+            $c001.Count | Should -Be 1 -Because ($warnings -join "`n")
+            "$($c001[0])" | Should -Match ([regex]::Escape("$Planted is writable by"))
+            ($refused -join ' ') | Should -Match 'linked\.csv is a link'
+            ($refused -join ' ') | Should -Match 'swapped\.csv is owned by'
+        }
+    }
+
+    It 'allows only the generated auditpol /restore form, with a full local path when elevated' {
+        InModuleScope CEAudit {
+            Mock Test-CEIsAdmin { $true }
+            Mock Get-CEDataPathProblem { }
+            $bad = @(
+                'auditpol.exe /set /subcategory:{0cce922b-69ae-11d9-bed3-505054503030} /success:disable',
+                'auditpol.exe /clear /y',
+                'auditpol /remove /allusers',
+                'auditpol.exe /restore /file:$env:TEMP\x.csv',
+                "auditpol.exe /restore /file:'relative.csv'",
+                "auditpol.exe /restore /file:'\\server\share\x.csv'",
+                "auditpol.exe /restore /file:'C:\ProgramData\EngramicBaseline\backups\..\..\x.csv'",
+                "auditpol.exe /restore /file:'C:\a.csv' /file:'C:\b.csv'"
+            )
+            foreach ($c in $bad) { Test-CEUndoCommandAllowed $c | Should -Not -BeNullOrEmpty -Because $c }
+            Test-CEUndoCommandAllowed "auditpol.exe /restore /file:'C:\ProgramData\EngramicBaseline\backups\0123abcd\auditpol-backup-20260101-000000.csv'" | Should -BeNullOrEmpty
+            # A standard user's rollback keeps the shape rule but not the path rule: it only affects that user.
+            Mock Test-CEIsAdmin { $false }
+            Test-CEUndoCommandAllowed "auditpol.exe /restore /file:'relative.csv'" | Should -BeNullOrEmpty
+            Test-CEUndoCommandAllowed 'auditpol.exe /clear /y' | Should -Not -BeNullOrEmpty
+        }
+    }
+}
+
 Describe 'MCP inventory (11-McpInventory)' {
     Context 'JSONC parsing' {
         It 'parses strict JSON' {

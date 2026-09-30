@@ -19,12 +19,14 @@
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/AotCanary/AotCanary.csproj" />
+    <Project Path="tests/Engramic.Baseline.Cli.Tests/Engramic.Baseline.Cli.Tests.csproj" />
     <Project Path="tests/Engramic.Baseline.Controls.Tests/Engramic.Baseline.Controls.Tests.csproj" />
     <Project Path="tests/Engramic.Baseline.Engine.Tests/Engramic.Baseline.Engine.Tests.csproj" />
     <Project Path="tests/Engramic.Baseline.Invariants.Tests/Engramic.Baseline.Invariants.Tests.csproj" />
     <Project Path="tests/Engramic.Baseline.Model.Tests/Engramic.Baseline.Model.Tests.csproj" />
     <Project Path="tests/Engramic.Baseline.Platform.Tests/Engramic.Baseline.Platform.Tests.csproj" />
     <Project Path="tests/Engramic.Baseline.Testing/Engramic.Baseline.Testing.csproj" />
+    <Project Path="tests/Engramic.Baseline.Testing.Windows/Engramic.Baseline.Testing.Windows.csproj" />
     <Project Path="tests/Engramic.Baseline.Windows.Tests/Engramic.Baseline.Windows.Tests.csproj" />
   </Folder>
 </Solution>

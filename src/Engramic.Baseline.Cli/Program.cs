@@ -13,6 +13,7 @@ internal static class Program
     {
         var root = new RootCommand("Engramic Baseline: audits this Windows device against Cyber Essentials v3.3 and NCSC device guidance.");
         root.Subcommands.Add(AuditCommand.Create());
+        root.Subcommands.Add(ScheduledAuditCommand.Create());
 
         // More commands arrive as they are ported. Run on its own, it shows the help.
         root.SetAction(parseResult => new HelpAction().Invoke(parseResult));

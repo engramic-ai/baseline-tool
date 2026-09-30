@@ -152,6 +152,14 @@
           "xunit.v3.runner.common": "[4.0.1]"
         }
       },
+      "baseline": {
+        "type": "Project",
+        "dependencies": {
+          "Engramic.Baseline.Controls": "[1.0.0-alpha.0, )",
+          "Engramic.Baseline.Windows": "[1.0.0-alpha.0, )",
+          "System.CommandLine": "[2.0.12, )"
+        }
+      },
       "engramic.baseline.controls": {
         "type": "Project",
         "dependencies": {
@@ -195,6 +203,12 @@
         "requested": "[10.10.0, )",
         "resolved": "10.10.0",
         "contentHash": "8duZdxuO3Oo8tlyQXVq1drXee6GJC9DjUU97Pq3YaIqf92jrAHsWxbbRKwvjQI48Mer3IANwUKF0elqvHeY4Rw=="
+      },
+      "System.CommandLine": {
+        "type": "CentralTransitive",
+        "requested": "[2.0.12, )",
+        "resolved": "2.0.12",
+        "contentHash": "FpW672e6qqrTd1EfKqsvUtFZaJWlTlszUR1o8tdakXhkzKbnEZVndtpfd4K3fUPCFcIs9UmcswMyYGJP1zp/rg=="
       }
     }
   }

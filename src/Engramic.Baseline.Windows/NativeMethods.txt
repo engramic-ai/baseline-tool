@@ -4,3 +4,24 @@
 // registry, processes, security descriptors, the environment, loading code) may be used only as
 // src/BannedApiExemptions.txt allows; docs/DOTNET.md explains.
 WTSGetActiveConsoleSessionId
+
+// What a handle tells about the file or folder it is open on (FileHandles).
+GetFileInformationByHandleEx
+FILE_ATTRIBUTE_TAG_INFO
+FILE_STANDARD_INFO
+GetFinalPathNameByHandle
+GetSecurityInfo
+GetSecurityDescriptorLength
+LocalFree
+GetSystemWindowsDirectory
+
+// SecureStore, the only file allowed the sensitive ones: CreateFile, SetFileInformationByHandle and
+// SHGetKnownFolderPath (src/BannedApiExemptions.txt).
+CreateFile
+SetFileInformationByHandle
+FILE_RENAME_INFO
+FILE_DISPOSITION_INFO
+FlushFileBuffers
+SHGetKnownFolderPath
+FOLDERID_ProgramData
+CoTaskMemFree

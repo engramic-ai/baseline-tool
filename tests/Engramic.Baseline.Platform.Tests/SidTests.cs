@@ -58,6 +58,7 @@ public sealed class SidTests
         Assert.Equal("S-1-5-32-544", Sid.Administrators.Value);
         Assert.Equal("S-1-5-32-545", Sid.Users.Value);
         Assert.Equal("S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464", Sid.TrustedInstaller.Value);
+        Assert.Equal("S-1-3-0", Sid.CreatorOwner.Value);
     }
 
     [Fact]

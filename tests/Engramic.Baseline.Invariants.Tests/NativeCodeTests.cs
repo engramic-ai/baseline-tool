@@ -195,6 +195,10 @@ public sealed partial class NativeCodeTests
     [InlineData("OpenProcessToken")]
     [InlineData("GetTokenInformation")]
     [InlineData("ConvertStringSidToSid")]
+    [InlineData("RtlNtStatusToDosError")]
+    [InlineData("RegisterEventSource")]
+    [InlineData("ReportEvent")]
+    [InlineData("DeregisterEventSource")]
     public void The_sensitive_list_leaves_out_functions_that_work_on_a_handle_or_read_state(string name)
     {
         Assert.Null(WhySensitive(name));

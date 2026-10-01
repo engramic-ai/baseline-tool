@@ -15,6 +15,7 @@ Expect("Windows", ConsoleSession.GetActiveSessionId() is null or > 0);
 Expect("Windows: registry and account", WindowsReads());
 Expect("Platform: data folder trust", TrustRules());
 Expect("Windows: SecureStore", SecureStoreRefusesAMissingFolder());
+Expect("Windows: SecureStore set-up", SecureStoreSetUpRefusesAMissingFolder());
 Expect("Windows: audit mutex", AuditMutexTurns());
 
 Console.WriteLine(failures == 0 ? "AOT canary: all libraries ran." : $"AOT canary: {failures} failed.");
@@ -89,7 +90,8 @@ static bool TrustRules()
     var writable = locked with { Dacl = [.. locked.Dacl!, new AccessEntry(AccessEntryType.Allow, Sid.Users, 0x2)] };
     var folder = new FileFacts { IsDirectory = true };
     return DataFolderTrust.Machine.FindDataFolderProblem("C:\\ProgramData\\EngramicBaseline", folder, locked, isSealed: true) is null
-        && DataFolderTrust.Machine.FindDataFolderProblem("C:\\ProgramData\\EngramicBaseline", folder, writable, isSealed: true) is not null;
+        && DataFolderTrust.Machine.FindDataFolderProblem("C:\\ProgramData\\EngramicBaseline", folder, writable, isSealed: true) is not null
+        && DataFolderLayout.AsideName("EngramicBaseline", "0123456789abcdef0123456789abcdef", "reports") == "EngramicBaseline.untrusted-0123456789abcdef0123456789abcdef-reports";
 }
 
 static bool SecureStoreRefusesAMissingFolder()
@@ -105,6 +107,22 @@ static bool SecureStoreRefusesAMissingFolder()
     catch (SecureStoreException e)
     {
         return machine.ProgramDataPath.EndsWith(":\\ProgramData", StringComparison.OrdinalIgnoreCase) && e.Message.Contains("does not exist", StringComparison.Ordinal);
+    }
+}
+
+static bool SecureStoreSetUpRefusesAMissingFolder()
+{
+    // A ProgramData folder that does not exist, and an event log that keeps nothing: nothing is made or written.
+    var machine = SecureStoreOptions.ForMachine(new WindowsRegistry(), TimeProvider.System);
+    var missing = machine with { ProgramDataPath = Path.Combine(Path.GetTempPath().TrimEnd('\\'), "baseline-canary-" + Guid.NewGuid().ToString("n")), EventLog = new NoEvents() };
+    try
+    {
+        SecureStore.Initialize(missing).Dispose();
+        return false;
+    }
+    catch (SecureStoreException e)
+    {
+        return e.Message.Contains("does not exist", StringComparison.Ordinal) && !Directory.Exists(missing.ProgramDataPath);
     }
 }
 
@@ -125,6 +143,12 @@ internal sealed class CanaryCheck : Check
     {
         return ValueTask.FromResult<IReadOnlyList<CheckResult>>([new CheckResult(FindingStatus.Pass)]);
     }
+}
+
+/// <summary>An event log that keeps nothing.</summary>
+internal sealed class NoEvents : IEventLog
+{
+    public bool Write(int eventId, EventLogLevel level, string message) => true;
 }
 
 /// <summary>No config files.</summary>

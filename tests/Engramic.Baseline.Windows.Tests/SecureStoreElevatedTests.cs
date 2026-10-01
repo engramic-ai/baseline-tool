@@ -10,6 +10,7 @@ namespace Engramic.Baseline.Windows.Tests;
 /// Administrators and locked from birth. Only an elevated administrator can make those, so these tests
 /// skip without elevation; CI runs them.
 /// </summary>
+[Trait("Suite", "Security")]
 public sealed class SecureStoreElevatedTests : IDisposable
 {
     private readonly TempTree _tree = new();
@@ -22,7 +23,7 @@ public sealed class SecureStoreElevatedTests : IDisposable
         Assert.SkipUnless(Elevation.IsElevated, Elevation.NeedsElevation);
         var programData = _tree.Folder("ProgramData", Descriptors.ProgramDataLike);
         var dataFolder = _tree.Folder(@"ProgramData\EngramicBaseline", Descriptors.InstallerLocked);
-        using var store = SecureStore.Open(new SecureStoreOptions { ProgramDataPath = programData, Registry = DataFolderFixture.Sealed() });
+        using var store = SecureStore.Open(new SecureStoreOptions { ProgramDataPath = programData, Registry = DataFolderFixture.Sealed(), EventLog = new Testing.FakeEventLog() });
 
         store.WriteFile("status.json", "old"u8);
         store.WriteFile("status.json", "{}"u8);
@@ -44,7 +45,7 @@ public sealed class SecureStoreElevatedTests : IDisposable
         var programData = _tree.Folder("ProgramData", Descriptors.ProgramDataLike);
         var dataFolder = _tree.Folder(@"ProgramData\EngramicBaseline", $"O:{Elevation.CurrentUser}D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)");
 
-        var e = Assert.Throws<SecureStoreException>(() => SecureStore.Open(new SecureStoreOptions { ProgramDataPath = programData, Registry = DataFolderFixture.Sealed() }));
+        var e = Assert.Throws<SecureStoreException>(() => SecureStore.Open(new SecureStoreOptions { ProgramDataPath = programData, Registry = DataFolderFixture.Sealed(), EventLog = new Testing.FakeEventLog() }));
 
         Assert.Equal($"{dataFolder} is owned by {Elevation.CurrentUser}, not SYSTEM, Administrators or TrustedInstaller.", e.Message);
     }
@@ -56,7 +57,7 @@ public sealed class SecureStoreElevatedTests : IDisposable
         var programData = _tree.Folder("ProgramData", $"O:{Elevation.CurrentUser}D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)");
         _tree.Folder(@"ProgramData\EngramicBaseline", Descriptors.InstallerLocked);
 
-        var e = Assert.Throws<SecureStoreException>(() => SecureStore.Open(new SecureStoreOptions { ProgramDataPath = programData, Registry = DataFolderFixture.Sealed() }));
+        var e = Assert.Throws<SecureStoreException>(() => SecureStore.Open(new SecureStoreOptions { ProgramDataPath = programData, Registry = DataFolderFixture.Sealed(), EventLog = new Testing.FakeEventLog() }));
 
         Assert.Equal($"{programData} is owned by {Elevation.CurrentUser}, not SYSTEM, Administrators or TrustedInstaller.", e.Message);
     }
@@ -68,7 +69,7 @@ public sealed class SecureStoreElevatedTests : IDisposable
         var programData = _tree.Folder("ProgramData", Descriptors.ProgramDataLike);
         _tree.Folder(@"ProgramData\EngramicBaseline", Descriptors.InstallerLocked);
 
-        var e = Assert.Throws<SecureStoreException>(() => SecureStore.Open(new SecureStoreOptions { ProgramDataPath = programData, Registry = new Testing.FakeRegistry() }));
+        var e = Assert.Throws<SecureStoreException>(() => SecureStore.Open(new SecureStoreOptions { ProgramDataPath = programData, Registry = new Testing.FakeRegistry(), EventLog = new Testing.FakeEventLog() }));
 
         Assert.Contains("its DataRootSealed marker is missing", e.Message, StringComparison.Ordinal);
     }
@@ -81,7 +82,7 @@ public sealed class SecureStoreElevatedTests : IDisposable
         var dataFolder = _tree.Folder(@"ProgramData\EngramicBaseline", Descriptors.InstallerLocked);
         var outside = _tree.File("outside.json", "outside");
         Assert.SkipUnless(Links.TryCreateFileSymbolicLink(Path.Combine(dataFolder, "status.json"), outside), "This account may not make a symbolic link.");
-        using var store = SecureStore.Open(new SecureStoreOptions { ProgramDataPath = programData, Registry = DataFolderFixture.Sealed() });
+        using var store = SecureStore.Open(new SecureStoreOptions { ProgramDataPath = programData, Registry = DataFolderFixture.Sealed(), EventLog = new Testing.FakeEventLog() });
 
         Assert.Throws<SecureStoreException>(() => store.WriteFile("status.json", "{}"u8));
 

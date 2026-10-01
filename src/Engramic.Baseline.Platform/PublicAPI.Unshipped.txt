@@ -1,4 +1,7 @@
 #nullable enable
+const Engramic.Baseline.Platform.DataFolderLayout.NoticeEventId = 1003 -> int
+const Engramic.Baseline.Platform.DataFolderLayout.ScratchFolderName = "scratch" -> string!
+const Engramic.Baseline.Platform.DataFolderLayout.UntrustedMarker = ".untrusted-" -> string!
 const Engramic.Baseline.Platform.DataFolderTrust.WriteRights = 1343029590 -> uint
 Engramic.Baseline.Platform.AccessEntry
 Engramic.Baseline.Platform.AccessEntry.<Clone>$() -> Engramic.Baseline.Platform.AccessEntry!
@@ -15,14 +18,28 @@ Engramic.Baseline.Platform.AccessEntryType
 Engramic.Baseline.Platform.AccessEntryType.Allow = 0 -> Engramic.Baseline.Platform.AccessEntryType
 Engramic.Baseline.Platform.AccessEntryType.Deny = 1 -> Engramic.Baseline.Platform.AccessEntryType
 Engramic.Baseline.Platform.AccessEntryType.Other = 2 -> Engramic.Baseline.Platform.AccessEntryType
+Engramic.Baseline.Platform.DataFolder
+Engramic.Baseline.Platform.DataFolder.Cache = 4 -> Engramic.Baseline.Platform.DataFolder
+Engramic.Baseline.Platform.DataFolder.Config = 3 -> Engramic.Baseline.Platform.DataFolder
+Engramic.Baseline.Platform.DataFolder.Logs = 1 -> Engramic.Baseline.Platform.DataFolder
+Engramic.Baseline.Platform.DataFolder.Reports = 2 -> Engramic.Baseline.Platform.DataFolder
+Engramic.Baseline.Platform.DataFolder.Root = 0 -> Engramic.Baseline.Platform.DataFolder
+Engramic.Baseline.Platform.DataFolder.Undo = 5 -> Engramic.Baseline.Platform.DataFolder
+Engramic.Baseline.Platform.DataFolderLayout
 Engramic.Baseline.Platform.DataFolderTrust
 Engramic.Baseline.Platform.DataFolderTrust.DataFolderTrust(System.Collections.Generic.IEnumerable<Engramic.Baseline.Platform.Sid!>! trusted) -> void
 Engramic.Baseline.Platform.DataFolderTrust.FindDataFolderProblem(string! path, Engramic.Baseline.Platform.FileFacts! facts, Engramic.Baseline.Platform.ItemSecurity! security, bool isSealed) -> string?
+Engramic.Baseline.Platform.DataFolderTrust.FindFolderProblem(string! path, Engramic.Baseline.Platform.FileFacts! facts, Engramic.Baseline.Platform.ItemSecurity! security) -> string?
 Engramic.Baseline.Platform.DataFolderTrust.FindNewFileProblem(string! path, Engramic.Baseline.Platform.FileFacts! facts, Engramic.Baseline.Platform.ItemSecurity! security) -> string?
 Engramic.Baseline.Platform.DataFolderTrust.FindProgramDataProblem(string! path, Engramic.Baseline.Platform.FileFacts! facts, Engramic.Baseline.Platform.Sid? owner) -> string?
+Engramic.Baseline.Platform.DataFolderTrust.FindReadProblem(string! path, Engramic.Baseline.Platform.FileFacts! facts, Engramic.Baseline.Platform.ItemSecurity! security, long maxLength) -> string?
 Engramic.Baseline.Platform.DataFolderTrust.FindSecurityProblem(string! path, Engramic.Baseline.Platform.ItemSecurity! security) -> string?
 Engramic.Baseline.Platform.DataFolderTrust.IsTrusted(Engramic.Baseline.Platform.Sid? sid) -> bool
 Engramic.Baseline.Platform.DataFolderTrust.Trusted.get -> System.Collections.Generic.IReadOnlyCollection<Engramic.Baseline.Platform.Sid!>!
+Engramic.Baseline.Platform.EventLogLevel
+Engramic.Baseline.Platform.EventLogLevel.Error = 0 -> Engramic.Baseline.Platform.EventLogLevel
+Engramic.Baseline.Platform.EventLogLevel.Information = 2 -> Engramic.Baseline.Platform.EventLogLevel
+Engramic.Baseline.Platform.EventLogLevel.Warning = 1 -> Engramic.Baseline.Platform.EventLogLevel
 Engramic.Baseline.Platform.FileFacts
 Engramic.Baseline.Platform.FileFacts.<Clone>$() -> Engramic.Baseline.Platform.FileFacts!
 Engramic.Baseline.Platform.FileFacts.Equals(Engramic.Baseline.Platform.FileFacts? other) -> bool
@@ -35,12 +52,26 @@ Engramic.Baseline.Platform.FileFacts.IsReadOnly.get -> bool
 Engramic.Baseline.Platform.FileFacts.IsReadOnly.init -> void
 Engramic.Baseline.Platform.FileFacts.IsReparsePoint.get -> bool
 Engramic.Baseline.Platform.FileFacts.IsReparsePoint.init -> void
+Engramic.Baseline.Platform.FileFacts.Length.get -> long
+Engramic.Baseline.Platform.FileFacts.Length.init -> void
 Engramic.Baseline.Platform.FileFacts.LinkCount.get -> uint
 Engramic.Baseline.Platform.FileFacts.LinkCount.init -> void
+Engramic.Baseline.Platform.IEventLog
+Engramic.Baseline.Platform.IEventLog.Write(int eventId, Engramic.Baseline.Platform.EventLogLevel level, string! message) -> bool
 Engramic.Baseline.Platform.IRegistry
 Engramic.Baseline.Platform.IRegistry.GetValue(Engramic.Baseline.Platform.RegistryHive hive, Engramic.Baseline.Platform.RegistryView view, string! keyPath, string! valueName) -> Engramic.Baseline.Platform.RegistryValue?
+Engramic.Baseline.Platform.IScratchFolder
+Engramic.Baseline.Platform.IScratchFolder.Path.get -> string!
+Engramic.Baseline.Platform.IScratchFolder.PathOf(string! name) -> string!
+Engramic.Baseline.Platform.IScratchFolder.ReadFile(string! name, int maxLength) -> byte[]?
+Engramic.Baseline.Platform.IScratchFolder.WriteFile(string! name, System.ReadOnlySpan<byte> content) -> void
 Engramic.Baseline.Platform.ISecureStore
+Engramic.Baseline.Platform.ISecureStore.CreateScratchFolder() -> Engramic.Baseline.Platform.IScratchFolder!
+Engramic.Baseline.Platform.ISecureStore.DeleteTree(Engramic.Baseline.Platform.DataFolder folder, string! name) -> System.Collections.Generic.IReadOnlyList<string!>!
+Engramic.Baseline.Platform.ISecureStore.Notices.get -> System.Collections.Generic.IReadOnlyList<string!>!
+Engramic.Baseline.Platform.ISecureStore.ReadFile(Engramic.Baseline.Platform.DataFolder folder, string! name, int maxLength) -> byte[]?
 Engramic.Baseline.Platform.ISecureStore.RootPath.get -> string!
+Engramic.Baseline.Platform.ISecureStore.WriteFile(Engramic.Baseline.Platform.DataFolder folder, string! name, System.ReadOnlySpan<byte> content) -> void
 Engramic.Baseline.Platform.ISecureStore.WriteFile(string! name, System.ReadOnlySpan<byte> content) -> void
 Engramic.Baseline.Platform.ItemSecurity
 Engramic.Baseline.Platform.ItemSecurity.<Clone>$() -> Engramic.Baseline.Platform.ItemSecurity!
@@ -111,6 +142,14 @@ override Engramic.Baseline.Platform.Sid.GetHashCode() -> int
 override Engramic.Baseline.Platform.Sid.ToString() -> string!
 static Engramic.Baseline.Platform.AccessEntry.operator !=(Engramic.Baseline.Platform.AccessEntry? left, Engramic.Baseline.Platform.AccessEntry? right) -> bool
 static Engramic.Baseline.Platform.AccessEntry.operator ==(Engramic.Baseline.Platform.AccessEntry? left, Engramic.Baseline.Platform.AccessEntry? right) -> bool
+static Engramic.Baseline.Platform.DataFolderLayout.AsideName(string! dataFolderName, string! id, string? relativePath = null) -> string!
+static Engramic.Baseline.Platform.DataFolderLayout.EventMessage(string! notice) -> string!
+static Engramic.Baseline.Platform.DataFolderLayout.IsAsideName(string! name) -> bool
+static Engramic.Baseline.Platform.DataFolderLayout.KeptFolderNames.get -> System.Collections.Generic.IReadOnlyList<string!>!
+static Engramic.Baseline.Platform.DataFolderLayout.LinkRemovedNotice(string! path) -> string!
+static Engramic.Baseline.Platform.DataFolderLayout.MovedAsideNotice(string! path, string! aside, string! reason, bool replaced) -> string!
+static Engramic.Baseline.Platform.DataFolderLayout.NameOf(Engramic.Baseline.Platform.DataFolder folder) -> string!
+static Engramic.Baseline.Platform.DataFolderLayout.UsersMayRead(string! keptFolderName) -> bool
 static Engramic.Baseline.Platform.DataFolderTrust.FindReplaceProblem(string! path, Engramic.Baseline.Platform.FileFacts! facts) -> string?
 static Engramic.Baseline.Platform.DataFolderTrust.Machine.get -> Engramic.Baseline.Platform.DataFolderTrust!
 static Engramic.Baseline.Platform.FileFacts.operator !=(Engramic.Baseline.Platform.FileFacts? left, Engramic.Baseline.Platform.FileFacts? right) -> bool

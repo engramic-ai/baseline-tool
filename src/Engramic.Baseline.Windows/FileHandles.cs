@@ -57,7 +57,67 @@ internal static class FileHandles
             IsOnlineOnly = (attributes & OnlineOnlyAttributes) != 0,
             LinkCount = standard.NumberOfLinks,
             IsReadOnly = (attributes & (uint)FILE_FLAGS_AND_ATTRIBUTES.FILE_ATTRIBUTE_READONLY) != 0,
+            Length = standard.EndOfFile,
         };
+    }
+
+    /// <summary>Reads the attributes of the item a handle is open on, as stored.</summary>
+    /// <param name="handle">A handle with FILE_READ_ATTRIBUTES.</param>
+    /// <returns>The FILE_ATTRIBUTE_* flags.</returns>
+    /// <exception cref="IOException">Windows could not say.</exception>
+    public static uint ReadAttributes(SafeFileHandle handle)
+    {
+        var tag = default(FILE_ATTRIBUTE_TAG_INFO);
+        if (!PInvoke.GetFileInformationByHandleEx(handle, FILE_INFO_BY_HANDLE_CLASS.FileAttributeTagInfo, MemoryMarshal.AsBytes(new Span<FILE_ATTRIBUTE_TAG_INFO>(ref tag))))
+        {
+            throw Failure("Could not read the attributes", Marshal.GetLastPInvokeError());
+        }
+
+        return tag.FileAttributes;
+    }
+
+    /// <summary>
+    /// Lists the names in a folder through a handle open on it, never by its path, so what is listed is the
+    /// folder the handle holds. The entries . and .. are left out.
+    /// </summary>
+    /// <param name="folder">A handle on a folder, with FILE_LIST_DIRECTORY, opened for synchronous input and output.</param>
+    /// <returns>The names, in the order the file system gives them.</returns>
+    /// <exception cref="IOException">Windows could not list it.</exception>
+    public static unsafe List<string> ListNames(SafeFileHandle folder)
+    {
+        const int NoMoreFiles = 18;
+        var names = new List<string>();
+
+        // The entries hold 64-bit fields, so the buffer is aligned to 8 bytes, as an array of longs is.
+        var buffer = new long[8 * 1024];
+        var bytes = MemoryMarshal.AsBytes(buffer.AsSpan());
+        var infoClass = FILE_INFO_BY_HANDLE_CLASS.FileFullDirectoryRestartInfo;
+        while (PInvoke.GetFileInformationByHandleEx(folder, infoClass, bytes))
+        {
+            infoClass = FILE_INFO_BY_HANDLE_CLASS.FileFullDirectoryInfo;
+            fixed (byte* start = bytes)
+            {
+                for (var offset = 0; ;)
+                {
+                    var entry = (FILE_FULL_DIR_INFO*)(start + offset);
+                    var name = entry->FileName.AsSpan((int)(entry->FileNameLength / sizeof(char))).ToString();
+                    if (name is not ("." or ".."))
+                    {
+                        names.Add(name);
+                    }
+
+                    if (entry->NextEntryOffset == 0)
+                    {
+                        break;
+                    }
+
+                    offset += (int)entry->NextEntryOffset;
+                }
+            }
+        }
+
+        var error = Marshal.GetLastPInvokeError();
+        return error == NoMoreFiles ? names : throw Failure("Could not list the folder", error);
     }
 
     /// <summary>

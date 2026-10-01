@@ -131,7 +131,7 @@ public sealed class FileHandlesTests : IDisposable
         Links.CreateJunction(junction, folder);
         Links.CreateHardLink(_tree.PathOf("second-name.txt"), file);
 
-        Assert.Equal(new FileFacts { LinkCount = 2 }, Facts(file));
+        Assert.Equal(new FileFacts { LinkCount = 2, Length = 4 }, Facts(file));
         Assert.Equal(new FileFacts { IsDirectory = true }, Facts(folder));
         Assert.Equal(new FileFacts { IsDirectory = true, IsReparsePoint = true }, Facts(junction));
     }
@@ -145,7 +145,58 @@ public sealed class FileHandlesTests : IDisposable
         Links.MakeThirdPartyReparsePoint(tagged);
 
         Assert.True(Facts(readOnly).IsReadOnly);
-        Assert.Equal(new FileFacts { IsReparsePoint = true }, Facts(tagged));
+        Assert.Equal(new FileFacts { IsReparsePoint = true, Length = 4 }, Facts(tagged));
+    }
+
+    [Fact]
+    public void Reads_the_attributes_as_stored()
+    {
+        var file = _tree.File("hidden.txt", "text");
+        File.SetAttributes(file, FileAttributes.Hidden | FileAttributes.ReadOnly | FileAttributes.Offline);
+
+        using var handle = Native.Open(file, Native.FileReadAttributes, asLink: true);
+
+        Assert.Equal((uint)(FileAttributes.Hidden | FileAttributes.ReadOnly | FileAttributes.Offline), FileHandles.ReadAttributes(handle));
+        File.SetAttributes(file, FileAttributes.Normal);
+    }
+
+    [Fact]
+    public void Lists_a_folder_through_its_handle_and_leaves_out_dot_and_dot_dot()
+    {
+        var folder = _tree.Folder("folder");
+        _tree.File(@"folder\a.txt");
+        _tree.Folder(@"folder\b");
+        Links.CreateJunction(_tree.PathOf(@"folder\c"), _tree.Folder("elsewhere"));
+        _tree.File(@"elsewhere\hidden-behind-the-junction.txt");
+
+        using var handle = Native.Open(folder, Native.FileListDirectory | Native.Synchronize, asLink: true);
+
+        Assert.Equal(["a.txt", "b", "c"], FileHandles.ListNames(handle).Order(StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public void Lists_a_folder_of_more_names_than_one_buffer_holds()
+    {
+        var folder = _tree.Folder("many");
+        var names = Enumerable.Range(0, 1500).Select(i => $"a-file-with-a-long-name-so-that-few-fit-in-one-buffer-{i:D4}.txt").ToList();
+        foreach (var name in names)
+        {
+            _tree.File(Path.Combine("many", name));
+        }
+
+        using var handle = Native.Open(folder, Native.FileListDirectory | Native.Synchronize, asLink: true);
+
+        Assert.Equal(names, FileHandles.ListNames(handle).Order(StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public void Lists_an_empty_folder_as_no_names()
+    {
+        var folder = _tree.Folder("empty");
+
+        using var handle = Native.Open(folder, Native.FileListDirectory | Native.Synchronize, asLink: true);
+
+        Assert.Empty(FileHandles.ListNames(handle));
     }
 
     [Fact]

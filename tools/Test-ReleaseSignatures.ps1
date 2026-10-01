@@ -52,15 +52,6 @@ Import-Module (Join-Path $PSScriptRoot 'Release.psm1')
 
 if (-not (Test-Path -LiteralPath $Path -PathType Container)) { throw "There is no folder '$Path' to check." }
 $root = (Resolve-Path -LiteralPath $Path).ProviderPath
-# TEMPORARY, for spike 2 of the .NET port, reverted before review: the SHA-256 of every file CI published, for
-# tools/spikes/Measure-RuntimeSpike.ps1 -Phase Determinism -ReferenceManifest to compare a rebuild of the same commit.
-if ($env:GITHUB_ACTIONS -eq 'true') {
-    $spikeRoot = (Resolve-Path -LiteralPath ($root)).ProviderPath.TrimEnd('\')
-    Write-Host "SPIKE2-ROOT $spikeRoot"
-    foreach ($spikeFile in @(Get-ChildItem -LiteralPath $spikeRoot -Recurse -File -Force | Sort-Object FullName)) {
-        Write-Host ('SPIKE2-SHA256 {0}  {1}' -f (Get-FileHash -LiteralPath $spikeFile.FullName -Algorithm SHA256).Hash, $spikeFile.FullName.Substring($spikeRoot.Length + 1))
-    }
-}
 
 $reportArgs = @{ Path = $root }
 switch ($PSCmdlet.ParameterSetName) {

@@ -88,15 +88,6 @@ if (-not $Force -and ((Test-Path -LiteralPath $installKey) -or (Test-Path -Liter
 }
 if (Test-Path -LiteralPath $WorkPath) { throw "$WorkPath exists already; give a folder that does not exist yet." }
 if (-not (Test-Path -LiteralPath $BaselineExe -PathType Leaf)) { throw "baseline.exe was not found at $BaselineExe." }
-# TEMPORARY, for spike 2 of the .NET port, reverted before review: the SHA-256 of every file CI published, for
-# tools/spikes/Measure-RuntimeSpike.ps1 -Phase Determinism -ReferenceManifest to compare a rebuild of the same commit.
-if ($env:GITHUB_ACTIONS -eq 'true') {
-    $spikeRoot = (Resolve-Path -LiteralPath (Split-Path -Parent $BaselineExe)).ProviderPath.TrimEnd('\')
-    Write-Host "SPIKE2-ROOT $spikeRoot"
-    foreach ($spikeFile in @(Get-ChildItem -LiteralPath $spikeRoot -Recurse -File -Force | Sort-Object FullName)) {
-        Write-Host ('SPIKE2-SHA256 {0}  {1}' -f (Get-FileHash -LiteralPath $spikeFile.FullName -Algorithm SHA256).Hash, $spikeFile.FullName.Substring($spikeRoot.Length + 1))
-    }
-}
 $BaselineExe = (Resolve-Path -LiteralPath $BaselineExe).ProviderPath
 $security = New-Object Security.AccessControl.DirectorySecurity
 $security.SetSecurityDescriptorSddlForm('O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)')

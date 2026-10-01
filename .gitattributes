@@ -13,3 +13,8 @@
 *.targets text eol=crlf
 *.slnx    text eol=crlf
 *.slnf    text eol=crlf
+# Bytes the desktop app's build carries into its output: the XAML compiler writes a checksum of each .xaml
+# file into the generated code (and so into the PDB and the assembly), and a manifest is embedded as it is.
+# Pinned, so that a checkout on any machine builds the same files as CI's.
+*.xaml     text eol=crlf
+*.manifest text eol=crlf

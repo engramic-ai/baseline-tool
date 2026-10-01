@@ -70,10 +70,12 @@
     The work folder. Required for any phase but All and Clone, which make a new one when it is not given.
 
 .PARAMETER Commit
-    The commit to build. Default: HEAD of the repository this script is in.
+    The commit to build. Default: HEAD of the repository this script is in. All and Clone fix it for the work
+    folder; a later phase given another commit stops, so that a rebuild of a new commit needs a new -WorkPath.
 
 .PARAMETER Repository
-    The repository to clone from: a path or URL git accepts. Default: the repository this script is in.
+    The repository to clone from: a path or URL git accepts. Default: the repository this script is in. Fixed for
+    the work folder as -Commit is.
 
 .PARAMETER Runs
     Measured warm runs of each build and command, after one discarded. Default: 10.
@@ -139,6 +141,7 @@ $ErrorActionPreference = 'Stop'
 $script:RepoRoot = (Resolve-Path -LiteralPath (Join-Path (Join-Path $PSScriptRoot '..') '..')).ProviderPath
 $script:PublicOrigin = 'https://github.com/engramic-ai/baseline-tool'
 $script:MarkerName = '.baseline-runtime-spike'
+$script:Source = $null
 $script:CliProject = 'src\Engramic.Baseline.Cli\Engramic.Baseline.Cli.csproj'
 Import-Module (Join-Path (Join-Path $script:RepoRoot 'tools') 'Release.psm1')
 
@@ -553,16 +556,38 @@ function New-SpikeClone {
     Invoke-SpikeGit @('-C', $Destination, 'remote', 'set-url', 'origin', $script:PublicOrigin) | Out-Null
 }
 
-function Get-SpikeSource {
-    <# The commit and repository to build, the SDK and this machine, worked out once and kept in the results. #>
-    $saved = Read-SpikeResult 'source'
-    if ($null -ne $saved) { return $saved }
+function Resolve-SpikeCommit {
+    <# A commit as its full SHA, read with this process's own git variables, which may point at a worktree's git folder. #>
+    param([string]$Name)
+    if (-not $Name) { $Name = 'HEAD' }
+    (Invoke-SpikeProcess -FilePath (Get-SpikeTool 'git') -ArgumentList @('-C', $script:RepoRoot, 'rev-parse', "$Name^{commit}")).Output.Trim()
+}
 
-    # Read with this process's own git variables, which may point at a worktree's git folder.
+function Get-SpikeSource {
+    <#
+    .SYNOPSIS
+        The commit and repository to build, the SDK and this machine, worked out once and kept in the results.
+        Every later phase builds that commit, so a -Commit or -Repository that names another stops the run.
+    #>
+    if ($null -ne $script:Source) { return $script:Source }
+    $saved = Read-SpikeResult 'source'
+    if ($null -ne $saved) {
+        if ($Commit) {
+            $wanted = Resolve-SpikeCommit $Commit
+            if ($wanted -ne $saved.Commit) {
+                throw "$WorkPath was made for commit $($saved.Commit), not $wanted ($Commit). Give a new -WorkPath and run the Clone phase for that commit."
+            }
+        }
+        $place = { param([string]$Value) $Value.Replace('/', '\').TrimEnd('\') }
+        if ($Repository -and (& $place $Repository) -ne (& $place $saved.Repository)) {
+            throw "$WorkPath was made from $($saved.Repository), not $Repository. Give a new -WorkPath and run the Clone phase for that repository."
+        }
+        $script:Source = $saved
+        return $saved
+    }
+
     $git = Get-SpikeTool 'git'
-    $sha = $Commit
-    if (-not $sha) { $sha = 'HEAD' }
-    $sha = (Invoke-SpikeProcess -FilePath $git -ArgumentList @('-C', $script:RepoRoot, 'rev-parse', "$sha^{commit}")).Output.Trim()
+    $sha = Resolve-SpikeCommit $Commit
     $from = $Repository
     if (-not $from) {
         $from = (Invoke-SpikeProcess -FilePath $git -ArgumentList @('-C', $script:RepoRoot, 'rev-parse', '--path-format=absolute', '--git-common-dir')).Output.Trim()
@@ -600,6 +625,7 @@ function Get-SpikeSource {
         Started           = (Get-Date).ToString('yyyy-MM-dd HH:mm')
     }
     Save-SpikeResult 'source' $source
+    $script:Source = $source
     $source
 }
 
@@ -1060,9 +1086,12 @@ function Invoke-SharedFolderPhase {
         $result = Invoke-SpikeProcess -FilePath (Join-Path $shared "$($run.App).exe") -ArgumentList $run.Arguments -WorkingDirectory $shared -AllowFailure `
             -RemovePrefix @('DOTNET_', 'COMPlus_', 'COREHOST_') -Environment @{ COREHOST_TRACE = '1'; COREHOST_TRACEFILE = $trace; COREHOST_TRACE_VERBOSITY = '4' }
         $hostTrace = Read-SpikeHostTrace -Path $trace -Folder $shared
+        # Only the stand-ins list what they loaded; baseline.exe does not, and its loads are not counted as none.
         $loaded = @($result.Output -split "`r?`n" | Where-Object { $_ -like 'Loaded: *' })
         $loadedElsewhere = @($loaded | Where-Object { $_ -notlike "*$shared\*" })
-        Write-Host ("  {0,-16} {1,-38} exit {2}, {3} assemblies trusted, {4} outside the folder; {5} loaded, {6} from elsewhere" -f $run.App, ($run.Arguments -join ' '), $result.ExitCode, $hostTrace.TrustedCount, $hostTrace.TrustedElsewhere.Count, $loaded.Count, $loadedElsewhere.Count)
+        $loads = 'loads not listed'
+        if ($loaded.Count) { $loads = '{0} loaded, {1} from elsewhere' -f $loaded.Count, $loadedElsewhere.Count }
+        Write-Host ("  {0,-16} {1,-38} exit {2}, {3} assemblies trusted, {4} outside the folder; {5}" -f $run.App, ($run.Arguments -join ' '), $result.ExitCode, $hostTrace.TrustedCount, $hostTrace.TrustedElsewhere.Count, $loads)
         [pscustomobject]@{
             App              = $run.App
             Arguments        = ($run.Arguments -join ' ')
@@ -1070,7 +1099,7 @@ function Invoke-SharedFolderPhase {
             WallMs           = $result.WallMs
             Output           = @($result.Output -split "`r?`n" | Where-Object { $_ -and $_ -notlike 'Loaded: *' } | Select-Object -First 12)
             Errors           = $result.Errors
-            Loaded           = $loaded.Count
+            Loaded           = $(if ($loaded.Count) { $loaded.Count } else { $null })
             LoadedElsewhere  = $loadedElsewhere
             TrustedCount     = $hostTrace.TrustedCount
             TrustedElsewhere = $hostTrace.TrustedElsewhere
@@ -1160,6 +1189,8 @@ function Invoke-DeterminismPhase {
     Write-SpikeStep "Determinism ($BuildMode$(if ($Property.Count) { ', ' + ($Property -join ' ') })$(if ($FreshPackages) { ', the second with its own package folder' })$(if ($LfCheckout) { ', the second checked out with LF' })): two clean ReadyToRun publishes from two paths"
     $base = Join-Path $WorkPath "det-$label"
     if (Test-Path -LiteralPath $base) { throw "$base exists already: this experiment has run. Clean it up or use another -WorkPath." }
+    $source = Get-SpikeSource
+    Write-Host "  Commit $($source.Commit)"
     $builds = @(
         [pscustomobject]@{ Repo = (Join-Path $base '1\repo'); Output = (Join-Path $base 'out1') },
         [pscustomobject]@{ Repo = (Join-Path $base 'second-clone-at-another-path\2\repo'); Output = (Join-Path $base 'out2') }
@@ -1214,7 +1245,13 @@ function Invoke-DeterminismPhase {
     foreach ($d in @($diagnosis)) {
         Write-Host ("    {0}: {1} byte(s) in {2} run(s); MVID same: {3}; {4}" -f $d.Path, $d.Why.BytesDiffer, $d.Why.Runs, $d.Why.MvidSame, (@($d.Why.EmbeddedPath) -join ' ') )
     }
+    if ($null -ne $reference) {
+        # A list made from another commit differs in our files whatever the machine, so the commit is beside it.
+        Write-Host ("  The first build, of commit {0}, against {1}: {2} files there; {3} differ, {4} only here, {5} only there" -f $source.Commit, $ReferenceManifest, $reference.Files, $reference.Different.Count, $reference.OnlyHere.Count, $reference.OnlyThere.Count)
+        foreach ($path in @($reference.Different) + @($reference.OnlyHere | ForEach-Object { "$_ (only here)" }) + @($reference.OnlyThere | ForEach-Object { "$_ (only there)" })) { Write-Host "    $path" }
+    }
     Save-SpikeResult "det-$label" ([pscustomobject]@{
+            Commit    = $source.Commit
             Mode      = $BuildMode
             Property  = @($Property)
             Packages  = [bool]$FreshPackages
@@ -1281,7 +1318,9 @@ function Invoke-ReportPhase {
             Write-Output ("- {0}: {1} assets ({2}); frameworks {3}; named in its deps.json but different in the shared folder: {4}" -f $app.App, $app.Assets, $app.AssetKinds, (@($app.Frameworks) -join ', '), $(if (@($app.DifferentInShare).Count) { @($app.DifferentInShare) -join '; ' } else { 'none' }))
         }
         foreach ($run in @($shared.Started)) {
-            Write-Output ("- {0} {1}: exit {2}; {3} trusted assemblies, {4} outside the folder; {5} loaded, {6} from elsewhere" -f $run.App, $run.Arguments, $run.ExitCode, $run.TrustedCount, @($run.TrustedElsewhere).Count, $run.Loaded, @($run.LoadedElsewhere).Count)
+            $loads = 'loads not listed'
+            if ($run.Loaded) { $loads = '{0} loaded, {1} from elsewhere' -f $run.Loaded, @($run.LoadedElsewhere).Count }
+            Write-Output ("- {0} {1}: exit {2}; {3} trusted assemblies, {4} outside the folder; {5}" -f $run.App, $run.Arguments, $run.ExitCode, $run.TrustedCount, @($run.TrustedElsewhere).Count, $loads)
         }
         Write-Output ("- Test-ReleaseSignatures.ps1 -Unsigned on the shared folder: {0}" -f $(if ($shared.Signature.Passed) { "passed: ours are $(@($shared.Signature.Ours) -join ', '); $($shared.Signature.Microsoft) are Microsoft's" } else { 'failed: ' + (@($shared.Signature.Problems) -join '; ') }))
         Write-Output ''
@@ -1291,13 +1330,15 @@ function Invoke-ReportPhase {
         $fresh = ''
         if ([bool](Get-SpikeJsonValue $det 'Packages')) { $fresh += ', the second build with its own package folder' }
         if ([bool](Get-SpikeJsonValue $det 'Lf')) { $fresh += ', the second checked out with LF line endings' }
-        Write-Output ("Determinism, {0}{1}{2}: {3} files, {4} differ, {5} in one build only" -f $det.Mode, $(if (@($det.Property).Count) { ' with ' + (@($det.Property) -join ' ') } else { '' }), $fresh, $det.Files, @($det.Different).Count, @($det.OnlyOne).Count)
+        $built = [string](Get-SpikeJsonValue $det 'Commit')
+        if (-not $built) { $built = '(not recorded)' }
+        Write-Output ("Determinism, {0}{1}{2}, commit {3}: {4} files, {5} differ, {6} in one build only" -f $det.Mode, $(if (@($det.Property).Count) { ' with ' + (@($det.Property) -join ' ') } else { '' }), $fresh, $built, $det.Files, @($det.Different).Count, @($det.OnlyOne).Count)
         foreach ($d in @($det.Diagnosis)) {
             $debugLeft = @(@(Get-SpikeJsonValue $d.Why.Left 'Debug') | Where-Object { $null -ne $_ } | ForEach-Object { $_.Detail })
             Write-Output ("- {0}: {1}, {2} byte(s) differ in {3} run(s) ({4}); MVID same: {5}; {6} {7} debug: {8}" -f $d.Path, $d.Why.Sizes, $d.Why.BytesDiffer, $d.Why.Runs, (@($d.Why.FirstRuns) -join ' '), $d.Why.MvidSame, (@($d.Why.EmbeddedPath) -join ' '), $d.Why.Text, ($debugLeft -join ' | '))
         }
         if ($null -ne $det.Reference) {
-            Write-Output ("- Against {0}: {1} differ, {2} only here, {3} only there" -f $det.Reference.Manifest, @($det.Reference.Different).Count, @($det.Reference.OnlyHere).Count, @($det.Reference.OnlyThere).Count)
+            Write-Output ("- The first build, of commit {0}, against {1}: {2} differ, {3} only here, {4} only there{5}" -f $built, $det.Reference.Manifest, @($det.Reference.Different).Count, @($det.Reference.OnlyHere).Count, @($det.Reference.OnlyThere).Count, $(if (@($det.Reference.Different).Count) { ': ' + (@($det.Reference.Different) -join ', ') } else { '' }))
         }
         Write-Output ''
     }

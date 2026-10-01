@@ -1006,8 +1006,11 @@ What it showed:
   `hostfxr.dll`, runs self-contained as its own `.runtimeconfig.json` says, and takes its trusted assemblies from
   its own `.deps.json`: 180, 226 and 210 of them, all in the folder. Each `.runtimeconfig.json` keeps its own
   settings; the desktop app's names both frameworks, the others `Microsoft.NETCore.App` alone. All three ran from
-  the shared folder, `baseline.exe audit --id SU-01 --shipped-config` included, and every assembly they loaded came
-  from it.
+  the shared folder, `baseline.exe audit --id SU-01 --shipped-config` included. The two stand-ins list what they
+  loaded, and every assembly came from the folder. `baseline.exe` lists nothing, so for it the evidence is its
+  trusted list, not a record of its loads: a self-contained app loads by name only from that list, and nothing
+  gave it another place to look, since `src/BannedSymbols.txt` bans loading from a path, startup hooks are off and
+  the runs cleared every `DOTNET_`, `COMPlus_` and `COREHOST_` variable but the trace's own.
 - **Our libraries are the same bytes in all three.** ReadyToRun compiled each of our five libraries identically for
   the three apps, so one signed copy serves them all.
 - **Two files differ by app.** Of the 199 files that two or three apps publish, two have different content:
@@ -1039,7 +1042,7 @@ path, every file compared by SHA-256:
 | As a workstation publishes today, with no CI variable | 203 | 12 |
 | As CI publishes (`CI=true`, which sets `ContinuousIntegrationBuild`) | 203 | 0 |
 | A workstation's, with `-p:ContinuousIntegrationBuild=true` | 203 | 0, and the same as CI's way |
-| CI's way, the second clone checked out with LF line endings | 203 | 0, and the same as the first |
+| CI's way, the second clone checked out with LF line endings | 203 | 0, and the same as the first (see below) |
 | CI's way, the second build with an empty NuGet package folder of its own | 203 | 0, and the same as the first |
 
 The twelve are our six assemblies and their PDBs. Without `ContinuousIntegrationBuild` the compiler writes the
@@ -1052,6 +1055,15 @@ build (`Deterministic` is already on) the same from any folder; no `PathMap` or 
 The PDBs then carry source link to the commit on GitHub, so the files depend on the commit and the origin too: a
 rebuild must be of the same commit (a pull request's CI run builds its merge commit, not the branch's head), from a
 clone whose origin is the GitHub repository, as the script's clones are.
+
+The LF row could not have come out otherwise, so it shows less than it seems. `.gitattributes` pins CRLF for
+every file that reaches the output today: the C# sources, the project and build files, and `*.json`, among them the
+two config files Controls embeds. The files it leaves to git's settings, which a clone made by git on Linux or WSL
+checks out LF, are analyzer inputs (`PublicAPI.*.txt`, `BannedSymbols.txt`, `NativeMethods.txt`) and repository
+files, and none of them reaches the output. The desktop app will change that: the XAML compiler writes a checksum
+of each `.xaml` file's bytes into the generated code, and so into the PDB and the assembly, and an `app.manifest` is
+embedded byte for byte. `.gitattributes` now pins both to CRLF, and the row is to be run again once the desktop
+app has them.
 
 **Still to prove:**
 

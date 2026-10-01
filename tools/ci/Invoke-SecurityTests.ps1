@@ -62,7 +62,8 @@ $secure = New-Object Security.SecureString
 foreach ($character in $password.ToCharArray()) { $secure.AppendChar($character) }
 
 $code = 1
-New-LocalUser -Name $name -Password $secure -Description 'Engramic Baseline attack suite: a standard user, deleted after the run' -AccountNeverExpires -PasswordNeverExpires -UserMayNotChangePassword | Out-Null
+# Windows allows an account description of at most 48 characters.
+New-LocalUser -Name $name -Password $secure -Description 'Baseline attack suite user, deleted after run' -AccountNeverExpires -PasswordNeverExpires -UserMayNotChangePassword | Out-Null
 try {
     # Authenticated users are in Users already; adding the account says so plainly, and changes nothing if so.
     try { Add-LocalGroupMember -SID 'S-1-5-32-545' -Member $name -ErrorAction Stop }

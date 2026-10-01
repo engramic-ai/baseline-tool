@@ -27,7 +27,8 @@
       Startup       baseline.exe --version and baseline.exe audit --id SU-01 --shipped-config from each folder,
                     as this account. First runs: each from a fresh copy of the folder (-FirstRuns copies). Warm
                     runs: one discarded, then -Runs measured, the two builds and two commands interleaved so that
-                    drift on the machine falls on all of them alike. Wall-clock and CPU time of each process.
+                    drift on the machine falls on all of them alike. Wall-clock time of each process from start to
+                    exit, and its CPU time (which Windows counts in ticks of about 15.6 ms).
       SharedFolder  Stand-ins for the desktop app (WPF, net10.0-windows) and a Windows service
                     (Microsoft.Extensions.Hosting.WindowsServices), generated under <work>\standins, referencing the
                     clone's libraries and published as baseline.exe is (self-contained, ReadyToRun, package
@@ -44,6 +45,8 @@
                     file holds its build path. -Mode Local publishes as a release does on a workstation today;
                     -Mode CI as CI does (CI=true, which sets ContinuousIntegrationBuild in Directory.Build.props).
                     -Property adds MSBuild properties to the restore and publish of both, to try a fix.
+                    -FreshPackages gives the second build a NuGet package folder of its own, and -LfCheckout
+                    checks the second clone out as Linux or WSL would.
                     -ReferenceManifest compares the first build with a list of hashes made elsewhere, such as by
                     CI, in the format this phase writes: "<SHA-256>  <relative path>" per line.
       Report        The results of the phases run so far, as Markdown tables.
@@ -76,7 +79,8 @@
     Measured warm runs of each build and command, after one discarded. Default: 10.
 
 .PARAMETER FirstRuns
-    First runs of each build and command, each from a fresh copy of the published folder. Default: 3.
+    First runs of each build and command, each from a fresh copy of the published folder, made two seconds
+    before it runs. The builds take turns to go first. Default: 4.
 
 .PARAMETER Mode
     Determinism: Local (as a workstation publishes) or CI (CI=true). Default: CI.
@@ -86,6 +90,15 @@
 
 .PARAMETER ReferenceManifest
     Determinism: a list of hashes to compare the first build with.
+
+.PARAMETER FreshPackages
+    Determinism: the second build restores into a new, empty NuGet package folder (NUGET_PACKAGES, under the work
+    folder), as another machine would, and restores the command line's project alone, so that only its packages
+    are fetched.
+
+.PARAMETER LfCheckout
+    Determinism: the second clone is checked out with LF line endings wherever .gitattributes leaves them to git
+    (core.autocrlf false, core.eol lf), as a Linux or WSL checkout is.
 
 .PARAMETER Keep
     With -Phase All: keep the work folder.
@@ -112,10 +125,12 @@ param(
     [string]$Commit,
     [string]$Repository,
     [ValidateRange(1, 100)][int]$Runs = 10,
-    [ValidateRange(0, 10)][int]$FirstRuns = 3,
+    [ValidateRange(0, 10)][int]$FirstRuns = 4,
     [ValidateSet('Local', 'CI')][string]$Mode = 'CI',
     [string[]]$Property = @(),
     [string]$ReferenceManifest,
+    [switch]$FreshPackages,
+    [switch]$LfCheckout,
     [switch]$Keep
 )
 Set-StrictMode -Version 2.0
@@ -293,17 +308,18 @@ function Invoke-SpikeDotNet {
         servers left behind. Local: no CI variable reaches it. CI: CI=true. GIT_ variables never reach it, since
         source link reads the repository the project is in.
     #>
-    param([string[]]$ArgumentList, [string]$Name, [switch]$CI, [string]$WorkingDirectory)
-    $environment = @{ DOTNET_NOLOGO = 'true'; DOTNET_CLI_TELEMETRY_OPTOUT = 'true'; NUGET_XMLDOC_MODE = 'skip' }
-    if ($CI) { $environment['CI'] = 'true' }
+    param([string[]]$ArgumentList, [string]$Name, [switch]$CI, [string]$WorkingDirectory, [hashtable]$Environment = @{})
+    $variables = @{ DOTNET_NOLOGO = 'true'; DOTNET_CLI_TELEMETRY_OPTOUT = 'true'; NUGET_XMLDOC_MODE = 'skip' }
+    foreach ($key in $Environment.Keys) { $variables[$key] = $Environment[$key] }
+    if ($CI) { $variables['CI'] = 'true' }
     $arguments = @($ArgumentList) + @('-m:2', '--disable-build-servers')
     $log = Join-Path $script:Logs "$Name.log"
     Write-Host ("  dotnet {0}" -f ($ArgumentList -join ' '))
     $run = @{
         FilePath     = (Get-SpikeTool 'dotnet')
         ArgumentList = $arguments
-        Environment  = $environment
-        RemoveName   = @('CI', 'TF_BUILD', 'ContinuousIntegrationBuild')
+        Environment  = $variables
+        RemoveName   = @('CI', 'TF_BUILD', 'ContinuousIntegrationBuild', 'NUGET_PACKAGES')
         RemovePrefix = @('GIT_', 'GITHUB_')
         LogPath      = $log
     }
@@ -521,12 +537,18 @@ function Measure-SpikeFolder {
 }
 
 function New-SpikeClone {
-    <# A clone of the commit at Destination, checked out as a Windows runner checks out, with CI's origin. #>
-    param([string]$Destination)
+    <#
+    .SYNOPSIS
+        A clone of the commit at Destination, checked out as a Windows runner checks out (or, with -Lf, as Linux
+        does), with CI's origin.
+    #>
+    param([string]$Destination, [switch]$Lf)
     $source = Get-SpikeSource
     if (Test-Path -LiteralPath $Destination) { throw "$Destination already exists." }
     New-Item -ItemType Directory -Path (Split-Path -Parent $Destination) -Force | Out-Null
-    Invoke-SpikeGit @('clone', '--quiet', '--shared', '--no-checkout', '--config', 'core.autocrlf=true', $source.Repository, $Destination) | Out-Null
+    $endings = @('--config', 'core.autocrlf=true')
+    if ($Lf) { $endings = @('--config', 'core.autocrlf=false', '--config', 'core.eol=lf') }
+    Invoke-SpikeGit (@('clone', '--quiet', '--shared', '--no-checkout') + $endings + @($source.Repository, $Destination)) | Out-Null
     Invoke-SpikeGit @('-C', $Destination, 'checkout', '--quiet', '--detach', $source.Commit) | Out-Null
     Invoke-SpikeGit @('-C', $Destination, 'remote', 'set-url', 'origin', $script:PublicOrigin) | Out-Null
 }
@@ -551,7 +573,7 @@ function Get-SpikeSource {
     if ($actual -ne $sdk) { throw "dotnet --version is '$actual', but global.json names $sdk." }
 
     $current = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
-    $cpu = Get-ItemProperty -LiteralPath 'HKLM:\HARDWARE\DESCRIPTION\System\CentralProcessor\0'
+    $cpu = [string][Microsoft.Win32.Registry]::GetValue('HKEY_LOCAL_MACHINE\HARDWARE\DESCRIPTION\System\CentralProcessor\0', 'ProcessorNameString', '')
     $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
     $power = 'unknown'
     try {
@@ -569,7 +591,7 @@ function Get-SpikeSource {
         Repository        = $from
         Sdk               = $actual
         Windows           = ('{0} build {1}.{2}' -f (Get-SpikeJsonValue $current 'DisplayVersion'), $current.CurrentBuildNumber, (Get-SpikeJsonValue $current 'UBR'))
-        Processor         = ([string]$cpu.ProcessorNameString).Trim()
+        Processor         = $cpu.Trim()
         LogicalProcessors = [Environment]::ProcessorCount
         Power             = $power
         DefenderRealTime  = $defender
@@ -646,11 +668,16 @@ function Invoke-StartupPhase {
     }
 
     for ($copy = 1; $copy -le $FirstRuns; $copy++) {
-        foreach ($variant in $script:Variants) {
+        # Each build goes first in every other round, so that neither gains from the order.
+        $order = @($script:Variants)
+        if ($copy % 2 -eq 0) { [array]::Reverse($order) }
+        foreach ($variant in $order) {
             foreach ($command in $script:Commands) {
                 $fresh = Join-Path $WorkPath ("fresh\{0}-{1}-{2}" -f $variant.Name, $command.Name, $copy)
                 New-Item -ItemType Directory -Path (Split-Path -Parent $fresh) -Force | Out-Null
                 Copy-Item -LiteralPath (Join-Path $script:Published $variant.Name) -Destination $fresh -Recurse
+                # As after an install: the files have been written a while, and the antivirus has seen them close.
+                Start-Sleep -Seconds 2
                 $result = Invoke-SpikeProcess -FilePath (Join-Path $fresh 'baseline.exe') -ArgumentList $command.Arguments -WorkingDirectory $fresh @clean
                 & $check $variant $command $result
                 [void]$samples.Add([pscustomobject]@{ Variant = $variant.Name; Command = $command.Name; Kind = 'first'; Run = $copy; WallMs = $result.WallMs; CpuMs = $result.CpuMs })
@@ -733,11 +760,15 @@ function New-SpikeStandIns {
     <ProjectReference Include="__REPO__\src\Engramic.Baseline.Controls\Engramic.Baseline.Controls.csproj" />
     <ProjectReference Include="__REPO__\src\Engramic.Baseline.Windows\Engramic.Baseline.Windows.csproj" />
   </ItemGroup>
-  <!-- As in baseline.exe: a package's assembly keeps its publisher's signature, so it stays out of ReadyToRun. -->
+  <!--
+    As in baseline.exe: a package's assembly keeps its publisher's signature, so it stays out of ReadyToRun. The
+    libraries this repository builds, referenced through another project, carry a package id too, so they are
+    told apart by name. (The runtime pack's assemblies are ReadyToRun already, so excluding them changes nothing.)
+  -->
   <Target Name="StandInKeepPackageSignatures" BeforeTargets="_PrepareForReadyToRunCompilation">
     <ItemGroup>
       <PublishReadyToRunExclude Include="@(ResolvedFileToPublish->'%(Filename)%(Extension)')"
-                                Condition="'%(ResolvedFileToPublish.NuGetPackageId)' != '' and '%(ResolvedFileToPublish.Extension)' == '.dll'" />
+                                Condition="'%(ResolvedFileToPublish.NuGetPackageId)' != '' and !$([System.String]::Copy('%(ResolvedFileToPublish.NuGetPackageId)').StartsWith('Engramic.Baseline.')) and '%(ResolvedFileToPublish.Extension)' == '.dll'" />
     </ItemGroup>
   </Target>
 </Project>
@@ -881,7 +912,11 @@ internal sealed class Worker : BackgroundService
 }
 
 function Get-SpikeDepsAsset {
-    <# Every file an app's .deps.json names, relative to its folder, with the library that brings it and its kind. #>
+    <#
+    .SYNOPSIS
+        Every file an app's .deps.json names, as the host looks for it in a published app's folder (by its file
+        name, and a resource assembly under its culture's folder), with the library that brings it and its kind.
+    #>
     param([string]$DepsPath)
     $deps = Get-Content -LiteralPath $DepsPath -Raw -Encoding UTF8 | ConvertFrom-Json
     $targetName = [string](Get-SpikeJsonValue (Get-SpikeJsonValue $deps 'runtimeTarget') 'name')
@@ -893,8 +928,11 @@ function Get-SpikeDepsAsset {
             $assets = Get-SpikeJsonValue $library.Value $group
             if ($null -eq $assets) { continue }
             foreach ($asset in @($assets.PSObject.Properties)) {
+                $file = Split-Path -Leaf $asset.Name.Replace('/', '\')
+                $locale = [string](Get-SpikeJsonValue $asset.Value 'locale')
+                if ($group -eq 'resources' -and $locale) { $file = Join-Path $locale $file }
                 [pscustomobject]@{
-                    Path            = $asset.Name.Replace('/', '\')
+                    Path            = $file
                     Library         = $library.Name
                     Kind            = $kind
                     AssemblyVersion = [string](Get-SpikeJsonValue $asset.Value 'assemblyVersion')
@@ -938,6 +976,10 @@ function Invoke-SharedFolderPhase {
     $runtimeVersion = [string]@($runtimeConfig.runtimeOptions.includedFrameworks)[0].version
     Write-Host "  Runtime $runtimeVersion; the service stand-in takes Microsoft.Extensions.Hosting.WindowsServices $runtimeVersion"
 
+    # A fresh start: dotnet publish copies a file only when it is newer than the one already there.
+    foreach ($folder in (Join-Path $WorkPath 'standins'), (Join-Path $script:Published 'desktop'), (Join-Path $script:Published 'service'), (Join-Path $script:Published 'shared')) {
+        if (Test-Path -LiteralPath $folder) { Remove-Item -LiteralPath $folder -Recurse -Force }
+    }
     $standIns = New-SpikeStandIns -Repo $repo -Version $version -RuntimeVersion $runtimeVersion
     $apps = @([pscustomobject]@{ Name = 'baseline'; Folder = 'cli'; Project = (Join-Path $repo $script:CliProject) }) + @($standIns)
     $shared = Join-Path $script:Published 'shared'
@@ -1113,7 +1155,9 @@ function Invoke-DeterminismPhase {
         $label += '-' + [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes(($Property -join ';')))).Replace('-', '').Substring(0, 6).ToLowerInvariant()
         $sha.Dispose()
     }
-    Write-SpikeStep "Determinism ($BuildMode$(if ($Property.Count) { ', ' + ($Property -join ' ') })): two clean ReadyToRun publishes from two paths"
+    if ($FreshPackages) { $label += '-packages' }
+    if ($LfCheckout) { $label += '-lf' }
+    Write-SpikeStep "Determinism ($BuildMode$(if ($Property.Count) { ', ' + ($Property -join ' ') })$(if ($FreshPackages) { ', the second with its own package folder' })$(if ($LfCheckout) { ', the second checked out with LF' })): two clean ReadyToRun publishes from two paths"
     $base = Join-Path $WorkPath "det-$label"
     if (Test-Path -LiteralPath $base) { throw "$base exists already: this experiment has run. Clean it up or use another -WorkPath." }
     $builds = @(
@@ -1124,10 +1168,16 @@ function Invoke-DeterminismPhase {
     $i = 0
     foreach ($build in $builds) {
         $i++
-        New-SpikeClone -Destination $build.Repo
+        New-SpikeClone -Destination $build.Repo -Lf:($LfCheckout -and $i -eq 2)
         $ci = $BuildMode -eq 'CI'
-        Invoke-SpikeDotNet -CI:$ci -Name "det-$label-$i-restore" -ArgumentList (@('restore', (Join-Path $build.Repo 'Baseline.slnx'), '--locked-mode') + $extra) | Out-Null
-        Invoke-SpikeDotNet -CI:$ci -Name "det-$label-$i-publish" -ArgumentList (@('publish', (Join-Path $build.Repo $script:CliProject), '--configuration', 'Release', '--runtime', 'win-x64', '--no-restore', '--output', $build.Output) + $extra) | Out-Null
+        $restore = Join-Path $build.Repo 'Baseline.slnx'
+        $packages = @{}
+        if ($FreshPackages -and $i -eq 2) {
+            $packages['NUGET_PACKAGES'] = Join-Path $base 'packages'
+            $restore = Join-Path $build.Repo $script:CliProject
+        }
+        Invoke-SpikeDotNet -CI:$ci -Environment $packages -Name "det-$label-$i-restore" -ArgumentList (@('restore', $restore, '--locked-mode') + $extra) | Out-Null
+        Invoke-SpikeDotNet -CI:$ci -Environment $packages -Name "det-$label-$i-publish" -ArgumentList (@('publish', (Join-Path $build.Repo $script:CliProject), '--configuration', 'Release', '--runtime', 'win-x64', '--no-restore', '--output', $build.Output) + $extra) | Out-Null
         $hashes = Get-SpikeHashes -Path $build.Output
         Set-Content -LiteralPath (Join-Path $script:Results "det-$label-$i.sha256") -Value @($hashes | ForEach-Object { '{0}  {1}' -f $_.Hash, $_.Path }) -Encoding ASCII
         $build | Add-Member -NotePropertyName Hashes -NotePropertyValue $hashes
@@ -1167,6 +1217,8 @@ function Invoke-DeterminismPhase {
     Save-SpikeResult "det-$label" ([pscustomobject]@{
             Mode      = $BuildMode
             Property  = @($Property)
+            Packages  = [bool]$FreshPackages
+            Lf        = [bool]$LfCheckout
             Label     = $label
             Files     = $left.Count
             Different = @($different)
@@ -1236,9 +1288,12 @@ function Invoke-ReportPhase {
     }
     foreach ($file in @(Get-ChildItem -LiteralPath $script:Results -Filter 'det-*.json' -File | Sort-Object Name)) {
         $det = Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
-        Write-Output ("Determinism, {0}{1}: {2} files, {3} differ, {4} in one build only" -f $det.Mode, $(if (@($det.Property).Count) { ' with ' + (@($det.Property) -join ' ') } else { '' }), $det.Files, @($det.Different).Count, @($det.OnlyOne).Count)
+        $fresh = ''
+        if ([bool](Get-SpikeJsonValue $det 'Packages')) { $fresh += ', the second build with its own package folder' }
+        if ([bool](Get-SpikeJsonValue $det 'Lf')) { $fresh += ', the second checked out with LF line endings' }
+        Write-Output ("Determinism, {0}{1}{2}: {3} files, {4} differ, {5} in one build only" -f $det.Mode, $(if (@($det.Property).Count) { ' with ' + (@($det.Property) -join ' ') } else { '' }), $fresh, $det.Files, @($det.Different).Count, @($det.OnlyOne).Count)
         foreach ($d in @($det.Diagnosis)) {
-            $debugLeft = @(@(Get-SpikeJsonValue $d.Why.Left 'Debug') | ForEach-Object { $_.Detail })
+            $debugLeft = @(@(Get-SpikeJsonValue $d.Why.Left 'Debug') | Where-Object { $null -ne $_ } | ForEach-Object { $_.Detail })
             Write-Output ("- {0}: {1}, {2} byte(s) differ in {3} run(s) ({4}); MVID same: {5}; {6} {7} debug: {8}" -f $d.Path, $d.Why.Sizes, $d.Why.BytesDiffer, $d.Why.Runs, (@($d.Why.FirstRuns) -join ' '), $d.Why.MvidSame, (@($d.Why.EmbeddedPath) -join ' '), $d.Why.Text, ($debugLeft -join ' | '))
         }
         if ($null -ne $det.Reference) {

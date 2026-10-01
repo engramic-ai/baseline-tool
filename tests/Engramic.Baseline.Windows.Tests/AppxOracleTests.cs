@@ -96,11 +96,16 @@ public sealed class AppxOracleTests
             }
         }
 
+        // The deployment service's own lists: work it still has to do for each user, such as a registration waiting for
+        // them to sign in, and the packages provisioned for every new user.
+        const string AllUserStore = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Appx\AppxAllUserStore";
+        var pending = Listed(RegistryHive.LocalMachine, AllUserStore + @"\" + sid);
+        var provisioned = Listed(RegistryHive.LocalMachine, AllUserStore + @"\Applications");
         var machine = Listed(RegistryHive.LocalMachine, AppxRepository.MachineRepositoryKey);
         var user = Listed(RegistryHive.Users, sid + AppxRepository.ClassesSuffix + @"\" + AppxRepository.UserRepositoryKey);
         var answer = new PackageRegistrations().Find(Sid.Parse(sid), fullName);
         var folder = AppxRepository.ReadInstallLocation(registry, fullName);
-        return $"device repository: {machine}; user's repository: {user}; package runtime asked directly: error {answer.Error}, properties 0x{answer.Properties:X}, folder {(answer.Path.Length > 0 ? answer.Path : "none")}; device repository's folder: {(folder.Length > 0 ? folder : "none")}";
+        return $"AppxAllUserStore\\<user>: {pending}; AppxAllUserStore\\Applications: {provisioned}; device repository: {machine}; user's repository: {user}; package runtime asked directly: error {answer.Error}, properties 0x{answer.Properties:X}, folder {(answer.Path.Length > 0 ? answer.Path : "none")}; device repository's folder: {(folder.Length > 0 ? folder : "none")}";
     }
 
     private static void Report(AppxComparison comparison)

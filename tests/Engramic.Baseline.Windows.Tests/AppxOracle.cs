@@ -20,52 +20,62 @@ internal static class AppxOracle
     /// </summary>
     public static OracleAnswer ForAllUsers()
     {
-        // One line for each package and user: the user's SID, the full name and the user's install state.
+        // One line for each package and user: the user's SID, the user's install state, then the package's own facts.
         const string Script = """
             $ErrorActionPreference = 'Stop'
             $ProgressPreference = 'SilentlyContinue'
             Get-AppxPackage -AllUsers | ForEach-Object {
                 $p = $_
-                foreach ($u in @($p.PackageUserInformation)) { '{0}|{1}|{2}' -f $u.UserSecurityId.Sid, $p.PackageFullName, $u.InstallState }
+                foreach ($u in @($p.PackageUserInformation)) { '{0}|{1}|{2}|{3}|{4}|{5}' -f $u.UserSecurityId.Sid, $u.InstallState, $p.PackageFullName, $p.Status, $p.SignatureKind, $p.InstallLocation }
             }
             """;
+        return Parse("Get-AppxPackage -AllUsers", Script, user: null);
+    }
+
+    /// <summary>Get-AppxPackage with no user named: the packages of the account running the tests.</summary>
+    public static OracleAnswer ForCurrentUser(Sid user)
+    {
+        const string Script = """
+            $ErrorActionPreference = 'Stop'
+            $ProgressPreference = 'SilentlyContinue'
+            Get-AppxPackage | ForEach-Object { '{0}|{1}|{2}|{3}' -f $_.PackageFullName, $_.Status, $_.SignatureKind, $_.InstallLocation }
+            """;
+        return Parse("Get-AppxPackage", Script, user);
+    }
+
+    private static OracleAnswer Parse(string command, string script, Sid? user)
+    {
         var stopwatch = Stopwatch.StartNew();
-        var lines = Run(Script);
+        var lines = Run(script);
         stopwatch.Stop();
         var installed = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
         var other = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+        var facts = new Dictionary<string, string>(AppxPackage.FullNameComparer);
+        if (user is not null)
+        {
+            installed[user.Value] = new HashSet<string>(AppxPackage.FullNameComparer);
+        }
+
         foreach (var line in lines)
         {
-            var parts = line.Split('|');
-            if (parts.Length != 3)
+            var parts = user is null ? line.Split('|', 6) : [user.Value, "Installed", .. line.Split('|', 4)];
+            if (parts.Length != 6)
             {
-                throw new InvalidOperationException($"Get-AppxPackage -AllUsers gave a line that is not user|package|state: {line}");
+                throw new InvalidOperationException($"{command} gave a line that is not user|state|package|status|signature|folder: {line}");
             }
 
-            var target = string.Equals(parts[2], "Installed", StringComparison.OrdinalIgnoreCase) ? installed : other;
+            var target = string.Equals(parts[1], "Installed", StringComparison.OrdinalIgnoreCase) ? installed : other;
             if (!target.TryGetValue(parts[0], out var set))
             {
                 set = new HashSet<string>(AppxPackage.FullNameComparer);
                 target[parts[0]] = set;
             }
 
-            set.Add(parts[1]);
+            set.Add(parts[2]);
+            facts[parts[2]] = $"status {parts[3]}, signature {parts[4]}, folder {parts[5]} ({(parts[5].Length > 0 && Directory.Exists(parts[5]) ? "exists" : "not found")})";
         }
 
-        return new OracleAnswer("Get-AppxPackage -AllUsers", installed, other, stopwatch.Elapsed);
-    }
-
-    /// <summary>Get-AppxPackage with no user named: the packages of the account running the tests.</summary>
-    public static OracleAnswer ForCurrentUser(Sid user)
-    {
-        var stopwatch = Stopwatch.StartNew();
-        var lines = Run("$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue'; Get-AppxPackage | ForEach-Object { $_.PackageFullName }");
-        stopwatch.Stop();
-        var installed = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase)
-        {
-            [user.Value] = new HashSet<string>(lines, AppxPackage.FullNameComparer),
-        };
-        return new OracleAnswer("Get-AppxPackage", installed, new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase), stopwatch.Elapsed);
+        return new OracleAnswer(command, installed, other, facts, stopwatch.Elapsed);
     }
 
     private static List<string> Run(string script)
@@ -108,5 +118,6 @@ internal static class AppxOracle
 /// <param name="Command">The command that was run.</param>
 /// <param name="Installed">For each user's SID, the full names of the packages installed for them.</param>
 /// <param name="Other">For each user's SID, the full names of the packages in another state for them, such as Staged.</param>
+/// <param name="Facts">For each full name, what Get-AppxPackage says of the package: its status, signature kind and folder.</param>
 /// <param name="Took">How long the command took, Windows PowerShell's start included.</param>
-internal sealed record OracleAnswer(string Command, Dictionary<string, HashSet<string>> Installed, Dictionary<string, HashSet<string>> Other, TimeSpan Took);
+internal sealed record OracleAnswer(string Command, Dictionary<string, HashSet<string>> Installed, Dictionary<string, HashSet<string>> Other, Dictionary<string, string> Facts, TimeSpan Took);

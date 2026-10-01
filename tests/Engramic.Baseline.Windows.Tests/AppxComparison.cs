@@ -36,7 +36,8 @@ internal sealed class AppxComparison
     /// <param name="oracle">What Get-AppxPackage said.</param>
     /// <param name="sources">Each source's name, what it read, and how long it took.</param>
     /// <param name="onlyUser">The one user to compare, when the oracle answered for one user only.</param>
-    public static AppxComparison Compare(OracleAnswer oracle, IReadOnlyList<(string Name, IReadOnlyList<AppxUserPackages> Users, TimeSpan Took)> sources, Sid? onlyUser = null)
+    /// <param name="explain">Says, for a package a source missed for a user, where each source would have found it.</param>
+    public static AppxComparison Compare(OracleAnswer oracle, IReadOnlyList<(string Name, IReadOnlyList<AppxUserPackages> Users, TimeSpan Took)> sources, Func<string, string, string> explain, Sid? onlyUser = null)
     {
         var comparison = new AppxComparison();
         var r = comparison._report;
@@ -70,7 +71,7 @@ internal sealed class AppxComparison
             r.AppendLine(CultureInfo.InvariantCulture, $"User {sid}: {oracle.Command} has {expected.Count} installed{(other > 0 ? $" and {other} in another state" : string.Empty)}{(known ? string.Empty : " (it names no package for this user)")}.");
             foreach (var (name, users, _) in sources)
             {
-                comparison.CompareUser(name, sid, users.FirstOrDefault(u => string.Equals(u.User.Value, sid, StringComparison.OrdinalIgnoreCase)), expected, known, oracle.Command);
+                comparison.CompareUser(name, sid, users.FirstOrDefault(u => string.Equals(u.User.Value, sid, StringComparison.OrdinalIgnoreCase)), expected, known, oracle, explain);
             }
         }
 
@@ -82,8 +83,9 @@ internal sealed class AppxComparison
         return comparison;
     }
 
-    private void CompareUser(string source, string sid, AppxUserPackages? read, HashSet<string> expected, bool known, string oracle)
+    private void CompareUser(string source, string sid, AppxUserPackages? read, HashSet<string> expected, bool known, OracleAnswer answer, Func<string, string, string> explain)
     {
+        var oracle = answer.Command;
         if (read is null)
         {
             _report.AppendLine(CultureInfo.InvariantCulture, $"  {source}: does not list this user{(expected.Count > 0 ? $", so it missed all {expected.Count}" : string.Empty)}.");
@@ -122,6 +124,8 @@ internal sealed class AppxComparison
         foreach (var name in missed)
         {
             _report.AppendLine(CultureInfo.InvariantCulture, $"    missed: {name}");
+            _report.AppendLine(CultureInfo.InvariantCulture, $"      {oracle}: {(answer.Facts.TryGetValue(name, out var facts) ? facts : "no facts")}");
+            _report.AppendLine(CultureInfo.InvariantCulture, $"      {explain(sid, name)}");
             _differences.Add((source, $"{source} missed {name} for {sid}"));
         }
 

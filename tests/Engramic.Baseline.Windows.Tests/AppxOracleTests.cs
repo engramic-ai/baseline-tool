@@ -29,7 +29,7 @@ public sealed class AppxOracleTests
         Assert.SkipWhen(Elevation.IsSystem, "As SYSTEM, the comparison of every user covers this.");
         var oracle = AppxOracle.ForCurrentUser(Elevation.CurrentUser);
 
-        var comparison = AppxComparison.Compare(oracle, ReadBoth(), Elevation.CurrentUser);
+        var comparison = AppxComparison.Compare(oracle, ReadBoth(), Explain, Elevation.CurrentUser);
 
         Report(comparison);
         Assert.True(comparison.DifferencesOf(Registry).Count == 0, comparison.Report);
@@ -57,7 +57,7 @@ public sealed class AppxOracleTests
     {
         var oracle = AppxOracle.ForAllUsers();
 
-        var comparison = AppxComparison.Compare(oracle, ReadBoth());
+        var comparison = AppxComparison.Compare(oracle, ReadBoth(), Explain);
 
         Report(comparison);
         Assert.True(comparison.DifferencesOf(Registry).Count == 0, comparison.Report);
@@ -74,6 +74,33 @@ public sealed class AppxOracleTests
         var stopwatch = Stopwatch.StartNew();
         var users = source.ReadInstalled();
         return (name, users, stopwatch.Elapsed);
+    }
+
+    /// <summary>
+    /// Where each source would have found a package: in the device's package repository, in the user's, and what the
+    /// package runtime answers when asked about it directly; and whether its folder exists.
+    /// </summary>
+    private static string Explain(string sid, string fullName)
+    {
+        var registry = new WindowsRegistry();
+        string Listed(RegistryHive hive, string key)
+        {
+            try
+            {
+                var names = registry.GetSubKeyNames(hive, RegistryView.Registry64, key);
+                return names is null ? "no such key" : names.Contains(fullName, StringComparer.OrdinalIgnoreCase) ? "listed" : "not listed";
+            }
+            catch (Exception e) when (e is UnauthorizedAccessException or IOException)
+            {
+                return e.GetType().Name;
+            }
+        }
+
+        var machine = Listed(RegistryHive.LocalMachine, AppxRepository.MachineRepositoryKey);
+        var user = Listed(RegistryHive.Users, sid + AppxRepository.ClassesSuffix + @"\" + AppxRepository.UserRepositoryKey);
+        var answer = new PackageRegistrations().Find(Sid.Parse(sid), fullName);
+        var folder = AppxRepository.ReadInstallLocation(registry, fullName);
+        return $"device repository: {machine}; user's repository: {user}; package runtime asked directly: error {answer.Error}, properties 0x{answer.Properties:X}, folder {(answer.Path.Length > 0 ? answer.Path : "none")}; device repository's folder: {(folder.Length > 0 ? folder : "none")}";
     }
 
     private static void Report(AppxComparison comparison)

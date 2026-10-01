@@ -561,8 +561,8 @@ Native AOT costs and buys.
 **Proposed decision: keep the four libraries AOT-clean with detection in them, held there by the canary on every
 change, and keep `baseline.exe` and the desktop app JIT with ReadyToRun.** Detection runs under Native AOT with no
 warning and no change to how the libraries are written. An app built on them that wants a small, quick-starting
-exe may publish Native AOT: on the runner the canary started in 55 percent of the time, ran in 42 percent of it,
-peaked at 68 percent of the memory and shipped one 9 MB file instead of a 78 MB folder. The cost is a C++
+exe may publish Native AOT: on the runner the canary started in about half the time, ran in about 40 percent of
+it, peaked at 68 percent of the memory and shipped one 9 MB file instead of a 78 MB folder. The cost is a C++
 linker wherever it is published, and a rebuild for each .NET patch, as for `baseline.exe` today.
 
 **Fallback.** Such an app publishes self-contained JIT with ReadyToRun, as `baseline.exe` does; the libraries need
@@ -583,7 +583,7 @@ machine's WinHTTP proxy, and the service client's `HttpClient` sending to a loop
 |---|---|---|
 | Processes, with owner and elevation from tokens | `WindowsProcessList` | 151 processes; 150 owners, 134 elevated, 148 paths and 147 command lines read; this canary found as itself; 10 ms |
 | Installed programs | `WindowsRegistry.GetSubKeyNames` and `GetValue` | 40 in the 64-bit view and 19 in the 32-bit view of HKLM; 1 loaded user hive, with none; 24 ms |
-| Authenticode | `FileSignatures.Verify` | `cmd.exe` valid in a catalog, signed by Microsoft Windows; `vcruntime140.dll` valid, embedded; the canary itself not signed; 246 ms, most of it the first catalog lookup |
+| Authenticode | `FileSignatures.Verify` | `cmd.exe` valid in a catalog, signed by Microsoft Windows; `vcruntime140.dll` valid, embedded; the canary itself not signed; 133 to 246 ms, most of it the first catalog lookup |
 | File version | `FileVersionInfo`, in the canary | `cmd.exe` read; product code has no version reader (above) |
 
 **CsWin32 and `LibraryImport`.** CsWin32 0.3.335 with `"allowMarshaling": false` generates `DllImport`s that pass
@@ -600,12 +600,12 @@ CA1420. One thing to know: with marshalling off, a `bool` passes as one byte, no
 AOT on the runner, it runs itself and the JIT build that the build step left in `artifacts/bin` five times each,
 one after another, and prints the medians. That JIT build is framework-dependent and carries the feature
 switches `PublishAot` sets in its `runtimeconfig.json`. On the runner (`windows-latest`, Windows Server 2025,
-build 26100), from the "Run the AOT canary" step:
+build 26100), from the "Run the AOT canary" step of two runs:
 
 | Build | Files | Size | Start-up | Run | Wall | Peak working set |
 |---|---|---|---|---|---|---|
-| Native AOT | 1 | 8.99 MB | 24 ms | 166 ms | 201 ms | 31.9 MB |
-| JIT, framework-dependent | 6, and the shared runtime | 0.81 MB | 44 ms | 398 ms | 476 ms | 46.6 MB |
+| Native AOT | 1 | 8.99 MB | 21 to 24 ms | 149 to 166 ms | 183 to 201 ms | 31.9 MB |
+| JIT, framework-dependent | 6, and the shared runtime | 0.81 MB | 42 to 44 ms | 377 to 398 ms | 453 to 476 ms | 46.6 MB |
 
 On the maintainer's laptop (build 26200), JIT builds only, since it has no C++ linker; each the median of 7 runs,
 in two passes, while other work ran, so the ranges are wide:
@@ -616,7 +616,7 @@ in two passes, while other work ran, so the ranges are wide:
 | JIT, self-contained | 193 | 77.4 MB | 53 ms | 211 to 216 ms | 296 to 304 ms | 46.8 MB |
 | ReadyToRun, self-contained, as `baseline.exe` is published | 193 | 78.1 MB | 50 to 82 ms | 171 to 273 ms | 252 to 405 ms | 45.5 MB |
 
-Publishing the canary with Native AOT took 36 seconds on the runner, 22 of them in the AOT compiler.
+Publishing the canary with Native AOT took 36 seconds on the runner, about 20 of them in the AOT compiler.
 
 **What Native AOT costs an app built on these libraries:**
 - A C++ linker (the Visual Studio build tools) wherever it is published. CI has one; the machine that signs

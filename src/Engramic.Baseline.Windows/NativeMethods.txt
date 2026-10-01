@@ -53,3 +53,35 @@ WINHTTP_ACCESS_TYPE
 RegisterEventSource
 ReportEvent
 DeregisterEventSource
+
+// Running processes (WindowsProcessList): the process table from a snapshot, then each process's image path, command
+// line, session and access token, read with query-only access. Nothing is started and nothing is changed.
+CreateToolhelp32Snapshot
+Process32FirstW
+Process32NextW
+OpenProcess
+QueryFullProcessImageName
+ProcessIdToSessionId
+NtQueryInformationProcess
+OpenProcessToken
+GetTokenInformation
+TOKEN_USER
+TOKEN_ELEVATION
+
+// File signatures (FileSignatures): Authenticode, embedded in the file or in a catalog of Windows, read
+// through a handle open on the file.
+WinVerifyTrust
+WINTRUST_DATA
+WINTRUST_FILE_INFO
+WINTRUST_CATALOG_INFO
+WINTRUST_ACTION_GENERIC_VERIFY_V2
+WTHelperProvDataFromStateData
+WTHelperGetProvSignerFromChain
+CryptCATAdminAcquireContext2
+CryptCATAdminCalcHashFromFileHandle2
+CryptCATAdminEnumCatalogFromHash
+CryptCATCatalogInfoFromContext
+CryptCATAdminReleaseCatalogContext
+CryptCATAdminReleaseContext
+CATALOG_INFO
+BCRYPT_SHA256_ALGORITHM

@@ -9,6 +9,7 @@ Engramic.Baseline.Windows.AuditMutex
 Engramic.Baseline.Windows.AuditMutex.Dispose() -> void
 Engramic.Baseline.Windows.ConsoleSession
 Engramic.Baseline.Windows.CurrentProcess
+Engramic.Baseline.Windows.FileSignatures
 Engramic.Baseline.Windows.ReadOnlySecureStore
 Engramic.Baseline.Windows.ReadOnlySecureStore.Dispose() -> void
 Engramic.Baseline.Windows.ReadOnlySecureStore.ReadFile(Engramic.Baseline.Platform.DataFolder folder, string! name, int maxLength) -> byte[]?
@@ -61,7 +62,11 @@ Engramic.Baseline.Windows.WindowsEventLog
 Engramic.Baseline.Windows.WindowsEventLog.Source.get -> string!
 Engramic.Baseline.Windows.WindowsEventLog.WindowsEventLog(string! source) -> void
 Engramic.Baseline.Windows.WindowsEventLog.Write(int eventId, Engramic.Baseline.Platform.EventLogLevel level, string! message) -> bool
+Engramic.Baseline.Windows.WindowsProcessList
+Engramic.Baseline.Windows.WindowsProcessList.Read() -> System.Collections.Generic.IReadOnlyList<Engramic.Baseline.Platform.RunningProcess!>!
+Engramic.Baseline.Windows.WindowsProcessList.WindowsProcessList() -> void
 Engramic.Baseline.Windows.WindowsRegistry
+Engramic.Baseline.Windows.WindowsRegistry.GetSubKeyNames(Engramic.Baseline.Platform.RegistryHive hive, Engramic.Baseline.Platform.RegistryView view, string! keyPath) -> System.Collections.Generic.IReadOnlyList<string!>?
 Engramic.Baseline.Windows.WindowsRegistry.GetValue(Engramic.Baseline.Platform.RegistryHive hive, Engramic.Baseline.Platform.RegistryView view, string! keyPath, string! valueName) -> Engramic.Baseline.Platform.RegistryValue?
 Engramic.Baseline.Windows.WindowsRegistry.WindowsRegistry() -> void
 Engramic.Baseline.Windows.WinHttpProxy
@@ -77,6 +82,7 @@ override Engramic.Baseline.Windows.ServiceClientOptions.ToString() -> string!
 static Engramic.Baseline.Windows.AuditMutex.TryAcquire(string! name, System.TimeSpan timeout) -> Engramic.Baseline.Windows.AuditMutex?
 static Engramic.Baseline.Windows.ConsoleSession.GetActiveSessionId() -> uint?
 static Engramic.Baseline.Windows.CurrentProcess.ReadAccount() -> Engramic.Baseline.Platform.ProcessAccount!
+static Engramic.Baseline.Windows.FileSignatures.Verify(Microsoft.Win32.SafeHandles.SafeFileHandle! file, string! path) -> Engramic.Baseline.Platform.FileSignature!
 static Engramic.Baseline.Windows.SecureStore.Initialize(Engramic.Baseline.Windows.SecureStoreOptions! options) -> Engramic.Baseline.Windows.SecureStore!
 static Engramic.Baseline.Windows.SecureStore.Open(Engramic.Baseline.Windows.SecureStoreOptions! options) -> Engramic.Baseline.Windows.SecureStore!
 static Engramic.Baseline.Windows.SecureStore.OpenReadOnly(Engramic.Baseline.Windows.SecureStoreOptions! options) -> Engramic.Baseline.Windows.ReadOnlySecureStore?

@@ -1,8 +1,8 @@
 name: .NET
 
 # The .NET solution beside the PowerShell module: build, tests on Windows and Linux, the published
-# baseline.exe, the AOT canary, the status.json contract, parity with the module, the tests that hold only as
-# SYSTEM, and the hygiene checks.
+# baseline.exe, the AOT canary, the status.json contract, parity with the module, the attack suite as an
+# administrator and as SYSTEM, the tests that hold only as SYSTEM, and the hygiene checks.
 # docs/DOTNET.md explains each job. The PowerShell module's own jobs are in ci.yml.
 
 on:
@@ -285,6 +285,78 @@ jobs:
           path: |
             ${{ runner.temp }}/parity
             ${{ runner.temp }}/parity-system
+          if-no-files-found: ignore
+          retention-days: 7
+
+  security:
+    name: Security
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # As in the build job: the exact SDK in global.json, alone in its folder.
+      - name: Read the SDK version from global.json
+        id: sdk
+        run: |
+          $version = (Get-Content -LiteralPath global.json -Raw | ConvertFrom-Json).sdk.version
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Install that SDK
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        env:
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
+        with:
+          dotnet-version: ${{ steps.sdk.outputs.version }}
+
+      - name: Check that the build uses that SDK
+        env:
+          SDK_VERSION: ${{ steps.sdk.outputs.version }}
+        run: |
+          $actual = dotnet --version
+          if ($actual -ne $env:SDK_VERSION) { throw "dotnet --version is $actual, but global.json names $env:SDK_VERSION" }
+
+      - name: Restore (locked)
+        run: dotnet restore Baseline.slnx --locked-mode
+
+      - name: Build the Windows tests (warnings as errors)
+        run: dotnet build tests/Engramic.Baseline.Windows.Tests/Engramic.Baseline.Windows.Tests.csproj --configuration Release --no-restore -warnaserror
+
+      # The attack suite (the tests with the trait Suite=Security) as the elevated administrator the runner is,
+      # with a throwaway standard user as the attacker, which the script makes and deletes.
+      - name: Attack suite, as an elevated administrator
+        shell: powershell
+        run: |
+          ./tools/ci/Invoke-SecurityTests.ps1 -Dotnet (Get-Command dotnet).Source -ResultsPath (Join-Path $env:RUNNER_TEMP 'security\administrator')
+          if ($LASTEXITCODE -ne 0) { throw "The attack suite as the administrator exited with $LASTEXITCODE." }
+
+      # The same as SYSTEM, through a temporary scheduled task, from a folder only SYSTEM and Administrators can
+      # change: SYSTEM is who runs the scheduled audit and the install.
+      - name: Attack suite, as SYSTEM
+        shell: powershell
+        run: |
+          $shell = Join-Path ([Environment]::GetFolderPath('System')) 'WindowsPowerShell\v1.0\powershell.exe'
+          $work = Join-Path $env:RUNNER_TEMP 'security-system'
+          $arguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Resolve-Path -LiteralPath 'tools/ci/Invoke-SecurityTests.ps1').ProviderPath,
+            '-Dotnet', (Get-Command dotnet).Source, '-ResultsPath', (Join-Path $work 'results'))
+          $run = ./tools/ci/Invoke-AsSystem.ps1 -FilePath $shell -ArgumentList $arguments -WorkPath $work -TimeoutSeconds 1200
+          $run.Output | ForEach-Object { Write-Host $_ }
+          $run.Errors | ForEach-Object { Write-Host "error: $_" }
+          if ($run.ExitCode -ne 0) { throw "The attack suite as SYSTEM exited with $($run.ExitCode)." }
+
+      - name: Keep what the runs wrote
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: security
+          path: |
+            ${{ runner.temp }}/security
+            ${{ runner.temp }}/security-system/results
           if-no-files-found: ignore
           retention-days: 7
 

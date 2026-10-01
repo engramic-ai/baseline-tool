@@ -5,22 +5,28 @@
 // src/BannedApiExemptions.txt allows; docs/DOTNET.md explains.
 WTSGetActiveConsoleSessionId
 
-// What a handle tells about the file or folder it is open on (FileHandles).
+// What a handle tells about the file or folder it is open on, and the names in a folder (FileHandles).
 GetFileInformationByHandleEx
 FILE_ATTRIBUTE_TAG_INFO
 FILE_STANDARD_INFO
+FILE_FULL_DIR_INFO
 GetFinalPathNameByHandle
 GetSecurityInfo
 GetSecurityDescriptorLength
 LocalFree
 GetSystemWindowsDirectory
 
-// SecureStore, the only file allowed the sensitive ones: CreateFile, SetFileInformationByHandle and
-// SHGetKnownFolderPath (src/BannedApiExemptions.txt).
+// SecureStore, the only file allowed the sensitive ones: CreateFile (ProgramData, by path), NtCreateFile
+// (everything below it, one name at a time relative to a held folder's handle), NtSetInformationFile
+// (renames, deletes and attributes through a handle) and SHGetKnownFolderPath (src/BannedApiExemptions.txt).
 CreateFile
-SetFileInformationByHandle
-FILE_RENAME_INFO
-FILE_DISPOSITION_INFO
+NtCreateFile
+NtSetInformationFile
+FILE_RENAME_INFORMATION
+FILE_DISPOSITION_INFORMATION
+FILE_DISPOSITION_INFORMATION_EX
+FILE_BASIC_INFORMATION
+RtlNtStatusToDosError
 FlushFileBuffers
 SHGetKnownFolderPath
 FOLDERID_ProgramData
@@ -42,3 +48,8 @@ WINHTTP_AUTOPROXY_RUN_OUTPROCESS_ONLY
 WINHTTP_AUTO_DETECT_TYPE_DHCP
 WINHTTP_AUTO_DETECT_TYPE_DNS_A
 WINHTTP_ACCESS_TYPE
+
+// The Application event log (WindowsEventLog), as the PowerShell tool writes it.
+RegisterEventSource
+ReportEvent
+DeregisterEventSource

@@ -9,8 +9,9 @@ namespace Engramic.Baseline.Controls;
 /// <remarks>
 /// Built in rather than read from beside the executable, so no code reads a file by path (only the secure
 /// data folder and the profile reader touch files) and the shipped values cannot be changed on disk.
-/// Administrators' overrides, which replace a shipped file whole, come through the secure data folder
-/// and its trust checks, in front of this source.
+/// Administrators' overrides, which replace a shipped file whole, come through the secure data folder and
+/// the config trust gate (<see cref="ConfigTrustGate"/>), in front of this source. Each file built in here has
+/// a schema in <see cref="Model.ConfigFile"/>, which an override of it must meet.
 /// </remarks>
 public static class ShippedConfig
 {

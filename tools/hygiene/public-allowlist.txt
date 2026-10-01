@@ -34,6 +34,7 @@ x
 # Public services the tool and its tests use.
 aka.ms
 baseline.engramic.ai
+codesigning.azure.net
 dot.net
 fonts.googleapis.com
 fonts.gstatic.com

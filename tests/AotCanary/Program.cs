@@ -11,10 +11,12 @@ Expect("Model: source-generated JSON", ModelRoundTrip());
 Expect("Platform", Sid.TryParse("s-1-5-18", out var sid) && sid == Sid.LocalSystem && RegistryValue.FromDWord(7).Number == 7);
 Expect("Engine", CheckIds.IsWellFormed("SU-01") && !CheckIds.IsWellFormed("SU-1") && FindingIds.For("SU-01", "Lifecycle data") == "SU-01:Lifecycle-data");
 Expect("Engine: runner and rollups", await EngineRun());
+Expect("Engine: config trust gate", ConfigTrustGateDecides());
 Expect("Windows", ConsoleSession.GetActiveSessionId() is null or > 0);
 Expect("Windows: registry and account", WindowsReads());
 Expect("Platform: data folder trust", TrustRules());
 Expect("Windows: SecureStore", SecureStoreRefusesAMissingFolder());
+Expect("Windows: SecureStore set-up", SecureStoreSetUpRefusesAMissingFolder());
 Expect("Windows: audit mutex", AuditMutexTurns());
 Expect("Platform: service addresses and proxy rules", await ProxyRules());
 Expect("Windows: WinHTTP proxy", WinHttpReads());
@@ -82,6 +84,19 @@ static async Task<bool> EngineRun()
         && status.Frameworks.CePlus?.TestCases.TC2 == CePlusState.LikelyPass;
 }
 
+static bool ConfigTrustGateDecides()
+{
+    // An override that meets its schema replaces the shipped file; one that names a member twice does not.
+    var shipped = new CanaryConfigFiles("""{ "lastReviewed": "2026-09-16", "reviewWarningDays": 90, "upcomingEndWarningDays": 60 }""");
+    var system = new ProcessAccount(@"NT AUTHORITY\SYSTEM", IsAdministrator: true, IsLocalSystem: true);
+    using var valid = new CanaryStore("""{ "lastReviewed": "2026-01-01", "reviewWarningDays": 30, "upcomingEndWarningDays": 60 }""");
+    using var twice = new CanaryStore("""{ "lastReviewed": "2026-01-01", "reviewWarningDays": 30, "upcomingEndWarningDays": 60, "lastReviewed": "2020-01-01" }""");
+    var loaded = new ConfigTrustGate(shipped, valid, system);
+    var refused = new ConfigTrustGate(shipped, twice, system);
+    return new AuditConfig(loaded).OsLifecycle.LastReviewed == "2026-01-01" && loaded.Overrides.Count == 1
+        && new AuditConfig(refused).OsLifecycle.LastReviewed == "2026-09-16" && refused.Notices.Count == 1;
+}
+
 static bool WindowsReads()
 {
     var build = new WindowsRegistry().GetValue(RegistryHive.LocalMachine, RegistryView.Registry64, @"SOFTWARE\Microsoft\Windows NT\CurrentVersion", "CurrentBuildNumber");
@@ -94,7 +109,8 @@ static bool TrustRules()
     var writable = locked with { Dacl = [.. locked.Dacl!, new AccessEntry(AccessEntryType.Allow, Sid.Users, 0x2)] };
     var folder = new FileFacts { IsDirectory = true };
     return DataFolderTrust.Machine.FindDataFolderProblem("C:\\ProgramData\\EngramicBaseline", folder, locked, isSealed: true) is null
-        && DataFolderTrust.Machine.FindDataFolderProblem("C:\\ProgramData\\EngramicBaseline", folder, writable, isSealed: true) is not null;
+        && DataFolderTrust.Machine.FindDataFolderProblem("C:\\ProgramData\\EngramicBaseline", folder, writable, isSealed: true) is not null
+        && DataFolderLayout.AsideName("EngramicBaseline", "0123456789abcdef0123456789abcdef", "reports") == "EngramicBaseline.untrusted-0123456789abcdef0123456789abcdef-reports";
 }
 
 static bool SecureStoreRefusesAMissingFolder()
@@ -110,6 +126,22 @@ static bool SecureStoreRefusesAMissingFolder()
     catch (SecureStoreException e)
     {
         return machine.ProgramDataPath.EndsWith(":\\ProgramData", StringComparison.OrdinalIgnoreCase) && e.Message.Contains("does not exist", StringComparison.Ordinal);
+    }
+}
+
+static bool SecureStoreSetUpRefusesAMissingFolder()
+{
+    // A ProgramData folder that does not exist, and an event log that keeps nothing: nothing is made or written.
+    var machine = SecureStoreOptions.ForMachine(new WindowsRegistry(), TimeProvider.System);
+    var missing = machine with { ProgramDataPath = Path.Combine(Path.GetTempPath().TrimEnd('\\'), "baseline-canary-" + Guid.NewGuid().ToString("n")), EventLog = new NoEvents() };
+    try
+    {
+        SecureStore.Initialize(missing).Dispose();
+        return false;
+    }
+    catch (SecureStoreException e)
+    {
+        return e.Message.Contains("does not exist", StringComparison.Ordinal) && !Directory.Exists(missing.ProgramDataPath);
     }
 }
 
@@ -185,6 +217,12 @@ internal sealed class CanaryCheck : Check
     }
 }
 
+/// <summary>An event log that keeps nothing.</summary>
+internal sealed class NoEvents : IEventLog
+{
+    public bool Write(int eventId, EventLogLevel level, string message) => true;
+}
+
 /// <summary>No config files.</summary>
 internal sealed class NoConfigFiles : IConfigFiles
 {
@@ -197,4 +235,35 @@ internal sealed class CanaryProxy : ISystemProxy
     public MachineProxy? ReadMachineProxy() => new("proxy.contoso.com:8080", "<local>");
 
     public Task<AutoProxyAnswer> FindAutoProxyAsync(Uri target, Uri? scriptUrl, TimeSpan timeout) => Task.FromResult(AutoProxyAnswer.NotFound("None."));
+}
+
+/// <summary>The shipped os-lifecycle.json, and no other file.</summary>
+internal sealed class CanaryConfigFiles(string lifecycle) : IConfigFiles
+{
+    public byte[]? Read(string name) => name == ConfigFile.OsLifecycleName ? System.Text.Encoding.UTF8.GetBytes(lifecycle) : null;
+}
+
+/// <summary>A data folder in memory whose config folder holds one os-lifecycle.json.</summary>
+internal sealed class CanaryStore(string lifecycle) : ISecureStore
+{
+    public string RootPath => @"C:\ProgramData\EngramicBaseline";
+
+    public IReadOnlyList<string> Notices => [];
+
+    public byte[]? ReadFile(DataFolder folder, string name, int maxLength)
+    {
+        return folder == DataFolder.Config && name == ConfigFile.OsLifecycleName ? System.Text.Encoding.UTF8.GetBytes(lifecycle) : null;
+    }
+
+    public void WriteFile(string name, ReadOnlySpan<byte> content) => throw new NotSupportedException();
+
+    public void WriteFile(DataFolder folder, string name, ReadOnlySpan<byte> content) => throw new NotSupportedException();
+
+    public IScratchFolder CreateScratchFolder() => throw new NotSupportedException();
+
+    public IReadOnlyList<string> DeleteTree(DataFolder folder, string name) => throw new NotSupportedException();
+
+    public void Dispose()
+    {
+    }
 }

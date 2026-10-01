@@ -6,7 +6,9 @@
     The Hygiene job in .github/workflows/dotnet.yml runs this on every push and pull request. It fails when:
       - a tracked text file holds a non-ASCII byte, unless public-allowlist.txt lists the file with a reason;
       - a URL in src/, tests/, tools/ or docs/ names a host that is not on the allowlist;
-      - any tracked file names an engramic-ai/ repository or an engramic.ai name that is not on the allowlist.
+      - any tracked file names an engramic-ai/ repository or an engramic.ai name that is not on the allowlist;
+      - an advanced .ps1 script reads $PSScriptRoot or $PSCommandPath in a parameter's default, which Windows
+        PowerShell 5.1 leaves empty when the script is run with -File, as Intune and the SYSTEM runs do.
     The allowlist, public-allowlist.txt beside this script, explains why it lists allowed names rather
     than private ones. The file list comes from git, so run it in a clone that git can read.
 .PARAMETER Root
@@ -128,6 +130,21 @@ foreach ($file in $files) {
             [void]$problems.Add("$($file.Path): 'engramic-ai/$repository' is not on the public allowlist")
         }
     }
+    if ($file.Path.EndsWith('.ps1', [StringComparison]::OrdinalIgnoreCase)) {
+        $tokens = $null
+        $parseErrors = $null
+        $paramBlock = [System.Management.Automation.Language.Parser]::ParseFile($full, [ref]$tokens, [ref]$parseErrors).ParamBlock
+        if ($paramBlock) {
+            $attributes = @($paramBlock.Attributes) + @($paramBlock.Parameters | ForEach-Object { $_.Attributes })
+            $advanced = @($attributes | Where-Object { $_ -is [System.Management.Automation.Language.AttributeAst] -and $_.TypeName.Name -in 'CmdletBinding', 'Parameter' }).Count -gt 0
+            foreach ($parameter in $paramBlock.Parameters) {
+                if ($advanced -and $parameter.DefaultValue -and $parameter.DefaultValue.Extent.Text -match '\$(PSScriptRoot|PSCommandPath)\b') {
+                    [void]$problems.Add(('{0}({1}): the default of ${2} reads the script''s own path, which Windows PowerShell 5.1 leaves empty in an advanced script run with -File; set it in the body' -f $file.Path, $parameter.Extent.StartLineNumber, $parameter.Name.VariablePath.UserPath))
+                }
+            }
+        }
+    }
+
     foreach ($match in $domainPattern.Matches($text)) {
         $name = $match.Value.ToLowerInvariant()
         if ($allowlist['engramic'] -notcontains $name) {
@@ -145,7 +162,7 @@ foreach ($path in $allowlist['non-ascii'].Keys) {
 Write-Host "Checked $($files.Count) tracked text files."
 if ($problems.Count) {
     $problems | Sort-Object -Unique | ForEach-Object { Write-Host "  $_" }
-    Write-Host "$($problems.Count) problem(s). See tools/hygiene/public-allowlist.txt."
+    Write-Host "$($problems.Count) problem(s). Names and hosts are allowed in tools/hygiene/public-allowlist.txt."
     exit 1
 }
-Write-Host 'No non-ASCII text, and every URL host and engramic-ai name is on the public allowlist.'
+Write-Host 'No non-ASCII text, every URL host and engramic-ai name is on the public allowlist, and no advanced script''s parameter default reads its own path.'

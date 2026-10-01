@@ -1,4 +1,5 @@
 #nullable enable
+const Engramic.Baseline.Model.ConfigFile.MaxDepth = 64 -> int
 const Engramic.Baseline.Model.ConfigFile.NetworkName = "network.json" -> string!
 const Engramic.Baseline.Model.ConfigFile.OsLifecycleName = "os-lifecycle.json" -> string!
 const Engramic.Baseline.Model.FindingsFile.FileName = "findings.json" -> string!
@@ -375,6 +376,8 @@ static Engramic.Baseline.Model.CePlusRollup.operator !=(Engramic.Baseline.Model.
 static Engramic.Baseline.Model.CePlusRollup.operator ==(Engramic.Baseline.Model.CePlusRollup? left, Engramic.Baseline.Model.CePlusRollup? right) -> bool
 static Engramic.Baseline.Model.CePlusTestCaseStates.operator !=(Engramic.Baseline.Model.CePlusTestCaseStates? left, Engramic.Baseline.Model.CePlusTestCaseStates? right) -> bool
 static Engramic.Baseline.Model.CePlusTestCaseStates.operator ==(Engramic.Baseline.Model.CePlusTestCaseStates? left, Engramic.Baseline.Model.CePlusTestCaseStates? right) -> bool
+static Engramic.Baseline.Model.ConfigFile.FindProblem(string! name, string! path, System.ReadOnlySpan<byte> utf8) -> string?
+static Engramic.Baseline.Model.ConfigFile.Names.get -> System.Collections.Generic.IReadOnlyList<string!>!
 static Engramic.Baseline.Model.ConfigFile.ReadNetwork(System.ReadOnlySpan<byte> utf8) -> Engramic.Baseline.Model.NetworkConfig!
 static Engramic.Baseline.Model.ConfigFile.ReadOsLifecycle(System.ReadOnlySpan<byte> utf8) -> Engramic.Baseline.Model.OsLifecycle!
 static Engramic.Baseline.Model.Finding.operator !=(Engramic.Baseline.Model.Finding? left, Engramic.Baseline.Model.Finding? right) -> bool

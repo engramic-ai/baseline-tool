@@ -7,7 +7,9 @@ namespace Engramic.Baseline.Testing.Windows;
 /// <summary>The Win32 calls the fixtures need to make links and read handles, and to open a handle in a test.</summary>
 public static unsafe partial class Native
 {
+    public const uint FileListDirectory = 0x0000_0001;
     public const uint FileReadAttributes = 0x0000_0080;
+    public const uint Synchronize = 0x0010_0000;
     public const uint FileWriteData = 0x0000_0002;
     public const uint FileWriteAttributes = 0x0000_0100;
     public const uint ShareAll = 0x0000_0007;
@@ -28,6 +30,48 @@ public static unsafe partial class Native
         }
 
         return handle;
+    }
+
+    /// <summary>Opens a folder or file as itself, sharing only what <paramref name="share"/> says, as a holder of it would.</summary>
+    public static SafeFileHandle OpenWithShare(string path, uint access, uint share)
+    {
+        var handle = CreateFile(path, access, share, IntPtr.Zero, OpenExisting, BackupSemantics | OpenReparsePoint, IntPtr.Zero);
+        if (handle.IsInvalid)
+        {
+            var error = Marshal.GetLastPInvokeError();
+            handle.Dispose();
+            throw new Win32Exception(error, $"Could not open {path}");
+        }
+
+        return handle;
+    }
+
+    /// <summary>
+    /// Tries to open a folder or file as itself, sharing only what <paramref name="share"/> says, and closes it
+    /// again: whether another holder's sharing lets such an open through.
+    /// </summary>
+    /// <returns>0 when it opened, otherwise the Win32 error.</returns>
+    public static int TryOpen(string path, uint access, uint share)
+    {
+        using var handle = CreateFile(path, access, share, IntPtr.Zero, OpenExisting, BackupSemantics | OpenReparsePoint, IntPtr.Zero);
+        return handle.IsInvalid ? Marshal.GetLastPInvokeError() : 0;
+    }
+
+    /// <summary>
+    /// Replaces the access list of the item a handle is open on, through the handle, as a holder of a handle
+    /// opened with WRITE_DAC can whatever the item's access list says now.
+    /// </summary>
+    /// <returns>0 when it was set, otherwise the Win32 error.</returns>
+    public static int SetDacl(SafeFileHandle handle, string daclSddl)
+    {
+        var descriptor = new System.Security.AccessControl.RawSecurityDescriptor(daclSddl);
+        var acl = new byte[descriptor.DiscretionaryAcl!.BinaryLength];
+        descriptor.DiscretionaryAcl.GetBinaryForm(acl, 0);
+        fixed (byte* dacl = acl)
+        {
+            // SE_FILE_OBJECT, DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION.
+            return (int)SetSecurityInfo(handle, 1, 0x0000_0004 | 0x8000_0000, null, null, dacl, null);
+        }
     }
 
     public static void SetReparsePoint(SafeFileHandle handle, ReadOnlySpan<byte> buffer)
@@ -78,6 +122,9 @@ public static unsafe partial class Native
     [LibraryImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool DeviceIoControl(SafeFileHandle device, uint code, byte* input, uint inputLength, void* output, uint outputLength, uint* returned, void* overlapped);
+
+    [LibraryImport("advapi32.dll")]
+    private static partial uint SetSecurityInfo(SafeFileHandle handle, int objectType, uint securityInformation, void* owner, void* group, void* dacl, void* sacl);
 
     [LibraryImport("kernel32.dll", EntryPoint = "GetFinalPathNameByHandleW", SetLastError = true)]
     private static partial uint GetFinalPathNameByHandle(SafeFileHandle file, char* path, uint length, uint flags);

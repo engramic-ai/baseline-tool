@@ -13,7 +13,7 @@ This note covers the layout, the rules the build enforces, and how to build and 
 | `Directory.Build.props` | Settings for every project, including the one version of the product. |
 | `Directory.Packages.props` | The version of every package, set once. |
 | `src/Engramic.Baseline.Model` | Contracts: the status files, findings, changesets and config, and how they are written. |
-| `src/Engramic.Baseline.Platform` | The interfaces and records of the primitives (registry, files, processes, tokens, HTTP and so on), the trust rules of the data folder, and the rules that choose a service request's proxy. |
+| `src/Engramic.Baseline.Platform` | The interfaces and records of the primitives (registry, files, the event log, processes, tokens, HTTP and so on), the layout and trust rules of the data folder, and the rules that choose a service request's proxy. |
 | `src/Engramic.Baseline.Engine` | The check and fix contracts, the runner, the framework rollups, changesets and undo. |
 | `src/Engramic.Baseline.Controls` | The checks, the fixes, the readers that interpret what the primitives return, and the shipped config. |
 | `src/Engramic.Baseline.Windows` | The Windows primitives, calling Win32 through code that CsWin32 generates from `NativeMethods.txt`, including SecureStore, the audit mutex and the service client. |
@@ -22,12 +22,12 @@ This note covers the layout, the rules the build enforces, and how to build and 
 | `tests/Engramic.Baseline.Contracts.Tests` | The status.json contract: golden files of its bytes, and the Intune scripts run on it (below). |
 | `tests/Engramic.Baseline.Invariants.Tests` | Tests of the repository's own rules, described below. |
 | `tests/Engramic.Baseline.Testing` | Fakes and recorded responses that the tests share. |
-| `tests/Engramic.Baseline.Testing.Windows` | Windows fixtures: folders under the temp folder with the security descriptors a test gives, junctions, hard links and other reparse points, and mutexes of the tests' own. |
+| `tests/Engramic.Baseline.Testing.Windows` | Windows fixtures: folders under the temp folder with the security descriptors a test gives, junctions, hard links and other reparse points, mutexes of the tests' own, and the standard user who plays the attacker in the attack suite. |
 | `tests/AotCanary` | Compiles the AOT-clean libraries with Native AOT and calls into each one. |
 | `tools/parity` | Compares the ported checks with the PowerShell module on a device (below). |
 | `tests/parity/divergences.json` | The ledger of accepted differences between the module and `baseline.exe`, with the reason and scope of each. |
 | `tools/contracts` | Runs the unchanged Intune scripts on a status.json, and proves the contract end to end as SYSTEM in CI (below). |
-| `tools/ci` | Helpers for CI runners only, such as running a program, or the SYSTEM tests of a test assembly, as SYSTEM through a temporary scheduled task. |
+| `tools/ci` | Helpers for CI runners only: running a program, or the SYSTEM tests of a test assembly, as SYSTEM through a temporary scheduled task, and running the attack suite with a throwaway standard user as the attacker. |
 | `tools/Release.psm1` | What the release scripts beside it share: which PE files of a published folder this repository built, and what their signatures say (below). |
 
 Model, Platform, Engine and Controls target `net10.0` and must not depend on Windows, so their tests
@@ -116,7 +116,7 @@ checked by `Engramic.Baseline.Invariants.Tests`:
   function is reviewed by name.
 - A function that opens, creates, copies, moves or deletes a file or folder by path, renames or deletes
   an open file (`SetFileInformationByHandle`, which reads a relative new name against the current
-  directory), uses the temp folder, touches the registry, starts a process, sets a security descriptor,
+  directory, and `NtSetInformationFile`), uses the temp folder, touches the registry, starts a process, sets a security descriptor,
   reads or sets the environment or answers from it (the known-folder API builds ProgramData from
   `%SystemDrive%`), loads a library or creates a COM object is sensitive (the list is in
   `NativeCodeTests`). It may be named only in a file on `src/BannedApiExemptions.txt`, only between the same
@@ -139,9 +139,9 @@ CsWin32 is still 0.x and pinned to an exact version.
 **Config.** The shipped `config/*.json` files are built into `Engramic.Baseline.Controls` (`ShippedConfig`)
 from the repository's config folder, which the PowerShell module also reads. Nothing reads them from
 disk, so they cannot be changed beside the executable, and no file API is needed for them. A check that
-reads another file adds it there as an `EmbeddedResource`. Code reads the files through `IConfigFiles`, the seam
-where administrators' overrides, which replace a shipped file whole, will come in through SecureStore and its trust
-checks, in front of the shipped copy.
+reads another file adds it there as an `EmbeddedResource`, and its schema to `ConfigFile` in the same change.
+Code reads the files through `IConfigFiles`. Administrators' overrides, which replace a shipped file whole,
+come through SecureStore and the config trust gate, in front of the shipped copy (below).
 
 **Text.** Sources are ASCII only (write other characters as escapes, such as `"\u00e9"` in C#),
 user-facing text is British English, and quotes are straight. The Hygiene check below enforces the first.
@@ -183,9 +183,25 @@ final link fails.
 Some tests need an elevated administrator, as CI's Windows runner is: those that make folders owned by
 Administrators, as the installer does, or a symbolic link, or that open the audit mutex as an
 administrator. Run without elevation, they skip and say why. No test touches the real data folder, its
-registry key, a scheduled task or the product's mutex: folders are made under the temp folder with unique
-names and deleted by that exact path, the seal is read from a registry in memory, and mutexes have names
-of the tests' own.
+registry key, a scheduled task, the product's mutex or its event source: folders are made under the temp
+folder with unique names and deleted by that exact path, the seal is read from a registry in memory, notices go
+to an event log in memory, and mutexes and the one elevated test that writes a real event have names of the
+tests' own.
+
+**The attack suite** is the tests with the trait `Suite=Security`: what someone can do to the data folder
+before and while SecureStore runs, at every place it keeps: pre-created folders, junctions, symbolic links, hard
+links and other reparse points, deny entries, rename races (staged between two of the store's steps by
+`SecureStoreHooks`), cloud-style placeholders and files stored online only, oversized files and deep trees, in the
+data folder, its kept folders, the scratch and undo folders, and administrators' config overrides. Most run anywhere, with the account running the
+tests standing in for the trusted accounts. Those with the product's rules, folders owned by Administrators,
+need elevation. `SecureStoreAttackerTests` need a real standard user as the attacker, whom a test impersonates:
+the Security job makes one for each run (`tools/ci/Invoke-SecurityTests.ps1`: a local account with a random name
+and password, deleted afterwards) and runs the suite as the elevated administrator and, through a scheduled task,
+as SYSTEM. Anywhere else those tests skip and say why.
+
+```
+dotnet test --project tests/Engramic.Baseline.Windows.Tests -c Release -- --filter-trait Suite=Security
+```
 
 A few tests hold only as SYSTEM and change the machine, putting each change back: the service client's tests
 set the machine's WinHTTP proxy with netsh and add names to the hosts file. They are explicit, so a test run
@@ -236,45 +252,137 @@ SecureStore, which the scheduled audit writes. It has no option to name an outpu
 accepts only the sealed data folder, and a folder named on the command line may be one a standard user
 controls, or once did, which nothing in its state now can rule out.
 
+**Config.** Elevated (an elevated administrator or SYSTEM, the test the config trust gate makes), it reads
+administrators' config overrides from the data folder's `config` folder through the config trust gate, as the
+scheduled audit does, so that an administrator sees the result Intune will report. It opens the data folder with
+`SecureStore.OpenReadOnly` (below), which judges by the same rules but changes nothing: an untrusted data folder or
+`config` folder is refused and left in place, never moved aside, and a missing one is never made. It prints
+`Config override used: <path>` for each override in use, on standard output beside the summary and on standard
+error with `--json`, so that standard output stays the file alone; and `Warning: ...` on standard error for each
+override refused or unreadable, worded as the scheduled audit words it, and once for a data folder or `config`
+folder refused (`Warning: Ignoring the config overrides in the data folder and using the shipped config: <reason>`,
+or `in the config folder`). A refused `config` folder names no override, since nothing in it was opened and it may
+hold none; the scheduled audit would instead move it aside, with the one notice of event 1003. A refusal
+uses the shipped file; an override that cannot be read, such as one a standard user has locked or holds an oplock
+on, makes the checks that need it report Error, as in the scheduled audit. Nothing is written to the event log.
+A data folder or `config` folder that does not exist means no overrides, and no warning.
+
+Not elevated, it reads only the config that ships with the tool, since the data folder is for SYSTEM and
+administrators. `--shipped-config` does the same when elevated: the parity harness passes it, and gives the
+module an empty data folder, so that both read the shipped config whatever the runner's data folder holds.
+
 ```
 baseline.exe audit --id SU-01
 baseline.exe audit --id SU-01 --json status > status.json
+baseline.exe audit --id SU-01 --shipped-config
 ```
 
 ## The data folder: SecureStore
 
 `SecureStore`, in `Engramic.Baseline.Windows`, is the machine data folder, `%ProgramData%\EngramicBaseline`,
-checked through handles and held open while in use. It is the one file on `src/BannedApiExemptions.txt`
-that opens, creates, renames or deletes files, and product code writes files only through it
-(`ISecureStore`; the tests share a fake). This first version checks a data folder that exists and writes
-files in it: it creates nothing, repairs nothing and moves nothing aside.
+and the folders kept in it, checked through handles and held open while in use. It is the one file on
+`src/BannedApiExemptions.txt` that opens, creates, renames or deletes files and folders, and product code
+reaches files only through it (`ISecureStore`, or `IDataFolderReader` for code that only reads; the tests share a
+fake).
 
-**Opening** it:
+| Folder | What it holds | Standard users |
+|---|---|---|
+| The data folder | `status.json` and `last-error.json` | - |
+| `logs` | The scheduled audit's and the install's logs | - |
+| `reports` | A folder for each audit's report | - |
+| `config` | Administrators' config overrides | May read |
+| `cache` | Answers kept between runs, such as the firmware catalog's | - |
+| `undo` | The undo journals of fixes applied elevated or as SYSTEM | - |
+| `scratch` | A folder for each run of a Windows tool that needs files | - |
 
-1. ProgramData comes from the known-folder API, which builds it as `%SystemDrive%\ProgramData` from the
-   process environment: a process started with `SystemDrive` changed is told another folder. So the
-   answer must be `ProgramData` on the drive Windows is installed on (`GetSystemWindowsDirectoryW`,
-   which comes from the kernel), or SecureStore refuses. A ProgramData folder moved elsewhere is not
-   supported.
-2. ProgramData is opened by path with `FILE_FLAG_OPEN_REPARSE_POINT`, so a link is opened as itself and
-   seen, and `GetFinalPathNameByHandleW` must give back the path that was opened, so no folder on the
-   way is a link. It must be a folder, not a reparse point, owned by SYSTEM, Administrators or
-   TrustedInstaller. Its access list is not judged: standard users may create folders in it, by design.
-3. The data folder is opened in it the same way, must pass the trust rules below, and must carry the
-   install's seal: the text value `DataRootSealed` under `HKLM\SOFTWARE\EngramicBaseline.DataRoot`
-   (64-bit view), which the installer writes when it makes the folder locked. A folder that looks locked
-   but was never sealed is refused: a handle a user opened while they owned a folder, or could change its
-   permissions, keeps that access after any later lock, and nothing in the folder's state shows that
-   never happened.
-4. Both handles are held until the store is disposed, without `FILE_SHARE_DELETE` and with the right to
-   list, which the sharing check counts (it ignores a handle that may only read attributes or
-   permissions), so neither folder can be renamed, replaced or deleted while held, and their paths keep
-   naming the folders that were checked.
+Each is born locked, as the installer's `New-CEDataDirectorySecurity` makes them: owned by Administrators, with
+a protected access list granting SYSTEM and Administrators full control, `O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)`,
+and Users read and execute on `config`. The PowerShell tool's `packs` folder is not made, since code packs are
+not part of this tool; one an older install left is left alone.
 
-Whether to open each folder relative to its parent's handle (`NtCreateFile` with `RootDirectory`)
-instead is left to a later spike. This way never follows a link either: every open names the item
-itself with `FILE_FLAG_OPEN_REPARSE_POINT`, inside folders already held, and each is confirmed by its
-final path.
+**Three ways in.**
+
+- `SecureStore.Open` is for everything that uses the data folder, such as the scheduled audit: the data folder
+  must exist, carry the install's seal and be trusted, or it is refused; it is never created or moved. A folder
+  kept in it is checked the first time it is used, and made then if it is missing.
+- `SecureStore.OpenReadOnly` is for a run that promises to change nothing, such as an elevated `baseline.exe audit`
+  reading administrators' config overrides. It checks the data folder exactly as `Open` does, through its handle,
+  and gives a `ReadOnlySecureStore`, or nothing when there is no data folder. That store can only read (`RootPath`
+  and `ReadFile`): it is not an `ISecureStore`, so no cast reaches a writer, and the SecureStore it reads through is
+  out of reach. A folder kept in the data folder is opened as itself and judged by the same rules the first time a
+  file in it is read, then held; one that fails, or that this account may not open to judge, is refused with a
+  `SecureStoreException` that says why (`IsFolderRefused`, since nothing in it was opened) and left as it is, never
+  moved aside or deleted, and a missing one reads as nothing and is not made. So it creates, moves, deletes and
+  writes nothing, and never writes event 1003. A separate type, rather than a flag on SecureStore that every writer
+  would have to check, makes the read-only promise something the compiler keeps for the store's own callers. The one
+  place the product chooses which store an audit opens, `AuditSettings.ForThisDevice`, opens it through a function
+  declared to give a `ReadOnlySecureStore`, so `SecureStore.Open` cannot take its place without that type changing,
+  and `AuditCommandTests` check the type.
+- `SecureStore.Initialize` is for the install and SYSTEM, with the audit mutex held as the installer holds it: it
+  makes the data folder and every folder kept in it. An existing data folder is kept only when the seal exists
+  and it passes the trust rules through its handle; anything else there is moved aside (below) and a fresh one
+  made. A folder it makes is not sealed: the install records the seal afterwards, as the installer does.
+
+The seal is the text value `DataRootSealed` under `HKLM\SOFTWARE\EngramicBaseline.DataRoot` (64-bit view), which
+the installer writes when it makes the folder locked. A folder that looks locked but was never sealed is not
+trusted: a handle a user opened while they owned a folder, or could change its permissions, keeps that access
+after any later lock, and nothing in the folder's state shows that never happened.
+
+**ProgramData** comes from the known-folder API, which builds it as `%SystemDrive%\ProgramData` from the process
+environment: a process started with `SystemDrive` changed is told another folder. So the answer must be
+`ProgramData` on the drive Windows is installed on (`GetSystemWindowsDirectoryW`, which comes from the kernel), or
+SecureStore refuses. A ProgramData folder moved elsewhere is not supported. It is the one folder opened by its
+path: with `FILE_FLAG_OPEN_REPARSE_POINT`, so a link at its name is opened as itself and seen, and
+`GetFinalPathNameByHandleW` must give back the path that was opened, so no folder on the way is a link. It must be
+a folder, not a reparse point, owned by SYSTEM, Administrators or TrustedInstaller. Its access list is not judged:
+standard users may create folders in it, by design.
+
+It is held with `FILE_READ_ATTRIBUTES`, `READ_CONTROL` and `SYNCHRONIZE` alone: enough to read its attributes, owner
+and final path, and all that opening or creating the data folder relative to it, or renaming an item into it, needs
+of its handle. Standard users may write to ProgramData, so Windows honours their refusal to share it: one who opens
+it to list it, sharing nothing, stops every later open that would read, write or delete it until they let go. A
+handle with none of those rights is left out of sharing checks, so they cannot stop the store opening it. Such a
+handle does not stop ProgramData being renamed; the data folder held in it does, since Windows refuses to rename a
+folder while anything in it is open, and each held folder's final path is checked. Renaming ProgramData needs an
+administrator in any case.
+
+**Everything below it by handle.** Every other item is opened with `NtCreateFile`, by one plain name, relative to
+the handle of the folder it is in (`RootDirectory`), and with `FILE_OPEN_REPARSE_POINT`: no path is parsed, so no
+link on the way can redirect it, a link at the name is opened as the link, and the file system itself refuses
+`..`. Folders are held without `FILE_SHARE_DELETE` and with the right to list, which the sharing check counts (it
+ignores a handle that may only read attributes or permissions), so none can be renamed, replaced or deleted while
+held, and the paths the store gives, such as a scratch folder's for a tool's command line, keep naming the folders
+that were checked. Each held folder's final path is checked too. Spike 1, below, records why.
+
+Standard users may read `config`, and so may hold it open to list it without sharing. Windows ignores a refusal to
+share reading from someone who may not write to what they hold, so that does not stop the store opening `config`.
+That was seen on build 26200; the Security suite checks it on each build it runs on.
+
+**Born locked.** A folder is made by `NtCreateFile` with `FILE_CREATE` and its security descriptor in the same
+call, relative to its parent's handle, and the handle that call returns is the one held: there is no moment when
+it exists unlocked or unheld. Anything already at the name, a junction or a file included, makes the create fail;
+it is someone else's, to be judged, never adopted.
+
+**Moving aside.** An item where the store keeps a folder that fails the trust rules is renamed through its own
+handle, out of the data folder (`NtSetInformationFile`, `FileRenameInformation` with `RootDirectory` the held
+ProgramData), to `EngramicBaseline.untrusted-<id>` for the data folder itself and
+`EngramicBaseline.untrusted-<id>-<name>` for a folder in it, where `<id>` is 32 random hexadecimal digits: the names
+the module's `Get-CEDataAsidePath` and the installer's `Get-CEAsidePath` give. A name already taken is never
+replaced. A link is deleted as a link instead. Each is a notice (`Notices`) and Application event 1003 under the
+`EngramicBaseline` source, worded as the module words it and naming where the item went. The module always says it
+"made a fresh, locked one in its place"; the store says so only once it has, and otherwise that nothing was made in
+its place, as when a read moves aside the folder it was to read from. Nothing untrusted is listed, re-owned or
+repaired: a handle its maker kept still works, which is why a fresh folder is made instead.
+
+- An item whose access list denies SYSTEM and Administrators everything is still moved: `DELETE` comes from the
+  parent's `FILE_DELETE_CHILD`, and `FILE_READ_ATTRIBUTES` from its `FILE_LIST_DIRECTORY`, whatever the item's own
+  list says, so it is opened with those two alone, and judged as unreadable.
+- Windows refuses to rename a folder while any file in it is open, so whoever made an untrusted folder can stop it
+  being moved by holding a file in it open. The store tries six times over about three seconds, by its clock, then
+  fails with a message and makes nothing in its place. That stops the set-up, and nothing untrusted is used.
+- A rename opens the folder it renames into, to add the name, so a standard user who holds ProgramData open without
+  sharing it stops a move aside the same way, and the message names ProgramData. That too stops the set-up, and
+  nothing untrusted is used.
 
 **Trust rules** (`DataFolderTrust` in Platform, as the module's `Get-CEDataPathProblem` and the Intune
 scripts judge): an item is trusted when it is not a reparse point and not stored online only; is owned by
@@ -282,31 +390,224 @@ SYSTEM, Administrators or TrustedInstaller; has an access list; gives no other a
 `FILE_APPEND_DATA`, `FILE_WRITE_EA`, `FILE_DELETE_CHILD`, `FILE_WRITE_ATTRIBUTES`, `DELETE`, `WRITE_DAC`,
 `WRITE_OWNER`, `GENERIC_WRITE` or `GENERIC_ALL` in any entry, inherited and inherit-only ones included;
 and denies a trusted account nothing. Rights to read are fine for anyone, and so is CREATOR OWNER. Unlike
-the module, whose `Get-Acl` drops entries it does not recognise, an entry of an unknown kind fails.
+the module, whose `Get-Acl` drops entries it does not recognise, an entry of an unknown kind fails. The data
+folder also needs the seal; a folder kept in it does not. A file the store reads must also be an ordinary file
+with one name, no longer than its caller allows.
 
 **Writing** a file replaces it atomically, so a reader sees the old file or the new one:
 
 1. Whatever is at the target's name is opened as itself: it must be nothing, or an ordinary file with one
    name that is not read-only. A link, a folder or a file with other names (hard links) is refused and
    left as it is.
-2. A new file, `<name>.<32 random hex digits>.tmp` as the module names its own, is created with
-   `CREATE_NEW`, no sharing and `FILE_FLAG_OPEN_REPARSE_POINT` (a link already at that name is a
-   collision, never followed), owned by Administrators, which SYSTEM and an elevated administrator may
-   name, and taking the folder's access list. Its final path, its facts and its security are checked
-   through its handle.
-3. It is written, flushed and renamed over the target through its handle (`FILE_RENAME_INFO` with
-   replace). The rename replaces the target's name and never writes into or through it: a hard link or
-   symbolic link swapped in after step 1 is replaced as a name, and a junction or folder makes the
-   rename fail. The rename reads a relative name against the current directory and refuses
-   `RootDirectory`, so it is given the target's full path, which the held folders keep inside the data
-   folder, and the file's final path is checked afterwards.
+2. A new file, `<name>.<32 random hex digits>.tmp` as the module names its own, is created with `FILE_CREATE`,
+   no sharing and `FILE_OPEN_REPARSE_POINT` (a link already at that name is a collision, never followed), owned
+   by Administrators, which SYSTEM and an elevated administrator may name, and taking the folder's access list.
+   Its final path, its facts and its security are checked through its handle.
+3. It is written, flushed and renamed over the target through its handle, relative to the folder's handle
+   (`FileRenameInformation` with replace). The rename replaces the target's name and never writes into or
+   through it: a hard link or symbolic link swapped in after step 1 is replaced as a name, and a junction or
+   folder makes the rename fail. The file's final path is checked afterwards.
 4. While another process, such as a reader or an antivirus scan, has the target open, the rename fails;
    it is tried six times over about three seconds, by the store's clock. A write that fails deletes its
    new file through its handle.
 
-Tests give the ProgramData path, the seal's location and the clock (`SecureStoreOptions`). Still to come:
-creating the data folder and its subfolders locked, moving an untrusted one aside, scratch and undo
-folders, reading administrators' config overrides, and the attack suite run as SYSTEM.
+**Reading** a file (`ReadFile`), such as an administrator's config override or a cached answer: it is opened
+relative to its folder's handle, as itself, and shared with readers alone, so it cannot change while it is read.
+It is read only when the trust rules pass for it and it is no longer than the length the caller gives, at most
+64 MiB; a longer file is refused, never cut short. A missing file, or a missing folder, reads as nothing, and so
+does an untrusted folder, once it has been moved aside. Through `ReadOnlySecureStore`, an untrusted folder is
+refused instead (`SecureStoreException.IsFolderRefused`), and stays where it is.
+
+A file that breaks a rule, or whose access list keeps this account out, is refused. One that cannot be opened or
+read at the time is not judged at all, and the `SecureStoreException` says so (`IsUnavailable`): the file or its
+folder held open by another process without sharing, part of the file locked, or a device error. Anyone who may
+read the file can lock part of it, and standard users may read the `config` folder. Holding the file or its folder
+open without sharing stops the read only when the holder may write to what they hold: Windows ignores a refusal to
+share reading from a holder who may only read it. Nor does the store wait on an oplock another process holds on the
+file or a folder it judges: those opens use `FILE_COMPLETE_IF_OPLOCKED`, so an open that would wait for the holder
+to acknowledge the break comes back at once and is tried again, like one refused for sharing, six times over about
+three seconds. A holder who never acknowledges would otherwise hold the read, and the lock the config trust gate
+holds while it reads, for as long as they liked.
+
+**Scratch folders** (`CreateScratchFolder`) hold the files a Windows tool reads and writes, such as `secedit`'s
+INF and database: each is born locked under a random name in `scratch`, where the module's `New-CEScratchFolder`
+makes its own, held while in use, and deleted with everything in it when disposed. Nothing elevated writes to or
+reads back from the temp folder, which for SYSTEM is shared with other accounts.
+
+**Deleting a tree** (`DeleteTree`, and a scratch folder's disposal): each item is opened relative to its folder's
+handle and as itself, and a link is deleted as a link. Each folder is checked through its handle just before it is
+listed, and listed through that handle (`GetFileInformationByHandleEx`), so what is listed is what was checked; a
+folder that fails, one this account cannot read, a quarantine (`*.untrusted-*`) and anything more than 64 folders
+deep are left in place, unlisted, and named in what the delete returns. Paths are never built, so a tree deeper
+than Windows allows a path is deleted all the same. Where Windows can (version 1709 and later), each item goes at
+once, with POSIX semantics, and a read-only file goes without its attribute being changed (1809 and later), since
+its other names share the attribute; otherwise a read-only file with one name has the attribute cleared first, and
+one with other names is left in place.
+
+**Undo journals** of fixes applied elevated or as SYSTEM go in `undo` (`WriteFile(DataFolder.Undo, ...)`), locked
+like the rest, so that an elevated restore reads a journal no standard user could have changed.
+
+Tests give the ProgramData path, the seal's location, the event log and the clock (`SecureStoreOptions`), and
+the trust rules and the owner of what the store makes, so that they run without elevation in folders of their
+own. The config trust gate (below) reads administrators' overrides through `ReadFile`, of SecureStore in the
+scheduled audit and of `ReadOnlySecureStore` in an elevated `baseline.exe audit`. Still to come:
+`baseline.exe setup`, which will call `Initialize` and write the seal.
+
+### Spike 1: walking paths
+
+The question was how SecureStore should reach items below ProgramData without ever following a link: open each
+relative to its parent's handle (`NtCreateFile` with `RootDirectory`, and `OBJ_DONT_REPARSE` if build 14393 has it),
+or open each by its path without `FILE_SHARE_DELETE`, hold the handles, and confirm each path with
+`GetFinalPathNameByHandleW`.
+
+**Decision: both, each where it is strong.** ProgramData, the anchor, is opened by its path and confirmed by its
+final path, as before, and held with `FILE_READ_ATTRIBUTES`, `READ_CONTROL` and `SYNCHRONIZE` alone, which sharing
+checks ignore, so that a standard user who may write to it cannot keep the store out by holding it open without
+sharing. The relative opens and renames need no access on its handle, and the data folder held in it keeps it from
+being renamed. Everything below it is opened by relative `NtCreateFile`, one plain name at a time, with
+`FILE_OPEN_REPARSE_POINT`, and renamed by `NtSetInformationFile` relative to a held folder; folders stay held
+without `FILE_SHARE_DELETE`, so that the paths given to tools keep naming them, and are confirmed by their final
+paths. `OBJ_DONT_REPARSE` is not used: with one name at a time there is no folder on the way for it to guard, and a
+link at the name must be opened as itself to be deleted or moved aside. Nothing in the design is newer than build
+14393, apart from the faster deletion, which falls back to the older one. The invariant tests hold SecureStore to
+it (`SecureStoreDesignTests`).
+
+**Why.** A relative open parses no path, so there is nothing for a link on the way to redirect. It creates a folder
+and returns its handle in one call, where a path-based create must open the folder again afterwards. It needs no
+long paths for deep trees. And a rename can name its target folder by handle, which the Win32 call refuses.
+The fallback, had the relative opens failed on a build, was the first version's way: path-based opens with
+`FILE_FLAG_OPEN_REPARSE_POINT` inside held folders, each confirmed by its final path.
+
+**Evidence, on build 26200** (Windows 11 25H2, an enablement update of 24H2's build 26100), from a throwaway
+program and from `PathWalkingTests`, which run wherever the tests run:
+
+| What | Result |
+|---|---|
+| One name, relative, with `FILE_OPEN_REPARSE_POINT`, where it is a junction | The junction itself |
+| The same without `FILE_OPEN_REPARSE_POINT` | Where the junction leads |
+| Two names, relative, the first a junction (`junction\file`) | Followed, even with `FILE_OPEN_REPARSE_POINT`, which covers the last name alone: so names are opened one at a time |
+| The same with `OBJ_DONT_REPARSE` | `STATUS_REPARSE_POINT_ENCOUNTERED` (0xC000050B) |
+| `OBJ_DONT_REPARSE` and `FILE_OPEN_REPARSE_POINT`, one name, a junction | The junction itself |
+| `OBJ_DONT_REPARSE` on an absolute `\??\C:\...` path | Opened: the drive letter is an object manager link, not a reparse point |
+| `..\sibling`, relative | `STATUS_OBJECT_NAME_INVALID` (0xC0000033) |
+| `FILE_CREATE` over a junction or a folder | `STATUS_OBJECT_NAME_COLLISION` (0xC0000035) |
+| `FILE_CREATE` with a security descriptor | Born with exactly that owner and protected access list |
+| `FILE_CREATE` naming Administrators as the owner, not elevated | `STATUS_INVALID_OWNER` (0xC000005A) |
+| `FILE_OPEN_NO_RECALL` beside `FILE_DIRECTORY_FILE` | `STATUS_INVALID_PARAMETER`, so it is given for files only |
+| `NtSetInformationFile` rename with a folder's handle as `RootDirectory` | Renamed into that folder |
+| `SetFileInformationByHandle` rename with a `RootDirectory` | `ERROR_INVALID_PARAMETER` (87) |
+| Relative open, `FILE_CREATE` and rename, through a folder's handle that has only `FILE_READ_ATTRIBUTES`, `READ_CONTROL` and `SYNCHRONIZE` | Done: the folder's handle needs no access |
+| A folder held open to list it with no sharing, by an account that may write to it | A later open to list it: `ERROR_SHARING_VIOLATION` (32); one with only `FILE_READ_ATTRIBUTES`, `READ_CONTROL` and `SYNCHRONIZE`: opened; a rename into it: `STATUS_SHARING_VIOLATION` (0xC0000043) |
+| The same, by an account that may only read it | Its refusal to share reading is ignored: a later open to list it succeeds |
+| Renaming a folder held without `FILE_SHARE_DELETE` | `ERROR_SHARING_VIOLATION` (32) |
+| Renaming a folder held only with `FILE_READ_ATTRIBUTES`, `READ_CONTROL` and `SYNCHRONIZE` | Renamed: such a handle is left out of sharing checks |
+| Renaming a folder with a file open in it, shared for deletion or not | `ERROR_ACCESS_DENIED` (5) |
+| A child that denies this account everything, opened for `DELETE` and `FILE_READ_ATTRIBUTES` without `SYNCHRONIZE` | Opened, through its parent's rights; renamed and deleted through that handle |
+| The same child opened with `READ_CONTROL` or `SYNCHRONIZE` | `STATUS_ACCESS_DENIED` |
+| A chain of 300 folders made and deleted by relative opens | Done, though its path was over 5,000 characters |
+| A folder listed through its handle (`FileFullDirectoryInfo`) | Its names, a junction as a reparse point, not entered |
+
+**Still to run on builds 14393, 17763 and 19045**, by running `PathWalkingTests` and the Security suite on lab
+machines of those builds: that relative `NtCreateFile` with `FILE_OPEN_REPARSE_POINT`, and `FILE_CREATE` with a
+security descriptor, behave as above; that `NtSetInformationFile` renames relative to a folder's handle; that a
+hostile child opens through its parent's rights; that a holder who may only read a folder cannot refuse to share
+reading it (`PathWalkingTests`, and the attacker holding `config` in the Security suite), since on a build where
+it does not hold a standard user can stop the store opening `config`; and which of `FileDispositionInformationEx`'s POSIX semantics
+(1709) and read-only override (1809) each build takes, since the store falls back to the older deletion where they
+are missing (`ClassicDelete` in `SecureStoreHooks` tests that way on any build). `OBJ_DONT_REPARSE` is reported,
+not relied on: `PathWalkingTests` accepts `STATUS_REPARSE_POINT_ENCOUNTERED` or `STATUS_INVALID_PARAMETER` for it,
+and writes which to the test output. The GitHub runners cover Windows Server 2025 (build 26100) in the meantime.
+
+## Config: the config trust gate
+
+The checks read config through `IConfigFiles`. The shipped files are built into Controls (`ShippedConfig`, above),
+and the config trust gate, `ConfigTrustGate` in Engine, puts in front of each one an administrator's override
+that passes every rule, as the module's `Get-CEConfig` does with `Get-CEDataPathProblem`. An override is a whole
+file of the same name in the data folder's `config` folder, and it replaces the shipped file whole: nothing is
+merged. Two runs read overrides: the scheduled audit, as SYSTEM, through the SecureStore it holds; and
+`baseline.exe audit` when it is elevated and not given `--shipped-config`, through `SecureStore.OpenReadOnly`,
+since it promises to change nothing (above). The gate is the same for both; only what happens to an untrusted
+`config` folder differs. An override is used only when all of these hold:
+
+| Rule | Held by |
+|---|---|
+| The run is elevated or SYSTEM. A run that is not reads no override from the machine: the data folder is for SYSTEM and administrators. | `ConfigTrustGate` |
+| The file ships and has a schema (`ConfigFile.Names`): only a file the tool reads can be overridden. | `ConfigTrustGate` |
+| SecureStore reads it, relative to the handle of the `config` folder it holds (which it checks first, and, when untrusted, moves aside with event 1003 in the scheduled audit, or refuses and leaves in place in `baseline.exe audit`), and as itself: not a junction, symbolic link or other reparse point, not stored online only, an ordinary file with one name, owned by SYSTEM, Administrators or TrustedInstaller, giving no one else a right to change it, denying them nothing, and no longer than 1 MiB (`ConfigTrustGate.MaxOverrideLength`, many times the largest file in the config folder). | `SecureStore.ReadFile`, `DataFolderTrust.FindReadProblem` |
+| It meets its file's schema: UTF-8, with or without a byte order mark; one JSON object and nothing after it; no comments or trailing commas; no member named twice in one object, whatever the case of its letters, since the reader matches names without regard to case; no more than 64 objects and arrays deep; and accepted by the file's source-generated reader, the one the checks use, with its required members and their types. Members the model does not have are allowed and not read, as the shipped files carry notes. | `ConfigFile.FindProblem` |
+
+Otherwise the shipped file is used, and the refusal is one of the gate's notices, naming the override and why, for
+the run to log. Nothing is changed to get round a refusal. Each file is decided the first time the run reads it,
+and later reads give the same bytes. A `config` folder refused as a whole, as `ReadOnlySecureStore` refuses an
+untrusted one (`SecureStoreException.IsFolderRefused`), is one notice that names the folder and no file, since
+nothing in it was opened and it may hold no override; every file is then the shipped copy for the rest of the run.
+The gate may be read from several threads, and reads the data folder one file at a time, as SecureStore needs.
+
+**An override that cannot be read is not refused.** When SecureStore could not open or read it at all
+(`SecureStoreException.IsUnavailable`, above), nothing about it was judged and what it holds is not known. A
+standard user can bring that about for as long as they like, by locking part of the override or holding an oplock
+on it, so falling back to the shipped copy would let them undo an administrator's override without a trace.
+Holding the override or the `config` folder open without sharing does the same for a process that may write to
+them; from a standard user, who may only read them, Windows ignores that refusal. Instead every read of that file
+in the run throws, each check that needs it reports an Error finding, and the gate's notice says why. Any other
+failure to read it counts the same way: only a refusal, by SecureStore's rules or the file's schema, uses the
+shipped copy.
+
+**A file joins with its schema.** A config file that joins the shipped config joins `ConfigFile`'s schemas in the
+same change: `ShippedConfigTests` fails while a shipped file has no schema, and the gate refuses every override of
+such a file. When `network.json` joins for the service client, its reader becomes its schema, and the proxy
+settings come through the gate once the gate is the `IConfigFiles` they are read from.
+
+**Differences from the module**, each deliberate:
+
+- A run that is not elevated reads no override, so a standard user's `baseline.exe audit` uses only the shipped
+  config. The module's audit reads any override it can list when it is not elevated, and the trusted ones when it
+  is. An elevated `baseline.exe audit` reads them as the scheduled audit does, so an administrator's result matches
+  what Intune reports; what is left of the difference is that a run that is not elevated reads none.
+- The data folder must carry the install's seal (SecureStore) before any override in it is read. The module reads
+  overrides wherever the permissions pass.
+- An override that is not valid is refused and the shipped file used. In the module, one that `ConvertFrom-Json`
+  cannot read stops the config load, and with it the audit.
+- An override must be UTF-8, with or without a byte order mark: one strict format for a file that SYSTEM trusts.
+  The module read overrides with `Get-Content -Raw`, which follows a UTF-16 byte order mark (what Windows
+  PowerShell 5.1's `>` and `Out-File` write) and in 5.1 reads a file without one as ANSI (what its `Set-Content`
+  writes), so an override saved either way loaded there. Here it is refused and the shipped file used, and the
+  notice and event 1003 say what was found and what to do: that the file is saved as UTF-16, or is not UTF-8 at a
+  given line and may be ANSI, and to save it as UTF-8, for example with `Set-Content -Encoding utf8`. ANSI text
+  with no character outside ASCII is already UTF-8, and loads.
+- The scheduled audit moves an untrusted `config` folder aside, with event 1003, rather than only ignoring it. An
+  elevated `baseline.exe audit`, which changes nothing, refuses it, warns once of the folder, and uses the shipped
+  files.
+- In the scheduled audit each refused or unreadable override is also event 1003, not only a warning in its output;
+  `baseline.exe audit` warns on standard error alone. An override that cannot be read fails the checks that need
+  it, where in the module it stops the config load and with it the audit.
+
+**Tests.** `ConfigSchemaTests` (Model) hold each rule of the schema. `ConfigTrustGateTests` (Engine) hold the gate's
+rules with a data folder in memory, including each of SecureStore's refusals as `DataFolderTrust` words it, and
+each kind of read failure, which is not a refusal. In the attack suite, `ConfigTrustGateTests` (Windows) plant an
+override that breaks each rule in a data folder of the tests' own and read it through the real SecureStore, without
+elevation, and hold it up in each way a reader can (`Holders`: the override held open without sharing, locked in
+part, or under a batch oplock never acknowledged, and the `config` folder held open without sharing), which must
+fail the checks within the store's retries and never give the shipped copy; `ConfigTrustGateElevatedTests` use the
+product's rules in a data folder made as the installer makes it: an override that a standard user owns (the
+attacker plants it), that standard users can change, or that is a symbolic link, a junction or a hard link is
+refused and the shipped file used, one owned by Administrators loads, the attacker locking an administrator's
+override or holding an oplock on it does not get the shipped copy used in its place, and the attacker holding the
+override or the `config` folder open without sharing does not stop it loading. The Security job runs them as the
+elevated administrator and as SYSTEM; they also read through `SecureStore.OpenReadOnly`, where an untrusted `config`
+folder, made standard-user-changeable or by the attacker, is refused, left in place and named in one notice of the
+folder. `SecureStoreReadOnlyTests` (Windows, without elevation) refuse a missing ProgramData folder and an
+unsealed, untrusted or linked data folder or `config` folder through the read-only store, the `config` folder as a
+folder (`IsFolderRefused`), give nothing for a missing data folder, read a trusted override, and
+show after each that the tree is unchanged name for name and byte for byte (`TreeSnapshot`), that no step that would
+change something was reached, and that no event was written; they also hold that `ReadOnlySecureStore` has no
+writer. `ScheduledAuditTests` (Cli) hold the scheduled audit's use of the gate, and, elevated, read an override
+through the real SecureStore. `AuditCommandTests` (Cli) hold that `baseline.exe audit` reads overrides only when
+elevated and not given `--shipped-config`, what it prints for each override used and refused, that a refusal of the
+data folder or an unreadable override is reported as the scheduled audit reports it, that a refused `config` folder
+is one warning of the folder, that its settings for this device open the data folder only through the read-only way
+in, and, elevated, that through the real read-only store it reads an override, and leaves an untrusted `config`
+folder and an unsealed data folder as they were, with no event.
 
 ## The service client
 
@@ -356,9 +657,10 @@ passed over and why:
 `proxyUseDefaultCredentials` is true, and never to one that WPAD found, since whoever answers WPAD on the local network
 could collect it. Such a proxy can be named in `proxyUrl`, or its PAC file in `proxyAutoConfigUrl`.
 
-**Settings.** `NetworkSettings`, in Engine, reads `network.json` through `IConfigFiles`: the shipped copy today, and an
-administrator's override once the config trust gate lands. A file that is missing or not valid gives the defaults,
-with the problem noted on every route.
+**Settings.** `NetworkSettings`, in Engine, reads `network.json` through `IConfigFiles`. The config trust gate
+(above) reads an administrator's override only of a file with a schema in `ConfigFile`, which `network.json` does
+not have yet, so the settings are the shipped copy's. A file that is missing or not valid gives the defaults, with
+the problem noted on every route.
 
 **Tests.** `ProxyChooser` is covered branch by branch with a fake of what Windows says, in the Platform tests, which
 run on Linux too. The Windows tests send real requests to servers on the loopback address: a site; a proxy that
@@ -400,9 +702,16 @@ installer registers still runs the module's script.
    failed.
 3. It opens the data folder through SecureStore. A refusal is reported with SecureStore's reason, and
    nothing is written.
-4. It runs the machine checks (SU-01 so far) and writes status.json, UTF-8 with a byte order mark, with
-   SecureStore's atomic write. A failed run leaves the old status.json, whose age then keeps growing, as
-   in the module.
+4. It runs the machine checks (SU-01 so far), which read config through the config trust gate from the
+   data folder it holds (above): it prints `Config override used: <path>` for each administrator's override
+   in use, and writes `Warning: Ignoring the config override <name> and using the shipped copy: <reason>` to
+   standard error for each one refused, and carries on, as the module warns. For an override it could not
+   read it writes `Warning: Could not read the config override <name>, ...`, and the checks that need it are
+   Error findings in status.json. Each of those warnings is also Application event 1003 under the
+   `EngramicBaseline` source, worded as SecureStore's notices are, so an administrator sees it without the
+   task's output.
+5. It writes status.json, UTF-8 with a byte order mark, with SecureStore's atomic write. A failed run
+   leaves the old status.json, whose age then keeps growing, as in the module.
 
 | Exit code | Meaning |
 |---|---|
@@ -411,7 +720,7 @@ installer registers still runs the module's script.
 | 2 | Another audit, or an install, held the mutex for 30 minutes. |
 
 Not ported yet: counting failed runs in last-error.json (only into a data folder that was opened and
-checked, as the module does), the report folder and its retention, the log, events 1000 to 1003, and
+checked, as the module does), the report folder and its retention, the log, events 1000 to 1002, and
 `excludeCheckIds` from an administrator's config.
 
 The Contracts job runs it as SYSTEM on its runner, in the data folder the installer makes (below).
@@ -494,7 +803,7 @@ files you make (the redirect from cmd):
 
 ```
 dotnet test --project tests/Engramic.Baseline.Contracts.Tests -c Release
-artifacts\bin\Engramic.Baseline.Cli\release\baseline.exe audit --id SU-01 --json status > baseline.json
+artifacts\bin\Engramic.Baseline.Cli\release\baseline.exe audit --id SU-01 --json status --shipped-config > baseline.json
 powershell -ExecutionPolicy Bypass -File tools\contracts\Write-ModuleStatus.ps1 -Id SU-01 -Path module.json -DataRoot module-data
 powershell -ExecutionPolicy Bypass -File tools\contracts\Invoke-IntuneReaders.ps1 -StatusPath baseline.json -ResultPath readers-baseline.json
 powershell -ExecutionPolicy Bypass -File tools\contracts\Invoke-IntuneReaders.ps1 -StatusPath module.json -ResultPath readers-module.json
@@ -508,7 +817,9 @@ PowerShell 5.1, and in `baseline.exe` on this device, as the account that runs i
 device context each tool saw (computer, account, elevation, Windows), since one difference there explains many
 after it; then every field of every finding and their order, every value of status.json and its byte order
 mark, and every value the Intune discovery and detection scripts report for each file in both hosts
-(`tools/contracts/Invoke-IntuneReaders.ps1`).
+(`tools/contracts/Invoke-IntuneReaders.ps1`). Both tools read only the shipped config: the module is given an empty
+data folder, and `baseline.exe audit` is given `--shipped-config`, so that an elevated run does not read the
+overrides in the runner's data folder.
 
 Every accepted difference is in the ledger, `tests/parity/divergences.json`. An entry names the path it covers
 (and everything under it, with `*` for one part of a name, such as the host in `discovery[*]`); its kind,
@@ -568,7 +879,10 @@ With `-Unsigned` it checks a folder before signing: none of ours may be signed y
 already carry Microsoft's signature. The "Build and test (.NET)" job runs that on what it publishes, so a package
 assembly that lost its signature fails the pull request, not the release.
 
-**A release.** `tools\New-SignedRelease.ps1 -DotNet -AzureMetadata <metadata>` runs the pre-flight, publishes
+**A release.** `tools\New-SignedRelease.ps1 -DotNet -AzureMetadata <metadata>` first checks the signing login:
+unless the metadata carries an `AccessToken` or excludes `AzureCliCredential`, that is the Azure CLI's, so `az`
+must be on the window's PATH and signed in (`az login`), or it stops in seconds instead of after the build. It then
+runs the pre-flight, publishes
 `baseline.exe` from the committed tree with the SDK in `global.json`, runs the check with `-Unsigned`, signs ours,
 runs the check again with the publisher (`-Publisher`, Engramic Ltd by default), runs the signed
 `baseline.exe --version`, and writes the zip, its checksum, release notes and `release.json` to
@@ -600,6 +914,7 @@ same slice on that build too, as it was signed.
 | Unit tests (Linux) | Builds and tests the portable projects in `Baseline.Portable.slnf`. |
 | Contracts | On Windows: the contract tests (the golden files, and the Intune scripts in both hosts with the deliberate changes), then `baseline.exe` published self-contained under Program Files and `tools/contracts/Test-StatusContract.ps1`: the install, `scheduled-audit` as SYSTEM, and the Intune scripts on its status.json and the module's, as SYSTEM and as administrator. It uploads what its steps wrote only when it fails. |
 | Parity | On Windows: `baseline.exe` published the same way, and `Compare-Parity.ps1` for SU-01 as the elevated administrator and as SYSTEM, which fails on any difference the ledger does not explain. It uploads both comparisons only when it fails. |
+| Security | On Windows: the attack suite (`Suite=Security`) with a throwaway standard user as the attacker (`tools/ci/Invoke-SecurityTests.ps1`), as the elevated administrator and, through `tools/ci/Invoke-AsSystem.ps1`, as SYSTEM. It runs the built test assembly directly, since `dotnet test` run as SYSTEM took the project for a VSTest one, so there is no hang dump; the SYSTEM run's task has a time limit, and a run in which no test ran fails. It uploads the results only when it fails. |
 | Tests as SYSTEM | On Windows: the Windows tests built, and the explicit ones with the trait `Context=System` run as SYSTEM through `tools/ci/Test-AsSystem.ps1`, which counts a skip as a failure and fails unless at least five ran and every one passed: the service client's proxies from `network.json`, the WinHTTP proxy netsh sets, a named PAC file and WPAD, the sign-in sent only where it is allowed, and plain http refused. It keeps the results when it fails. |
 | Hygiene | Every tracked text file is ASCII, and every URL host in `src/`, `tests/`, `tools/` and `docs/`, every `engramic-ai/` repository and every `engramic.ai` name anywhere is on `tools/hygiene/public-allowlist.txt`. |
 

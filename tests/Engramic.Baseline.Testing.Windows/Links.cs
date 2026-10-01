@@ -71,6 +71,30 @@ public static class Links
     }
 
     /// <summary>
+    /// Tries to make a symbolic link to a folder, which needs the privilege elevated administrators hold, or
+    /// developer mode.
+    /// </summary>
+    /// <param name="link">Where the link goes.</param>
+    /// <param name="target">The folder it leads to.</param>
+    /// <returns>False when this account may not make one.</returns>
+    public static bool TryCreateFolderSymbolicLink(string link, string target)
+    {
+        try
+        {
+            Directory.CreateSymbolicLink(link, target);
+            return true;
+        }
+        catch (IOException) when (!Directory.Exists(link))
+        {
+            return false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Makes an existing file a reparse point of a kind no filter handles, as a third-party product might:
     /// opened normally it fails, and only opening it as itself works.
     /// </summary>

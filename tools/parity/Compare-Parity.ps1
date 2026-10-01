@@ -181,6 +181,15 @@ function Get-Flat {
 }
 
 $exe = Resolve-BaselineExe -Path $BaselineExe
+# TEMPORARY, for spike 2 of the .NET port, reverted before review: the SHA-256 of every file CI published, for
+# tools/spikes/Measure-RuntimeSpike.ps1 -Phase Determinism -ReferenceManifest to compare a rebuild of the same commit.
+if ($env:GITHUB_ACTIONS -eq 'true') {
+    $spikeRoot = (Resolve-Path -LiteralPath (Split-Path -Parent $exe)).ProviderPath.TrimEnd('\')
+    Write-Host "SPIKE2-ROOT $spikeRoot"
+    foreach ($spikeFile in @(Get-ChildItem -LiteralPath $spikeRoot -Recurse -File -Force | Sort-Object FullName)) {
+        Write-Host ('SPIKE2-SHA256 {0}  {1}' -f (Get-FileHash -LiteralPath $spikeFile.FullName -Algorithm SHA256).Hash, $spikeFile.FullName.Substring($spikeRoot.Length + 1))
+    }
+}
 $context = Get-ParityContext
 $ledger = Read-ParityLedger -Path $LedgerPath
 $Id = @($Id | ForEach-Object { $_.ToUpperInvariant() })

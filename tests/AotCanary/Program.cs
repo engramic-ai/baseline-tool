@@ -270,9 +270,11 @@ static bool AppxReads()
         Console.WriteLine($"Appx {user.User}: registry does not list the user, appmodel {user.Outcome} {user.Packages.Count}");
     }
 
+    // Both must read the canary's own account and find packages for it: any account that has signed in has framework
+    // and system packages registered, so an empty list would be a wrong answer, not a quiet device.
     return passed
-        && fromRegistry.Any(u => u.User.Value == me && u.Outcome == AppxReadOutcome.Read)
-        && fromAppModel.Any(u => u.User.Value == me && u.Outcome == AppxReadOutcome.Read);
+        && fromRegistry.Any(u => u.User.Value == me && u.Outcome == AppxReadOutcome.Read && u.Packages.Count > 0)
+        && fromAppModel.Any(u => u.User.Value == me && u.Outcome == AppxReadOutcome.Read && u.Packages.Count > 0);
 }
 
 /// <summary>A check that passes, to run the engine end to end.</summary>

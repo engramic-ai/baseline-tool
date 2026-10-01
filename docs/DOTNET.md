@@ -16,14 +16,14 @@ This note covers the layout, the rules the build enforces, and how to build and 
 | `src/Engramic.Baseline.Platform` | The interfaces and records of the primitives (registry, files, the event log, processes, tokens, HTTP and so on), the layout and trust rules of the data folder, and the rules that choose a service request's proxy. |
 | `src/Engramic.Baseline.Engine` | The check and fix contracts, the runner, the framework rollups, changesets and undo. |
 | `src/Engramic.Baseline.Controls` | The checks, the fixes, the readers that interpret what the primitives return, and the shipped config. |
-| `src/Engramic.Baseline.Windows` | The Windows primitives, calling Win32 through code that CsWin32 generates from `NativeMethods.txt`, including SecureStore, the audit mutex and the service client. |
+| `src/Engramic.Baseline.Windows` | The Windows primitives, calling Win32 through code that CsWin32 generates from `NativeMethods.txt`, including SecureStore, the audit mutex, the service client, the process list and file signatures. |
 | `src/Engramic.Baseline.Cli` | `baseline.exe`, the command line. |
 | `tests/Engramic.Baseline.*.Tests` | xUnit v3 tests: one project for each library, and one for the command line. |
 | `tests/Engramic.Baseline.Contracts.Tests` | The status.json contract: golden files of its bytes, and the Intune scripts run on it (below). |
 | `tests/Engramic.Baseline.Invariants.Tests` | Tests of the repository's own rules, described below. |
 | `tests/Engramic.Baseline.Testing` | Fakes and recorded responses that the tests share. |
 | `tests/Engramic.Baseline.Testing.Windows` | Windows fixtures: folders under the temp folder with the security descriptors a test gives, junctions, hard links and other reparse points, mutexes of the tests' own, and the standard user who plays the attacker in the attack suite. |
-| `tests/AotCanary` | Compiles the AOT-clean libraries with Native AOT and calls into each one. |
+| `tests/AotCanary` | Compiles the AOT-clean libraries with Native AOT, calls into each one, runs detection and times itself against the JIT build (spike 7, below). |
 | `tools/parity` | Compares the ported checks with the PowerShell module on a device (below). |
 | `tests/parity/divergences.json` | The ledger of accepted differences between the module and `baseline.exe`, with the reason and scope of each. |
 | `tools/contracts` | Runs the unchanged Intune scripts on a status.json, and proves the contract end to end as SYSTEM in CI (below). |
@@ -62,8 +62,11 @@ because `net10.0-windows` has a target platform version of 7.0 and the SDK refus
 `SupportedOSPlatformVersion`.
 
 **AOT.** Model, Platform, Engine and Windows are AOT-clean (`IsAotCompatible`), and the AOT canary
-compiles them with Native AOT, each rooted whole, with every warning an error. Controls runs the same
-trim and AOT analysers. JSON is source-generated.
+compiles them with Native AOT, each rooted whole, with every warning an error, and runs detection with them.
+Controls runs the same trim and AOT analysers. JSON is source-generated. Windows turns off runtime
+marshalling (`DisableRuntimeMarshalling`): CsWin32 generates every call with blittable values only, so each
+compiles to a direct call, and a signature that would need marshalling, such as a string parameter, fails the
+build with CA1420.
 
 **Banned APIs.** Product code must not call the APIs in `src/BannedSymbols.txt`; the build fails with
 RS0030 and says what to use instead.
@@ -518,6 +521,128 @@ are missing (`ClassicDelete` in `SecureStoreHooks` tests that way on any build).
 not relied on: `PathWalkingTests` accepts `STATUS_REPARSE_POINT_ENCOUNTERED` or `STATUS_INVALID_PARAMETER` for it,
 and writes which to the test output. The GitHub runners cover Windows Server 2025 (build 26100) in the meantime.
 
+## Detection
+
+What the AI tool checks will read about the device, from primitives in the Windows library that compile with
+Native AOT. None of them uses WMI, WinRT or a file's path.
+
+- **Processes** (`WindowsProcessList`, behind `IProcessList`): the process table from a Toolhelp snapshot, then
+  for each process its image path (`QueryFullProcessImageName`), its command line (`NtQueryInformationProcess`
+  with `ProcessCommandLineInformation`, Windows 8.1 and later), its session, and from its access token its owner
+  (`TokenUser`) and elevation (`TokenElevation`). Each process is opened with
+  `PROCESS_QUERY_LIMITED_INFORMATION` and its token with `TOKEN_QUERY`, the least either can be opened with, so
+  nothing is read from a process's memory and nothing can be changed. What this account may not open stays null:
+  not elevated, the tokens of other accounts' processes; elevated, a few of Windows' own (the runner read the
+  owners of 150 of 151); either way, a process that ended between the snapshot and the open. A process identifier
+  can be reused, so an entry describes the process that had it when it was opened.
+- **Installed programs**: the registry primitive lists a key's subkeys (`IRegistry.GetSubKeyNames`) and reads
+  `HKEY_USERS`, so a reader can walk `SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall` in both views of
+  HKLM and in each loaded user hive, as the module's `Get-CEInstalledSoftware` does. Another person's hive throws
+  `UnauthorizedAccessException` unless the reader is elevated or SYSTEM.
+- **Signatures** (`FileSignatures.Verify`): Authenticode, read through a handle the caller opened, as
+  `Get-AuthenticodeSignature` checks it: a signature embedded in the file, or else a catalog of Windows that holds
+  the file's hash (SHA-256, then SHA-1), which is how most files of Windows are signed. It gives the state, the
+  signer's common name, whether the signature came from a catalog, and WinVerifyTrust's result. It checks no
+  revocation and fetches nothing from the network, so it never waits on one. A catalog signs a hash, not a
+  place: a copy of `cmd.exe` in a temp folder is valid, so the trusted process runner must also check where a tool
+  is.
+- **File versions**: no primitive. `FileVersionInfo.GetVersionInfo` reads by path, which product code may not, and
+  the module reads no file versions. A check that needs one would read the version resource through a handle.
+  Windows also gives a process whose manifest does not declare Windows 10, as `baseline.exe`'s does not, the
+  fixed version of its own files as 6.2 (`cmd.exe` 10.0.26100 reads as 6.2.26100), so such a check reads the
+  text version or the exe gets a manifest.
+
+### Spike 7: detection under Native AOT
+
+The question was whether Model, Platform, Engine and Windows can run detection compiled with Native AOT, so that
+an app built on them could be published Native AOT while `baseline.exe` stays JIT with ReadyToRun; and what
+Native AOT costs and buys.
+
+**Proposed decision: keep the four libraries AOT-clean with detection in them, held there by the canary on every
+change, and keep `baseline.exe` and the desktop app JIT with ReadyToRun.** Detection runs under Native AOT with no
+warning and no change to how the libraries are written. An app built on them that wants a small, quick-starting
+exe may publish Native AOT: on the runner the canary started in 55 percent of the time, ran in 42 percent of it,
+peaked at 68 percent of the memory and shipped one 9 MB file instead of a 78 MB folder. The cost is a C++
+linker wherever it is published, and a rebuild for each .NET patch, as for `baseline.exe` today.
+
+**Fallback.** Such an app publishes self-contained JIT with ReadyToRun, as `baseline.exe` does; the libraries need
+no change, and the canary's JIT run shows they work that way. A primitive that cannot be AOT-clean
+(System.Management, WinRT, COM through the runtime's marshalling) goes in a project the four libraries never
+reference, and an app published Native AOT goes without it.
+
+**What the canary proved before this spike**, compiled with Native AOT on the runner: the status files and config
+read and written with source-generated JSON; SIDs and registry values; the check runner, the framework rollups
+and the config trust gate; the console session, a registry read in the 64-bit view and the account from
+`WindowsIdentity`; the data folder's trust rules; SecureStore refusing a missing ProgramData folder (the
+known-folder API and `CreateFile` through CsWin32); the audit mutex with its access list; the proxy rules, the
+machine's WinHTTP proxy, and the service client's `HttpClient` sending to a loopback site.
+
+**Added by this spike**, each printing a fact and failing the canary on error:
+
+| Step | Through | On the runner (Server 2025, build 26100) |
+|---|---|---|
+| Processes, with owner and elevation from tokens | `WindowsProcessList` | 151 processes; 150 owners, 134 elevated, 148 paths and 147 command lines read; this canary found as itself; 10 ms |
+| Installed programs | `WindowsRegistry.GetSubKeyNames` and `GetValue` | 40 in the 64-bit view and 19 in the 32-bit view of HKLM; 1 loaded user hive, with none; 24 ms |
+| Authenticode | `FileSignatures.Verify` | `cmd.exe` valid in a catalog, signed by Microsoft Windows; `vcruntime140.dll` valid, embedded; the canary itself not signed; 246 ms, most of it the first catalog lookup |
+| File version | `FileVersionInfo`, in the canary | `cmd.exe` read; product code has no version reader (above) |
+
+**CsWin32 and `LibraryImport`.** CsWin32 0.3.335 with `"allowMarshaling": false` generates `DllImport`s that pass
+blittable values only (`BOOL`, `HANDLE`, `PCWSTR`, pointers), loads from System32, and saves the last error
+itself (`Marshal.SetLastSystemError` and `SetLastPInvokeError`) rather than through `SetLastError = true`. It
+generates `LibraryImport` only in its build-task mode with marshalling allowed. Native AOT compiles a blittable
+`DllImport` to a direct call, so `LibraryImport` would add nothing here. Turning runtime marshalling off in
+Windows makes that a rule (above): the Windows tests pass unchanged, and a string parameter fails the build with
+CA1420. One thing to know: with marshalling off, a `bool` passes as one byte, not a Win32 `BOOL`; CsWin32 uses
+`BOOL`, and hand-written native calls are not allowed.
+
+**Measurements.** The canary prints the time from its process's creation to `Main` (the runtime's start-up), from
+`Main` to its end (all its steps), its peak working set and the size of the files it ships. Compiled with Native
+AOT on the runner, it runs itself and the JIT build that the build step left in `artifacts/bin` five times each,
+one after another, and prints the medians. That JIT build is framework-dependent and carries the feature
+switches `PublishAot` sets in its `runtimeconfig.json`. On the runner (`windows-latest`, Windows Server 2025,
+build 26100), from the "Run the AOT canary" step:
+
+| Build | Files | Size | Start-up | Run | Wall | Peak working set |
+|---|---|---|---|---|---|---|
+| Native AOT | 1 | 8.99 MB | 24 ms | 166 ms | 201 ms | 31.9 MB |
+| JIT, framework-dependent | 6, and the shared runtime | 0.81 MB | 44 ms | 398 ms | 476 ms | 46.6 MB |
+
+On the maintainer's laptop (build 26200), JIT builds only, since it has no C++ linker; each the median of 7 runs,
+in two passes, while other work ran, so the ranges are wide:
+
+| Build | Files | Size | Start-up | Run | Wall | Peak working set |
+|---|---|---|---|---|---|---|
+| JIT, framework-dependent | 6, and the shared runtime | 0.81 MB | 33 to 49 ms | 212 to 312 ms | 271 to 396 ms | 45.0 MB |
+| JIT, self-contained | 193 | 77.4 MB | 53 ms | 211 to 216 ms | 296 to 304 ms | 46.8 MB |
+| ReadyToRun, self-contained, as `baseline.exe` is published | 193 | 78.1 MB | 50 to 82 ms | 171 to 273 ms | 252 to 405 ms | 45.5 MB |
+
+Publishing the canary with Native AOT took 36 seconds on the runner, 22 of them in the AOT compiler.
+
+**What Native AOT costs an app built on these libraries:**
+- A C++ linker (the Visual Studio build tools) wherever it is published. CI has one; the machine that signs
+  releases, which publishes `baseline.exe` today, does not, so such an app is published by CI or on a machine with
+  the build tools.
+- One exe holding the runtime as well as the app, so every .NET security fix means a rebuild and a new signature,
+  as for self-contained `baseline.exe`; and nothing in the exe keeps Microsoft's own signature.
+- What the runtime does not do without a JIT: no `Reflection.Emit`, no reflection-based JSON, no loading
+  assemblies, no built-in COM, and no EventSource tracing unless switched back on. The rules above already keep
+  all of these out of the four libraries.
+
+**What stays out of the AOT-clean libraries:** System.Management (CIM and WMI); WinRT, including
+`PackageManager`; COM that relies on the runtime's marshalling, such as WUA, the Task Scheduler and WinGet's COM
+API, which under Native AOT would need source-generated COM; reading a file by path, `FileVersionInfo` included;
+and the desktop app's WPF. These belong in a separate Windows project for CIM, WinRT and COM, which the four
+libraries never reference.
+
+**Still to run:** the canary and the new tests on builds 14393, 17763 and 19045, for `ProcessCommandLineInformation`
+(8.1 and later), `CryptCATAdminAcquireContext2` and `CryptCATAdminCalcHashFromFileHandle2` (8 and later) and the
+SHA-1 catalog fallback, which no file on the runner needs; detection as SYSTEM with a person signed in, since the
+runner's canary runs as its elevated administrator, whose hive holds no programs; Native AOT for Arm64; and a
+signed Native AOT exe under Smart App Control and App Control. The ReadyToRun figures come from the laptop only,
+since the runner publishes no ReadyToRun build of the canary. `ProcessCommandLineInformation` is not among the
+classes `NtQueryInformationProcess`'s documentation lists, though Windows has had it since 8.1. Matching the AI
+tool catalog, Store packages and the profile reads are not in this spike.
+
 ## Config: the config trust gate
 
 The checks read config through `IConfigFiles`. The shipped files are built into Controls (`ShippedConfig`, above),
@@ -930,7 +1055,7 @@ same slice on that build too, as it was signed.
 
 | Job | What it does |
 |---|---|
-| Build and test (.NET) | On Windows: the locked restore, the build with warnings as errors, the tests, `baseline.exe` published and run with `--version`, the signatures of the published files checked before signing (`Test-ReleaseSignatures.ps1 -Unsigned`), and the AOT canary published and run. |
+| Build and test (.NET) | On Windows: the locked restore, the build with warnings as errors, the tests, `baseline.exe` published and run with `--version`, the signatures of the published files checked before signing (`Test-ReleaseSignatures.ps1 -Unsigned`), and the AOT canary published and run, which runs detection and then times itself against the JIT build of it that the build step left in `artifacts/bin`. |
 | Unit tests (Linux) | Builds and tests the portable projects in `Baseline.Portable.slnf`. |
 | Contracts | On Windows: the contract tests (the golden files, and the Intune scripts in both hosts with the deliberate changes), then `baseline.exe` published self-contained under Program Files and `tools/contracts/Test-StatusContract.ps1`: the install, `scheduled-audit` as SYSTEM, and the Intune scripts on its status.json and the module's, as SYSTEM and as administrator. It uploads what its steps wrote only when it fails. |
 | Parity | On Windows: `baseline.exe` published the same way, and `Compare-Parity.ps1` for SU-01 as the elevated administrator and as SYSTEM, which fails on any difference the ledger does not explain. It uploads both comparisons only when it fails. |

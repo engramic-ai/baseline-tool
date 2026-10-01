@@ -3,7 +3,7 @@ using System.Globalization;
 using Engramic.Baseline.Controls;
 using Engramic.Baseline.Engine;
 using Engramic.Baseline.Model;
-using Engramic.Baseline.Windows;
+using Engramic.Baseline.Platform;
 
 namespace Engramic.Baseline.Cli;
 
@@ -12,19 +12,38 @@ namespace Engramic.Baseline.Cli;
 /// or status.json to standard output.
 /// </summary>
 /// <remarks>
-/// For development and for comparing the tool with the PowerShell module. It writes no file itself: files
-/// are written only into the machine data folder, through SecureStore, by the scheduled audit. It reads only
-/// the config that ships with the tool: administrators' overrides are read by the scheduled audit, through
-/// the config trust gate, and the parity harness runs the module with an empty data folder to match.
+/// <para>
+/// For development and for comparing the tool with the PowerShell module. It changes nothing: it writes no
+/// file itself, since files are written only into the machine data folder, through SecureStore, by the
+/// scheduled audit, and it writes no event.
+/// </para>
+/// <para>
+/// Elevated, it reads administrators' config overrides from the data folder's config folder through the config
+/// trust gate, as the scheduled audit does, so that an administrator sees what Intune will report; but through
+/// SecureStore's read-only way in (<see cref="Windows.SecureStore.OpenReadOnly(Windows.SecureStoreOptions)"/>),
+/// which refuses an untrusted folder rather than moving it aside. It names each override it used, and warns of
+/// each one refused or unreadable, and of a data folder refused, on standard error and nowhere else. A data
+/// folder or config folder that does not exist means no overrides. Not elevated, or with
+/// <c>--shipped-config</c>, it reads only the config that ships with the tool; the parity harness passes that
+/// switch, and runs the module with an empty data folder, so that both read the same config.
+/// </para>
 /// </remarks>
 internal static class AuditCommand
 {
     private const string StatusFormat = "status";
     private const string FindingsFormat = "findings";
 
-    /// <summary>Makes the command.</summary>
+    /// <summary>Makes the command, for this device and the console.</summary>
     /// <returns>The command.</returns>
-    public static Command Create()
+    public static Command Create() => Create(AuditSettings.ForThisDevice, Console.Out, Console.Error, Console.OpenStandardOutput);
+
+    /// <summary>Makes the command with the settings and the console a test gives.</summary>
+    /// <param name="settings">Gives what the audit runs with, when the command runs.</param>
+    /// <param name="output">Where the summary goes, and the overrides used beside it.</param>
+    /// <param name="error">Where problems and warnings go.</param>
+    /// <param name="openStandardOutput">Opens the stream findings.json or status.json is written to, byte for byte.</param>
+    /// <returns>The command.</returns>
+    internal static Command Create(Func<AuditSettings> settings, TextWriter output, TextWriter error, Func<Stream> openStandardOutput)
     {
         var ids = new Option<string[]>("--id")
         {
@@ -56,20 +75,30 @@ internal static class AuditCommand
             HelpName = "status|findings",
         };
         json.AcceptOnlyFromAmong(StatusFormat, FindingsFormat);
+        var shippedConfig = new Option<bool>("--shipped-config")
+        {
+            Description = "Use only the config that ships with the tool, and ignore administrators' config overrides in the data folder, which an elevated audit otherwise reads.",
+        };
 
-        var command = new Command("audit", "Audit this device and show the findings. Read-only: it changes nothing.");
+        var command = new Command(
+            "audit",
+            "Audit this device and show the findings. Read-only: it changes nothing. Elevated, it reads administrators' config overrides from the data folder, as the scheduled audit does.");
         command.Options.Add(ids);
         command.Options.Add(excludeIds);
         command.Options.Add(categories);
         command.Options.Add(frameworks);
         command.Options.Add(json);
+        command.Options.Add(shippedConfig);
         command.SetAction((parseResult, cancel) => RunAsync(
             new AuditRequest(
                 Split(parseResult.GetValue(ids)),
                 Split(parseResult.GetValue(excludeIds)),
                 Split(parseResult.GetValue(categories)),
                 Split(parseResult.GetValue(frameworks)),
-                parseResult.GetValue(json)),
+                parseResult.GetValue(json),
+                parseResult.GetValue(shippedConfig)),
+            settings(),
+            new AuditConsole(output, error, openStandardOutput),
             cancel));
         return command;
     }
@@ -79,34 +108,68 @@ internal static class AuditCommand
         return [.. (values ?? []).SelectMany(v => v.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))];
     }
 
-    private static async Task<int> RunAsync(AuditRequest request, CancellationToken cancel)
+    private static async Task<int> RunAsync(AuditRequest request, AuditSettings settings, AuditConsole console, CancellationToken cancel)
     {
-        var catalog = BuiltInChecks.CreateCatalog();
+        var catalog = settings.Catalog;
         if (!TrySelect(request, catalog, out var selection, out var problem))
         {
-            await Console.Error.WriteLineAsync(problem).ConfigureAwait(false);
+            await console.Error.WriteLineAsync(problem).ConfigureAwait(false);
             return 1;
         }
 
-        var time = TimeProvider.System;
-        var device = DeviceContextReader.Read(new WindowsRegistry(), Environment.MachineName, CurrentProcess.ReadAccount(), time.GetUtcNow());
-        var context = new CheckContext(device, new AuditConfig(ShippedConfig.Files), time);
+        var device = DeviceContextReader.Read(settings.Registry, settings.ComputerName, settings.Account, settings.Time.GetUtcNow());
+        var warnings = new List<string>();
+
+        // Elevated, as the gate requires, unless told to use the shipped config alone. Held open while the checks
+        // read config, and only read: nothing in the data folder is created, moved or changed.
+        using var dataFolder = !request.ShippedConfigOnly && settings.Account.IsElevated ? OpenDataFolder(settings, warnings) : null;
+        var gate = dataFolder is null ? null : new ConfigTrustGate(settings.Config, dataFolder, settings.Account);
+        var context = new CheckContext(device, new AuditConfig((IConfigFiles?)gate ?? settings.Config), settings.Time);
         var findings = await new AuditRunner(catalog).RunAsync(selection, context, cancel).ConfigureAwait(false);
+
+        // As the scheduled audit says them, without the events. With --json, standard output is the file alone.
+        var used = request.Json is null ? console.Output : console.Error;
+        foreach (var path in gate?.Overrides ?? [])
+        {
+            await used.WriteLineAsync("Config override used: " + path).ConfigureAwait(false);
+        }
+
+        foreach (var notice in warnings.Concat(gate?.Notices ?? []))
+        {
+            await console.Error.WriteLineAsync("Warning: " + notice).ConfigureAwait(false);
+        }
 
         switch (request.Json)
         {
             case StatusFormat:
-                await WriteStandardOutputAsync(StatusFile.ToBytes(StatusBuilder.Build(findings, catalog, device, ToolVersion.Current)), cancel).ConfigureAwait(false);
+                await WriteStandardOutputAsync(console, StatusFile.ToBytes(StatusBuilder.Build(findings, catalog, device, settings.ToolVersion)), cancel).ConfigureAwait(false);
                 break;
             case FindingsFormat:
-                await WriteStandardOutputAsync(FindingsFile.ToBytes(new FindingsDocument { Findings = findings }), cancel).ConfigureAwait(false);
+                await WriteStandardOutputAsync(console, FindingsFile.ToBytes(new FindingsDocument { Findings = findings }), cancel).ConfigureAwait(false);
                 break;
             default:
-                await Console.Out.WriteAsync(Summary(device, findings, StatusBuilder.Build(findings, catalog, device, ToolVersion.Current))).ConfigureAwait(false);
+                await console.Output.WriteAsync(Summary(device, findings, StatusBuilder.Build(findings, catalog, device, settings.ToolVersion))).ConfigureAwait(false);
                 break;
         }
 
         return 0;
+    }
+
+    /// <summary>
+    /// Opens the data folder only to read administrators' overrides from it. One that is missing gives none; one
+    /// that is refused is a warning, and the shipped config is used, as the gate uses it for a refused override.
+    /// </summary>
+    private static IDataFolderReader? OpenDataFolder(AuditSettings settings, List<string> warnings)
+    {
+        try
+        {
+            return settings.OpenDataFolder();
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            warnings.Add("Ignoring the config overrides in the data folder and using the shipped config: " + e.Message);
+            return null;
+        }
     }
 
     private static bool TrySelect(AuditRequest request, CheckCatalog catalog, out CheckSelection selection, out string problem)
@@ -143,9 +206,9 @@ internal static class AuditCommand
         return true;
     }
 
-    private static async Task WriteStandardOutputAsync(byte[] bytes, CancellationToken cancel)
+    private static async Task WriteStandardOutputAsync(AuditConsole console, byte[] bytes, CancellationToken cancel)
     {
-        var stdout = Console.OpenStandardOutput();
+        var stdout = console.OpenStandardOutput();
         await using (stdout.ConfigureAwait(false))
         {
             await stdout.WriteAsync(bytes, cancel).ConfigureAwait(false);
@@ -193,5 +256,8 @@ internal static class AuditCommand
         _ => "Likely pass",
     };
 
-    private sealed record AuditRequest(string[] Ids, string[] ExcludeIds, string[] Categories, string[] Frameworks, string? Json);
+    private sealed record AuditRequest(string[] Ids, string[] ExcludeIds, string[] Categories, string[] Frameworks, string? Json, bool ShippedConfigOnly);
+
+    /// <summary>Where the command writes: the summary, problems and warnings, and the bytes of a JSON file.</summary>
+    private sealed record AuditConsole(TextWriter Output, TextWriter Error, Func<Stream> OpenStandardOutput);
 }

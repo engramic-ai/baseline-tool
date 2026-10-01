@@ -243,13 +243,29 @@ byte for byte as the file is written (UTF-8 with a byte order mark), to redirect
 PowerShell 7.4 and later. It writes no file itself: files go only into the machine data folder, through
 SecureStore, which the scheduled audit writes. It has no option to name an output folder: SecureStore
 accepts only the sealed data folder, and a folder named on the command line may be one a standard user
-controls, or once did, which nothing in its state now can rule out. It reads only the config that ships with
-the tool, never administrators' overrides, which the scheduled audit reads (below): so it matches the module in
-the parity harness, which gives the module an empty data folder.
+controls, or once did, which nothing in its state now can rule out.
+
+**Config.** Elevated (an elevated administrator or SYSTEM, the test the config trust gate makes), it reads
+administrators' config overrides from the data folder's `config` folder through the config trust gate, as the
+scheduled audit does, so that an administrator sees the result Intune will report. It opens the data folder with
+`SecureStore.OpenReadOnly` (below), which judges by the same rules but changes nothing: an untrusted data folder or
+`config` folder is refused and left in place, never moved aside, and a missing one is never made. It prints
+`Config override used: <path>` for each override in use, on standard output beside the summary and on standard
+error with `--json`, so that standard output stays the file alone; and `Warning: ...` on standard error for each
+override refused or unreadable, worded as the scheduled audit words it, and for a data folder refused
+(`Warning: Ignoring the config overrides in the data folder and using the shipped config: <reason>`). A refusal
+uses the shipped file; an override that cannot be read, such as one a standard user has locked or holds an oplock
+on, makes the checks that need it report Error, as in the scheduled audit. Nothing is written to the event log.
+A data folder or `config` folder that does not exist means no overrides, and no warning.
+
+Not elevated, it reads only the config that ships with the tool, since the data folder is for SYSTEM and
+administrators. `--shipped-config` does the same when elevated: the parity harness passes it, and gives the
+module an empty data folder, so that both read the shipped config whatever the runner's data folder holds.
 
 ```
 baseline.exe audit --id SU-01
 baseline.exe audit --id SU-01 --json status > status.json
+baseline.exe audit --id SU-01 --shipped-config
 ```
 
 ## The data folder: SecureStore
@@ -421,7 +437,8 @@ like the rest, so that an elevated restore reads a journal no standard user coul
 
 Tests give the ProgramData path, the seal's location, the event log and the clock (`SecureStoreOptions`), and
 the trust rules and the owner of what the store makes, so that they run without elevation in folders of their
-own. The config trust gate (below) reads administrators' overrides through `ReadFile`. Still to come:
+own. The config trust gate (below) reads administrators' overrides through `ReadFile`, of SecureStore in the
+scheduled audit and of `ReadOnlySecureStore` in an elevated `baseline.exe audit`. Still to come:
 `baseline.exe setup`, which will call `Initialize` and write the seal.
 
 ### Spike 1: walking paths
@@ -495,13 +512,16 @@ The checks read config through `IConfigFiles`. The shipped files are built into 
 and the config trust gate, `ConfigTrustGate` in Engine, puts in front of each one an administrator's override
 that passes every rule, as the module's `Get-CEConfig` does with `Get-CEDataPathProblem`. An override is a whole
 file of the same name in the data folder's `config` folder, and it replaces the shipped file whole: nothing is
-merged. An override is used only when all of these hold:
+merged. Two runs read overrides: the scheduled audit, as SYSTEM, through the SecureStore it holds; and
+`baseline.exe audit` when it is elevated and not given `--shipped-config`, through `SecureStore.OpenReadOnly`,
+since it promises to change nothing (above). The gate is the same for both; only what happens to an untrusted
+`config` folder differs. An override is used only when all of these hold:
 
 | Rule | Held by |
 |---|---|
 | The run is elevated or SYSTEM. A run that is not reads no override from the machine: the data folder is for SYSTEM and administrators. | `ConfigTrustGate` |
 | The file ships and has a schema (`ConfigFile.Names`): only a file the tool reads can be overridden. | `ConfigTrustGate` |
-| SecureStore reads it, relative to the handle of the `config` folder it holds (which it checks first, and moves aside, with event 1003, when untrusted), and as itself: not a junction, symbolic link or other reparse point, not stored online only, an ordinary file with one name, owned by SYSTEM, Administrators or TrustedInstaller, giving no one else a right to change it, denying them nothing, and no longer than 1 MiB (`ConfigTrustGate.MaxOverrideLength`, many times the largest file in the config folder). | `SecureStore.ReadFile`, `DataFolderTrust.FindReadProblem` |
+| SecureStore reads it, relative to the handle of the `config` folder it holds (which it checks first, and, when untrusted, moves aside with event 1003 in the scheduled audit, or refuses and leaves in place in `baseline.exe audit`), and as itself: not a junction, symbolic link or other reparse point, not stored online only, an ordinary file with one name, owned by SYSTEM, Administrators or TrustedInstaller, giving no one else a right to change it, denying them nothing, and no longer than 1 MiB (`ConfigTrustGate.MaxOverrideLength`, many times the largest file in the config folder). | `SecureStore.ReadFile`, `DataFolderTrust.FindReadProblem` |
 | It meets its file's schema: UTF-8, with or without a byte order mark; one JSON object and nothing after it; no comments or trailing commas; no member named twice in one object, whatever the case of its letters, since the reader matches names without regard to case; no more than 64 objects and arrays deep; and accepted by the file's source-generated reader, the one the checks use, with its required members and their types. Members the model does not have are allowed and not read, as the shipped files carry notes. | `ConfigFile.FindProblem` |
 
 Otherwise the shipped file is used, and the refusal is one of the gate's notices, naming the override and why, for
@@ -526,8 +546,10 @@ settings come through the gate once the gate is the `IConfigFiles` they are read
 
 **Differences from the module**, each deliberate:
 
-- A run that is not elevated reads no override, and `baseline.exe audit` reads none at all (above). The module's
-  audit reads any override it can list when it is not elevated, and the trusted ones when it is.
+- A run that is not elevated reads no override, so a standard user's `baseline.exe audit` uses only the shipped
+  config. The module's audit reads any override it can list when it is not elevated, and the trusted ones when it
+  is. An elevated `baseline.exe audit` reads them as the scheduled audit does, so an administrator's result matches
+  what Intune reports; what is left of the difference is that a run that is not elevated reads none.
 - The data folder must carry the install's seal (SecureStore) before any override in it is read. The module reads
   overrides wherever the permissions pass.
 - An override that is not valid is refused and the shipped file used. In the module, one that `ConvertFrom-Json`
@@ -539,10 +561,11 @@ settings come through the gate once the gate is the `IConfigFiles` they are read
   notice and event 1003 say what was found and what to do: that the file is saved as UTF-16, or is not UTF-8 at a
   given line and may be ANSI, and to save it as UTF-8, for example with `Set-Content -Encoding utf8`. ANSI text
   with no character outside ASCII is already UTF-8, and loads.
-- An untrusted `config` folder is moved aside, with event 1003, rather than only ignored.
-- Each refused or unreadable override is also event 1003, not only a warning in the scheduled audit's output. An
-  override that cannot be read fails the checks that need it, where in the module it stops the config load and
-  with it the audit.
+- The scheduled audit moves an untrusted `config` folder aside, with event 1003, rather than only ignoring it. An
+  elevated `baseline.exe audit`, which changes nothing, refuses it, warns, and uses the shipped files.
+- In the scheduled audit each refused or unreadable override is also event 1003, not only a warning in its output;
+  `baseline.exe audit` warns on standard error alone. An override that cannot be read fails the checks that need
+  it, where in the module it stops the config load and with it the audit.
 
 **Tests.** `ConfigSchemaTests` (Model) hold each rule of the schema. `ConfigTrustGateTests` (Engine) hold the gate's
 rules with a data folder in memory, including each of SecureStore's refusals as `DataFolderTrust` words it, and
@@ -563,7 +586,11 @@ folder, made standard-user-changeable or by the attacker, is refused and left in
 show after each that the tree is unchanged name for name and byte for byte (`TreeSnapshot`), that no step that would
 change something was reached, and that no event was written; they also hold that `ReadOnlySecureStore` has no
 writer. `ScheduledAuditTests` (Cli) hold the scheduled audit's use of the gate, and, elevated, read an override
-through the real SecureStore.
+through the real SecureStore. `AuditCommandTests` (Cli) hold that `baseline.exe audit` reads overrides only when
+elevated and not given `--shipped-config`, what it prints for each override used and refused, that a refusal of the
+data folder or an unreadable override is reported as the scheduled audit reports it, and, elevated, that through the
+real read-only store it reads an override, and leaves an untrusted `config` folder and an unsealed data folder as
+they were, with no event.
 
 ## The scheduled audit
 
@@ -680,7 +707,7 @@ files you make (the redirect from cmd):
 
 ```
 dotnet test --project tests/Engramic.Baseline.Contracts.Tests -c Release
-artifacts\bin\Engramic.Baseline.Cli\release\baseline.exe audit --id SU-01 --json status > baseline.json
+artifacts\bin\Engramic.Baseline.Cli\release\baseline.exe audit --id SU-01 --json status --shipped-config > baseline.json
 powershell -ExecutionPolicy Bypass -File tools\contracts\Write-ModuleStatus.ps1 -Id SU-01 -Path module.json -DataRoot module-data
 powershell -ExecutionPolicy Bypass -File tools\contracts\Invoke-IntuneReaders.ps1 -StatusPath baseline.json -ResultPath readers-baseline.json
 powershell -ExecutionPolicy Bypass -File tools\contracts\Invoke-IntuneReaders.ps1 -StatusPath module.json -ResultPath readers-module.json
@@ -694,7 +721,9 @@ PowerShell 5.1, and in `baseline.exe` on this device, as the account that runs i
 device context each tool saw (computer, account, elevation, Windows), since one difference there explains many
 after it; then every field of every finding and their order, every value of status.json and its byte order
 mark, and every value the Intune discovery and detection scripts report for each file in both hosts
-(`tools/contracts/Invoke-IntuneReaders.ps1`).
+(`tools/contracts/Invoke-IntuneReaders.ps1`). Both tools read only the shipped config: the module is given an empty
+data folder, and `baseline.exe audit` is given `--shipped-config`, so that an elevated run does not read the
+overrides in the runner's data folder.
 
 Every accepted difference is in the ledger, `tests/parity/divergences.json`. An entry names the path it covers
 (and everything under it, with `*` for one part of a name, such as the host in `discovery[*]`); its kind,

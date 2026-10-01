@@ -10,7 +10,8 @@
       1. runs the untouched module out of process in Windows PowerShell 5.1: Invoke-CEAuditCore, then
          Get-CESummary and ConvertTo-CEStatus, and writes findings.json and status.json as the module does
          (Write-CEStatus);
-      2. runs baseline.exe audit --json findings and --json status, keeping the exact bytes each writes;
+      2. runs baseline.exe audit --shipped-config --json findings and --json status, keeping the exact bytes
+         each writes;
       3. runs the unchanged Intune discovery and detection scripts on both status files, in 64-bit and 32-bit
          Windows PowerShell 5.1 (tools\contracts\Invoke-IntuneReaders.ps1);
       4. compares them: first the device context each tool saw (computer, account, elevation, Windows), since
@@ -27,7 +28,8 @@
     Run it as the account whose audit you want to compare: a standard user, an elevated administrator or
     SYSTEM. The context is found from the process and applied to the ledger. Both tools run hidden and read
     the device only. The module is given an empty data folder under -OutputPath, so no administrator's config
-    overrides or packs apply to it; baseline.exe reads only the config it ships with. Nothing outside
+    overrides or packs apply to it; baseline.exe is given --shipped-config, so that elevated it does not read
+    the overrides in this device's data folder either, and both read the config that ships. Nothing outside
     -OutputPath is written.
 
 .PARAMETER Id
@@ -142,11 +144,14 @@ Import-Module $(ConvertTo-Literal (Join-Path $repo 'src\CEAudit\CEAudit.psd1')) 
 }
 
 function Invoke-Baseline {
-    <# Runs baseline.exe audit and saves what it writes for --json findings and --json status. #>
+    <#
+        Runs baseline.exe audit and saves what it writes for --json findings and --json status. --shipped-config
+        keeps it to the shipped config, as the module's empty data folder keeps the module.
+    #>
     param([string]$Exe, [string[]]$Ids, [string]$Folder)
     New-Item -ItemType Directory -Path $Folder -Force | Out-Null
     foreach ($document in 'findings', 'status') {
-        $run = Invoke-HiddenProcess -FilePath $Exe -Arguments "audit --id $($Ids -join ',') --json $document" -TimeoutMinutes $TimeoutMinutes
+        $run = Invoke-HiddenProcess -FilePath $Exe -Arguments "audit --id $($Ids -join ',') --json $document --shipped-config" -TimeoutMinutes $TimeoutMinutes
         if ($run.ExitCode -ne 0) { throw "baseline.exe audit --json $document failed ($($run.ExitCode)): $($run.Errors)" }
         [IO.File]::WriteAllBytes((Join-Path $Folder "$document.json"), $run.Output)
     }

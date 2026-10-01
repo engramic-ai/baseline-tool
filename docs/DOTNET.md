@@ -29,6 +29,7 @@ This note covers the layout, the rules the build enforces, and how to build and 
 | `tools/contracts` | Runs the unchanged Intune scripts on a status.json, and proves the contract end to end as SYSTEM in CI (below). |
 | `tools/ci` | Helpers for CI runners only: running a program, or the SYSTEM tests of a test assembly, as SYSTEM through a temporary scheduled task, and running the attack suite with a throwaway standard user as the attacker. |
 | `tools/Release.psm1` | What the release scripts beside it share: which PE files of a published folder this repository built, and what their signatures say (below). |
+| `tools/spikes` | Measurements behind the port's spikes, run by hand: nothing in them ships, builds with the solution or runs in CI. |
 
 Model, Platform, Engine and Controls target `net10.0` and must not depend on Windows, so their tests
 run on Linux too. Windows, the CLI and their tests target `net10.0-windows`. All build output goes
@@ -923,6 +924,144 @@ and that a file carrying Microsoft's signature is refused, runs the check, catch
 and runs `baseline.exe --version` and `baseline.exe audit --id SU-01` from the signed build. When
 `build\release-dotnet` holds a build signed by `New-SignedRelease.ps1 -DotNet`, it runs the same check and the
 same slice on that build too, as it was signed.
+
+### Spike 2: one runtime folder, size, start-up and ReadyToRun determinism
+
+The questions: can `baseline.exe`, the desktop app (WPF) and a later service share one self-contained runtime
+folder; what the folder weighs, with and without ReadyToRun; what ReadyToRun buys at start-up; and whether the
+ReadyToRun publish is reproducible, so that a rebuild from a tag that matches CI's files byte for byte could be a
+second gate before signing. `tools/spikes/Measure-RuntimeSpike.ps1` measures each from clones of a commit, never
+the working tree, publishing as `New-SignedRelease.ps1 -DotNet` does; its header says how to run it. The numbers
+are from commit 45a29f4 (the product code of `feat/dotnet-port` at 26b43ec), SDK 10.0.401 with runtime 10.0.12, on
+Windows 11 25H2 (build 26200), an Intel Core Ultra 7 265H on mains power with Defender's real-time protection on,
+not elevated. An MB is 1,048,576 bytes.
+
+**Proposed decision**, for the maintainer to take:
+
+- **One runtime folder.** Ship the three executables in one self-contained folder: 135 MB and 294 files, against
+  292 MB and 690 files as three folders, and 2 MB more than the desktop app alone. Build it by publishing each app
+  to its own folder and merging them, never by publishing into one folder, and fail the merge on any file two apps
+  publish with different content, except the two below, where the desktop runtime pack's copy is kept. Sign once,
+  after the merge.
+- **Keep ReadyToRun**, as now: 0.65 MB more of our own files (0.28 MB zipped) for an audit 14% faster warm and
+  first runs 100 to 200 ms faster.
+- **Make the release publish reproducible, and add the gate.** `New-SignedRelease.ps1 -DotNet` publishes with
+  `-p:ContinuousIntegrationBuild=true`, from a clone of the tagged commit whose origin is the GitHub repository; CI
+  records the SHA-256 of every file it publishes (a workflow step, for the maintainer to add); and the release
+  refuses to sign unless the two lists match.
+
+**Fallbacks.** For the folder: three self-contained folders side by side, each published exactly as `baseline.exe`
+is today, 157 MB more and nothing shared. For ReadyToRun: `PublishReadyToRun=false`, which costs start-up and
+changes nothing else measured here. For the gate: if CI's files do not match a workstation's, sign the local build
+as today, judged by `Test-ReleaseSignatures.ps1` alone, until CI publishes and attests the unsigned folder (above),
+which needs no reproducibility.
+
+**Size.** `baseline.exe` published as the release publishes it:
+
+| Self-contained win-x64 | Files | Folder (MB) | Zip (MB) | Our files (MB) | PDBs (MB) |
+|---|---:|---:|---:|---:|---:|
+| ReadyToRun, as released | 203 | 78.6 | 36.1 | 1.44 | 0.33 |
+| Without ReadyToRun | 203 | 77.9 | 35.8 | 0.79 | 0.33 |
+
+The runtime is 77 MB of it either way. ReadyToRun more than doubles most of our assemblies (`baseline.dll` from 44
+to 104 KB, Model from 182 to 464 KB, Windows from 267 to 392 KB). The zip is what `Compress-Archive` makes, as the
+release does.
+
+**Start-up.** Wall-clock milliseconds from process start to exit, as a standard user. A first run is from a fresh
+copy of the published folder, made two seconds before, with the builds taking turns to go first: the median of
+four, and the range. Warm: the median of ten after one discarded, with the range and the interquartile range, the
+builds and commands interleaved.
+
+| Build | Command | First run | Warm median | Warm range | Warm IQR |
+|---|---|---:|---:|---:|---:|
+| ReadyToRun | `baseline.exe --version` | 210 (200-213) | 76 | 72-101 | 73-85 |
+| ReadyToRun | `baseline.exe audit --id SU-01 --shipped-config` | 385 (332-419) | 133 | 124-173 | 129-138 |
+| Without | `baseline.exe --version` | 310 (277-329) | 74 | 71-82 | 72-81 |
+| Without | `baseline.exe audit --id SU-01 --shipped-config` | 585 (576-602) | 154 | 141-183 | 145-180 |
+
+`--version` runs little of our code, and System.CommandLine is not ReadyToRun in either build (to keep its
+signature), so warm it does not change; the audit is 21 ms faster. A first pass, with the builds in a fixed order and
+three first runs, agreed within 10 ms warm. The first run's gap is larger, 100 ms for `--version` and 200 ms for the
+audit, and held in both passes whichever build went first; why first use costs the build without ReadyToRun that
+much more was not isolated. CPU time is too coarse to report: Windows counts it in ticks of 15.6 ms.
+
+**One folder.** Two stand-ins, generated by the script and not kept: a WPF app (`net10.0-windows`, `UseWPF`) that
+renders text to a PNG without showing a window, and a service on `Microsoft.Extensions.Hosting.WindowsServices`
+10.0.12, started and stopped as a console app. Both reference Controls and Windows, call into them and list every
+assembly they loaded and where from, and are published as `baseline.exe` is: self-contained, ReadyToRun,
+`StartupHookSupport` false, package assemblies kept out of ReadyToRun. Each was published alone, then all three into
+one folder, the command line first.
+
+| Folder | Files | MB |
+|---|---:|---:|
+| `baseline.exe` alone | 203 | 78.6 |
+| Desktop stand-in alone | 254 | 132.8 |
+| Service stand-in alone | 233 | 80.5 |
+| The three, apart | 690 | 291.9 |
+| One shared folder | 294 | 134.7 |
+
+What it showed:
+
+- **Each app starts on its own terms.** In a host trace (`COREHOST_TRACE`), each launcher loads the folder's
+  `hostfxr.dll`, runs self-contained as its own `.runtimeconfig.json` says, and takes its trusted assemblies from
+  its own `.deps.json`: 180, 226 and 210 of them, all in the folder. Each `.runtimeconfig.json` keeps its own
+  settings; the desktop app's names both frameworks, the others `Microsoft.NETCore.App` alone. All three ran from
+  the shared folder, `baseline.exe audit --id SU-01 --shipped-config` included, and every assembly they loaded came
+  from it.
+- **Our libraries are the same bytes in all three.** ReadyToRun compiled each of our five libraries identically for
+  the three apps, so one signed copy serves them all.
+- **Two files differ by app.** Of the 199 files that two or three apps publish, two have different content:
+  `WindowsBase.dll`, a 16 KB facade (assembly 4.0.0.0) in the core runtime pack and the 2.1 MB WPF assembly
+  (10.0.0.0) in the desktop pack; and `System.Diagnostics.EventLog.dll`, the desktop pack's ReadyToRun copy and the
+  service's package copy, IL only, of the same file version. The folder kept the desktop pack's copy of both, so the
+  command line and the service run with files other than the ones their `.deps.json` names, which worked: no
+  assembly the command line ships refers to WindowsBase, and the service read the event log through the desktop
+  copy. Which copy a
+  publish into one folder keeps depends on timestamps, since `dotnet publish` copies a file only when it is newer
+  than the one there, and not on the order. Hence the merge, with these two as its only exceptions.
+- **Signing ours alone still works.** `Get-ReleaseOwnFile` reads every `.deps.json` in the folder, so it found our
+  eleven files, three launchers, three app assemblies and our five libraries, and nothing else. The service's 31
+  package assemblies kept Microsoft's signatures. A list of names in `PublishReadyToRunExclude` would be long for
+  it: the stand-in leaves out every package assembly by its `NuGetPackageId` instead, apart from this repository's
+  libraries, which carry a package id too when they come through another project.
+- **The signature check fails two WPF files, wrongly.** `Test-ReleaseSignatures.ps1 -Unsigned` fails the folder on
+  the desktop pack's `D3DCompiler_47_cor3.dll` and `vcruntime140_cor3.dll` as signed only in a catalog. Both carry
+  Microsoft's timestamped signature in the file, but their hashes are also in this machine's catalogs (Windows ships
+  the same D3DCompiler build), and `Get-AuthenticodeSignature` then reports the catalog's signature. Any release
+  with the WPF app would meet this, shared folder or not, so the check must read the signature in the file before
+  the desktop app ships.
+
+**ReadyToRun determinism.** Two clean publishes of the ReadyToRun build, each from its own clone at a different
+path, every file compared by SHA-256:
+
+| The two builds | Files | Different |
+|---|---:|---:|
+| As a workstation publishes today, with no CI variable | 203 | 12 |
+| As CI publishes (`CI=true`, which sets `ContinuousIntegrationBuild`) | 203 | 0 |
+| A workstation's, with `-p:ContinuousIntegrationBuild=true` | 203 | 0, and the same as CI's way |
+| CI's way, the second clone checked out with LF line endings | 203 | 0, and the same as the first |
+| CI's way, the second build with an empty NuGet package folder of its own | 203 | 0, and the same as the first |
+
+The twelve are our six assemblies and their PDBs. Without `ContinuousIntegrationBuild` the compiler writes the
+build's paths: each assembly's debug directory names its PDB by its full path, and the PDB names every source file.
+The PDB's checksum is in the assembly too, and the deterministic MVID is a hash of the assembly, so all of them
+change with the path, and so does the ReadyToRun image compiled from it. `baseline.exe`, the runtime and the
+package files were the same in every build. With it, the SDK maps the paths to `/_/`
+(`/_/artifacts/obj/Engramic.Baseline.Cli/release_win-x64/baseline.pdb`), which is what makes the deterministic
+build (`Deterministic` is already on) the same from any folder; no `PathMap` or `DebugType` of our own is needed.
+The PDBs then carry source link to the commit on GitHub, so the files depend on the commit and the origin too: a
+rebuild must be of the same commit (a pull request's CI run builds its merge commit, not the branch's head), from a
+clone whose origin is the GitHub repository, as the script's clones are.
+
+**Still to prove:**
+
+- That CI's files match a workstation's: another machine, Windows build (the runners are on 26100), processor and
+  SDK folder. A workflow step that records the hashes of what CI publishes, and the script's Determinism phase with
+  `-ReferenceManifest` on them for the same commit, would show it.
+- Start-up on the lab builds 14393, 17763 and 19045, and on slower machines.
+- The real desktop app and service, which will bring packages of their own; the service running as a service; and
+  a shared folder signed and checked in the sign-test sandbox.
+- The merge, which is not written yet.
 
 ## CI
 

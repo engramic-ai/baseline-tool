@@ -19,13 +19,20 @@ namespace Engramic.Baseline.Cli;
 /// leaves status.json as it was, so its age keeps growing and Intune stops trusting it.
 /// </para>
 /// <para>
+/// The checks read config through the config trust gate (<see cref="ConfigTrustGate"/>): an administrator's
+/// override in the data folder's config folder replaces a shipped file only when it passes every rule. The run
+/// names each override it used, and warns of each one it refused, naming why, as the module warns and carries
+/// on with the shipped file; and of each one it could not read, whose checks report an Error finding. Each
+/// warning is also Application event 1003, so that an administrator sees it without the task's output.
+/// </para>
+/// <para>
 /// The exit codes are the module's: <see cref="Succeeded"/>, <see cref="Failed"/> (also for a refusal to
 /// run, and for a mutex this account may not open, which another program may have made to stop audits)
 /// and <see cref="AlreadyRunning"/>.
 /// </para>
 /// <para>
 /// Not ported yet: counting failed runs in last-error.json, the report folder and its retention, the log,
-/// events 1000 to 1003, and excludeCheckIds from an administrator's config. Every failure ends in
+/// events 1000 to 1002, and excludeCheckIds from an administrator's config. Every failure ends in
 /// <see cref="Fail"/> and every success in <see cref="Succeed"/>, where those join, and the checks are
 /// chosen in <see cref="Selection"/>.
 /// </para>
@@ -90,7 +97,7 @@ internal static class ScheduledAudit
             {
                 try
                 {
-                    return Audit(settings, store, output);
+                    return Audit(settings, store, output, error);
                 }
                 catch (Exception e) when (e is not OutOfMemoryException)
                 {
@@ -104,14 +111,31 @@ internal static class ScheduledAudit
     /// <returns>The selection.</returns>
     internal static CheckSelection Selection() => new() { Scopes = [CheckScope.Machine] };
 
-    private static int Audit(ScheduledAuditSettings settings, ISecureStore store, TextWriter output)
+    private static int Audit(ScheduledAuditSettings settings, ISecureStore store, TextWriter output, TextWriter error)
     {
         var device = DeviceContextReader.Read(settings.Registry, settings.ComputerName, settings.Account, settings.Time.GetUtcNow());
         output.WriteLine($"Audit started on {device.ComputerName} as {device.RunningAs} (tool {settings.ToolVersion})");
-        var context = new CheckContext(device, new AuditConfig(settings.Config), settings.Time);
+
+        // Overrides are read from the data folder this run holds, while it holds it.
+        var config = new ConfigTrustGate(settings.Config, store, settings.Account);
+        var context = new CheckContext(device, new AuditConfig(config), settings.Time);
 
         // Synchronously, on this thread, which holds the mutex; the checks themselves run on the thread pool.
         var findings = new AuditRunner(settings.Catalog).RunAsync(Selection(), context).GetAwaiter().GetResult();
+        foreach (var path in config.Overrides)
+        {
+            output.WriteLine("Config override used: " + path);
+        }
+
+        foreach (var notice in config.Notices)
+        {
+            error.WriteLine("Warning: " + notice);
+            if (!settings.EventLog.Write(DataFolderLayout.NoticeEventId, EventLogLevel.Warning, DataFolderLayout.EventMessage(notice)))
+            {
+                error.WriteLine($"Warning: The warning above could not be written to the Application event log as event {DataFolderLayout.NoticeEventId}.");
+            }
+        }
+
         var status = StatusBuilder.Build(findings, settings.Catalog, device, settings.ToolVersion);
         store.WriteFile(StatusFile.FileName, StatusFile.ToBytes(status));
         return Succeed(output, status, store.RootPath + @"\" + StatusFile.FileName);

@@ -42,6 +42,12 @@ namespace Engramic.Baseline.Windows;
 /// could change an item keeps that access after any later lock.
 /// </para>
 /// <para>
+/// <see cref="OpenReadOnly(SecureStoreOptions)"/>, for a run that promises to change nothing, checks the
+/// data folder as <see cref="Open(SecureStoreOptions)"/> does and gives a <see cref="ReadOnlySecureStore"/>,
+/// which can only read: a folder kept in it is judged the same way, and refused when it fails, never moved
+/// aside, deleted or made, so nothing is ever written to the event log either.
+/// </para>
+/// <para>
 /// A file is written by creating a new one under a random name, exclusively (a link already at the name is
 /// a collision, never followed), owned by Administrators and taking the folder's access list; checking it
 /// through its handle; writing and flushing it; and renaming it over the target through its handle. The
@@ -105,6 +111,15 @@ public sealed class SecureStore : ISecureStore
 
     private const NTCREATEFILE_CREATE_OPTIONS Synchronous = NTCREATEFILE_CREATE_OPTIONS.FILE_SYNCHRONOUS_IO_NONALERT;
     private const NTCREATEFILE_CREATE_OPTIONS Asynchronous = 0;
+
+    /// <summary>
+    /// Opens without waiting for another process to give up an oplock it holds on the item, which it may never
+    /// do: the open that would wait comes back at once, and is tried again like one refused for sharing.
+    /// </summary>
+    private const NTCREATEFILE_CREATE_OPTIONS NoOplockWait = NTCREATEFILE_CREATE_OPTIONS.FILE_COMPLETE_IF_OPLOCKED;
+
+    /// <summary>STATUS_OPLOCK_BREAK_IN_PROGRESS: the open succeeded without waiting, while another holder's oplock is being broken.</summary>
+    private const int OplockBreakInProgress = 0x0000_0108;
 
     /// <summary>How many times an operation that another process can hold up is tried.</summary>
     private const int Attempts = 6;
@@ -176,6 +191,24 @@ public sealed class SecureStore : ISecureStore
     /// </exception>
     public static SecureStore Initialize(SecureStoreOptions options) => Initialize(options, SecureStoreRules.Machine, hooks: null);
 
+    /// <summary>
+    /// Opens the data folder the install made only to read from it, checked as <see cref="Open(SecureStoreOptions)"/>
+    /// checks it, holding it and ProgramData open until disposed: the way in for a run that promises to change
+    /// nothing, such as an elevated baseline.exe audit reading administrators' config overrides.
+    /// </summary>
+    /// <param name="options">Where the folder and its seal are, and the clock. The event log is never written.</param>
+    /// <returns>The store, which can only read; null when there is no data folder, as before any install.</returns>
+    /// <remarks>
+    /// Nothing is ever created, moved aside, deleted or written, and no event is recorded: a folder kept in the
+    /// data folder that fails the trust rules is refused when a file in it is read (<see cref="ReadOnlySecureStore.ReadFile"/>),
+    /// and a missing one reads as nothing.
+    /// </remarks>
+    /// <exception cref="SecureStoreException">
+    /// ProgramData cannot be opened or trusted, or the data folder cannot be opened, is a link, is not what its
+    /// path names, is not sealed or is not trusted; the message says which. Nothing is changed to get round it.
+    /// </exception>
+    public static ReadOnlySecureStore? OpenReadOnly(SecureStoreOptions options) => OpenReadOnly(options, SecureStoreRules.Machine, hooks: null);
+
     /// <inheritdoc/>
     public void WriteFile(string name, ReadOnlySpan<byte> content) => WriteFile(DataFolder.Root, name, content);
 
@@ -193,7 +226,19 @@ public sealed class SecureStore : ISecureStore
         ObjectDisposedException.ThrowIf(_disposed, this);
         ThrowIfNotPlainFileName(name);
         ThrowIfNotReadLength(maxLength);
-        return FolderFor(folder, create: false) is { } held ? Read(held, name, maxLength) : null;
+        HeldFolder? held;
+        try
+        {
+            held = FolderFor(folder, create: false);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            // The folder could not be opened and checked, or its untrusted namesake moved aside, so nothing in it
+            // was judged: what the file holds is not known.
+            throw new SecureStoreException($"Could not read {name}: {e.Message}", isUnavailable: true, e);
+        }
+
+        return held is null ? null : Read(held, name, maxLength);
     }
 
     /// <inheritdoc/>
@@ -262,14 +307,71 @@ public sealed class SecureStore : ISecureStore
     /// <param name="rules">The trust rules and the owner of what is created: <see cref="SecureStoreRules.Machine"/> for the product.</param>
     /// <param name="hooks">Where a test steps in; null for the product.</param>
     /// <returns>The store.</returns>
-    internal static SecureStore Open(SecureStoreOptions options, SecureStoreRules rules, SecureStoreHooks? hooks) => Start(options, rules, hooks, initialize: false);
+    internal static SecureStore Open(SecureStoreOptions options, SecureStoreRules rules, SecureStoreHooks? hooks) => Start(options, rules, hooks, Way.Open);
 
     /// <summary>Makes the data folder and the folders kept in it with the rules and the hooks a test gives.</summary>
     /// <param name="options">Where the folder and its seal are, the event log and the clock.</param>
     /// <param name="rules">The trust rules and the owner of what is created: <see cref="SecureStoreRules.Machine"/> for the product.</param>
     /// <param name="hooks">Where a test steps in; null for the product.</param>
     /// <returns>The store.</returns>
-    internal static SecureStore Initialize(SecureStoreOptions options, SecureStoreRules rules, SecureStoreHooks? hooks) => Start(options, rules, hooks, initialize: true);
+    internal static SecureStore Initialize(SecureStoreOptions options, SecureStoreRules rules, SecureStoreHooks? hooks) => Start(options, rules, hooks, Way.Initialize);
+
+    /// <summary>
+    /// Opens the data folder only to read from it, with the rules and the hooks a test gives: checked, never
+    /// created, moved or changed.
+    /// </summary>
+    /// <param name="options">Where the folder and its seal are, and the clock.</param>
+    /// <param name="rules">The trust rules: <see cref="SecureStoreRules.Machine"/> for the product.</param>
+    /// <param name="hooks">Where a test steps in; null for the product.</param>
+    /// <returns>The store, which can only read; null when there is no data folder.</returns>
+    internal static ReadOnlySecureStore? OpenReadOnly(SecureStoreOptions options, SecureStoreRules rules, SecureStoreHooks? hooks)
+    {
+        var store = Start(options, rules, hooks, Way.ReadOnly);
+        if (store._root is null)
+        {
+            // No data folder, so nothing to read: let go of ProgramData.
+            store.Dispose();
+            return null;
+        }
+
+        return new ReadOnlySecureStore(store);
+    }
+
+    /// <summary>
+    /// Reads a whole file for a store that changes nothing (<see cref="ReadOnlySecureStore"/>): as
+    /// <see cref="ReadFile"/> does, except that the folder it is in is only judged (<see cref="JudgeKept"/>), and a
+    /// folder that is refused gives a <see cref="SecureStoreException"/> with
+    /// <see cref="SecureStoreException.IsFolderRefused"/> set.
+    /// </summary>
+    /// <param name="folder">The folder.</param>
+    /// <param name="name">The name of the file: a plain name, never a path.</param>
+    /// <param name="maxLength">The most bytes to read.</param>
+    /// <returns>The content, or null when there is no such file or folder.</returns>
+    internal byte[]? ReadWithoutChanging(DataFolder folder, string name, int maxLength)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ThrowIfNotPlainFileName(name);
+        ThrowIfNotReadLength(maxLength);
+        HeldFolder? held;
+        try
+        {
+            held = folder == DataFolder.Root ? Root : JudgeKept(DataFolderLayout.NameOf(folder));
+        }
+        catch (SecureStoreException e) when (!e.IsUnavailable)
+        {
+            // The folder was judged and refused, so nothing in it was opened: whether the file is there is not
+            // known, and the caller is told it was the folder.
+            throw new SecureStoreException(e.Message, e) { IsFolderRefused = true };
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException && e is not SecureStoreException)
+        {
+            // The folder could not be opened or checked at the time, so nothing in it was judged: what the file
+            // holds is not known. A folder that fails the rules is a SecureStoreException, and refused.
+            throw new SecureStoreException($"Could not read {name}: {e.Message}", isUnavailable: true, e);
+        }
+
+        return held is null ? null : Read(held, name, maxLength);
+    }
 
     /// <summary>
     /// Finds the ProgramData folder with the known-folder API, and checks it is ProgramData on the drive
@@ -368,7 +470,7 @@ public sealed class SecureStore : ISecureStore
         };
     }
 
-    private static SecureStore Start(SecureStoreOptions options, SecureStoreRules rules, SecureStoreHooks? hooks, bool initialize)
+    private static SecureStore Start(SecureStoreOptions options, SecureStoreRules rules, SecureStoreHooks? hooks, Way way)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(rules);
@@ -386,7 +488,7 @@ public sealed class SecureStore : ISecureStore
             store = new SecureStore(programData, programDataPath, rules, options, hooks);
             ExpectFinalPath(programData, programDataPath);
             Refuse(rules.Trust.FindProgramDataProblem(programDataPath, FileHandles.ReadFacts(programData), FileHandles.ReadSecurity(programData, ownerOnly: true).Owner));
-            if (initialize)
+            if (way == Way.Initialize)
             {
                 store.EstablishRoot(IsSealed(options));
                 foreach (var name in DataFolderLayout.KeptFolderNames)
@@ -396,7 +498,8 @@ public sealed class SecureStore : ISecureStore
             }
             else
             {
-                store.OpenRoot(options);
+                // A read-only store takes a missing data folder as one with nothing in it, and is left without a root.
+                store.OpenRoot(options, missingIsNothing: way == Way.ReadOnly);
             }
 
             var started = store;
@@ -405,7 +508,7 @@ public sealed class SecureStore : ISecureStore
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException && e is not SecureStoreException)
         {
-            throw new SecureStoreException($"Could not {(initialize ? "set up" : "check")} the data folder in {programDataPath}: {e.Message}", e);
+            throw new SecureStoreException($"Could not {(way == Way.Initialize ? "set up" : "check")} the data folder in {programDataPath}: {e.Message}", e);
         }
         finally
         {
@@ -502,7 +605,7 @@ public sealed class SecureStore : ISecureStore
         }
     }
 
-    private static bool IsTransient(int error) => (WIN32_ERROR)error is WIN32_ERROR.ERROR_ACCESS_DENIED or WIN32_ERROR.ERROR_SHARING_VIOLATION or WIN32_ERROR.ERROR_LOCK_VIOLATION;
+    private static bool IsTransient(int error) => (WIN32_ERROR)error is WIN32_ERROR.ERROR_ACCESS_DENIED or WIN32_ERROR.ERROR_SHARING_VIOLATION or WIN32_ERROR.ERROR_LOCK_VIOLATION or WIN32_ERROR.ERROR_OPLOCK_BREAK_IN_PROGRESS;
 
     private static bool IsMissing(int error) => (WIN32_ERROR)error is WIN32_ERROR.ERROR_FILE_NOT_FOUND or WIN32_ERROR.ERROR_PATH_NOT_FOUND;
 
@@ -512,7 +615,11 @@ public sealed class SecureStore : ISecureStore
     /// Opens or creates the item of one plain name in a folder, relative to the folder's handle and as itself:
     /// no path is parsed, a link at the name is opened as the link, and nothing stored online is recalled.
     /// </summary>
-    /// <returns>0 when <paramref name="item"/> was opened; otherwise the Win32 error.</returns>
+    /// <returns>
+    /// 0 when <paramref name="item"/> was opened; otherwise the Win32 error. With <see cref="NoOplockWait"/>, an
+    /// open that got in while another process's oplock was still being broken is closed again and gives
+    /// ERROR_OPLOCK_BREAK_IN_PROGRESS: reading or waiting on it could wait for that process for as long as it likes.
+    /// </returns>
     private static unsafe int OpenRelative(SafeFileHandle folder, string name, uint access, FILE_SHARE_MODE share, NTCREATEFILE_CREATE_DISPOSITION disposition, NTCREATEFILE_CREATE_OPTIONS options, byte[]? descriptor, out SafeFileHandle? item)
     {
         item = null;
@@ -544,7 +651,14 @@ public sealed class SecureStore : ISecureStore
                     return (int)PInvoke.RtlNtStatusToDosError(status);
                 }
 
-                item = new SafeFileHandle(handle, ownsHandle: true);
+                var opened = new SafeFileHandle(handle, ownsHandle: true);
+                if (status.Value == OplockBreakInProgress)
+                {
+                    opened.Dispose();
+                    return (int)WIN32_ERROR.ERROR_OPLOCK_BREAK_IN_PROGRESS;
+                }
+
+                item = opened;
                 return 0;
             }
         }
@@ -671,28 +785,37 @@ public sealed class SecureStore : ISecureStore
 
     /// <summary>
     /// Opens the item at a name to judge it, as itself: to list, read and hold it when this account may, and
-    /// otherwise with the least that removing it needs, which then says it could not be read.
+    /// otherwise with the least that removing it needs, which then says it could not be read. Neither open waits
+    /// for another process to give up an oplock on the item.
     /// </summary>
     private static int OpenToJudge(SafeFileHandle parent, string name, out SafeFileHandle? item, out bool readable)
     {
         readable = true;
-        var error = OpenRelative(parent, name, FolderRights, ShareReadWrite, NTCREATEFILE_CREATE_DISPOSITION.FILE_OPEN, Synchronous, null, out item);
+        var error = OpenRelative(parent, name, FolderRights, ShareReadWrite, NTCREATEFILE_CREATE_DISPOSITION.FILE_OPEN, Synchronous | NoOplockWait, null, out item);
         if ((WIN32_ERROR)error != WIN32_ERROR.ERROR_ACCESS_DENIED)
         {
             return error;
         }
 
         readable = false;
-        return OpenRelative(parent, name, RemoveRights, ShareAll, NTCREATEFILE_CREATE_DISPOSITION.FILE_OPEN, Asynchronous, null, out item);
+        return OpenRelative(parent, name, RemoveRights, ShareAll, NTCREATEFILE_CREATE_DISPOSITION.FILE_OPEN, Asynchronous | NoOplockWait, null, out item);
     }
 
-    /// <summary>Opens the data folder the install made, checked and held, never created or moved.</summary>
-    private void OpenRoot(SecureStoreOptions options)
+    /// <summary>
+    /// Opens the data folder the install made, checked and held, never created or moved. When it is missing
+    /// and <paramref name="missingIsNothing"/> is set, the store is left without one; otherwise that is refused.
+    /// </summary>
+    private void OpenRoot(SecureStoreOptions options, bool missingIsNothing)
     {
         var path = _programDataPath + @"\" + DataFolderName;
         var error = OpenRelative(_programData, DataFolderName, FolderRights, ShareReadWrite, NTCREATEFILE_CREATE_DISPOSITION.FILE_OPEN, Synchronous, null, out var root);
         if (root is null)
         {
+            if (missingIsNothing && IsMissing(error))
+            {
+                return;
+            }
+
             throw OpenFailure("The data folder", path, error);
         }
 
@@ -726,6 +849,72 @@ public sealed class SecureStore : ISecureStore
     }
 
     private HeldFolder? FolderFor(DataFolder folder, bool create) => folder == DataFolder.Root ? Root : Kept(DataFolderLayout.NameOf(folder), create);
+
+    /// <summary>
+    /// Gets a folder the store keeps in the data folder for a store that changes nothing: opened as itself,
+    /// without waiting on an oplock, judged through its handle as <see cref="Kept"/> judges it, and held; or
+    /// refused. Unlike <see cref="Kept"/>, nothing is moved aside, deleted or made, and no notice is given.
+    /// </summary>
+    /// <returns>The folder, held; null when nothing is at its name.</returns>
+    /// <exception cref="SecureStoreException">It fails the trust rules, or this account may not open it to judge it.</exception>
+    /// <exception cref="IOException">It could not be opened at the time, such as while another process held it.</exception>
+    private HeldFolder? JudgeKept(string name)
+    {
+        if (_kept.TryGetValue(name, out var held))
+        {
+            return held;
+        }
+
+        var path = Root.PathOf(name);
+        SafeFileHandle? item;
+        for (var attempt = 1; ; attempt++)
+        {
+            var error = OpenRelative(Root.Handle, name, FolderRights, ShareReadWrite, NTCREATEFILE_CREATE_DISPOSITION.FILE_OPEN, Synchronous | NoOplockWait, null, out item);
+            if (item is not null)
+            {
+                break;
+            }
+
+            if (IsMissing(error))
+            {
+                return null;
+            }
+
+            if ((WIN32_ERROR)error == WIN32_ERROR.ERROR_ACCESS_DENIED)
+            {
+                // What Kept moves aside as unreadable: a judgement of the folder, not something passing.
+                throw new SecureStoreException(Unreadable(path));
+            }
+
+            if (attempt >= Attempts || (WIN32_ERROR)error is not (WIN32_ERROR.ERROR_SHARING_VIOLATION or WIN32_ERROR.ERROR_OPLOCK_BREAK_IN_PROGRESS))
+            {
+                throw FileHandles.Failure($"Could not open {path} to check it (it may be open in another process)", error);
+            }
+
+            Pause(attempt);
+        }
+
+        string? problem;
+        try
+        {
+            problem = _rules.Trust.FindFolderProblem(path, FileHandles.ReadFacts(item), FileHandles.ReadSecurity(item));
+        }
+        catch
+        {
+            item.Dispose();
+            throw;
+        }
+
+        if (problem is not null)
+        {
+            item.Dispose();
+            throw new SecureStoreException(problem);
+        }
+
+        held = Hold(item, path);
+        _kept.Add(name, held);
+        return held;
+    }
 
     /// <summary>
     /// Establishes a folder the store keeps at a name in a folder it holds: keeps what is there when it passes
@@ -1047,7 +1236,10 @@ public sealed class SecureStore : ISecureStore
 
     /// <summary>
     /// Reads a whole file in a held folder through its handle, after checking it through that handle: denying
-    /// writers while it is read, so it cannot change, and never reading beyond its checked length.
+    /// writers while it is read, so it cannot change, and never reading beyond its checked length. A file that
+    /// breaks a rule, or that denies this account the right to read it, is refused; one that cannot be opened or
+    /// read at the time (held open without sharing, locked in part, an oplock another process does not give up,
+    /// or a device error) gives a <see cref="SecureStoreException"/> that says so (<see cref="SecureStoreException.IsUnavailable"/>).
     /// </summary>
     private byte[]? Read(HeldFolder folder, string name, int maxLength)
     {
@@ -1060,7 +1252,7 @@ public sealed class SecureStore : ISecureStore
             SafeFileHandle? file;
             for (var attempt = 1; ; attempt++)
             {
-                var error = OpenRelative(folder.Handle, name, ReadRights, ShareRead, NTCREATEFILE_CREATE_DISPOSITION.FILE_OPEN, Synchronous, null, out file);
+                var error = OpenRelative(folder.Handle, name, ReadRights, ShareRead, NTCREATEFILE_CREATE_DISPOSITION.FILE_OPEN, Synchronous | NoOplockWait, null, out file);
                 if (file is not null)
                 {
                     break;
@@ -1071,7 +1263,13 @@ public sealed class SecureStore : ISecureStore
                     return null;
                 }
 
-                if (attempt >= Attempts || (WIN32_ERROR)error != WIN32_ERROR.ERROR_SHARING_VIOLATION)
+                if ((WIN32_ERROR)error == WIN32_ERROR.ERROR_ACCESS_DENIED)
+                {
+                    // Its own access list keeps this account out: a judgement of the file, not something passing.
+                    throw new SecureStoreException($"Could not read {path}: {FileHandles.Failure($"Could not open {path} to read it", error).Message}");
+                }
+
+                if (attempt >= Attempts || (WIN32_ERROR)error is not (WIN32_ERROR.ERROR_SHARING_VIOLATION or WIN32_ERROR.ERROR_OPLOCK_BREAK_IN_PROGRESS))
                 {
                     throw FileHandles.Failure($"Could not open {path} to read it", error);
                 }
@@ -1100,7 +1298,7 @@ public sealed class SecureStore : ISecureStore
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException && e is not SecureStoreException)
         {
-            throw new SecureStoreException($"Could not read {path}: {e.Message}", e);
+            throw new SecureStoreException($"Could not read {path}: {e.Message}", isUnavailable: true, e);
         }
     }
 
@@ -1241,6 +1439,19 @@ public sealed class SecureStore : ISecureStore
         using var elapsed = new ManualResetEventSlim();
         using var timer = _time.CreateTimer(static state => ((ManualResetEventSlim)state!).Set(), elapsed, RetryDelays[Math.Min(attempt, RetryDelays.Length) - 1], Timeout.InfiniteTimeSpan);
         elapsed.Wait();
+    }
+
+    /// <summary>How a store comes into being.</summary>
+    private enum Way
+    {
+        /// <summary>The data folder the install made, checked (<see cref="SecureStore.Open(SecureStoreOptions)"/>).</summary>
+        Open,
+
+        /// <summary>The data folder and the folders kept in it, made (<see cref="SecureStore.Initialize(SecureStoreOptions)"/>).</summary>
+        Initialize,
+
+        /// <summary>The data folder the install made, checked only to read from it (<see cref="SecureStore.OpenReadOnly(SecureStoreOptions)"/>).</summary>
+        ReadOnly,
     }
 
     /// <summary>An untrusted item removed from where the store keeps a folder, and why it was not trusted.</summary>

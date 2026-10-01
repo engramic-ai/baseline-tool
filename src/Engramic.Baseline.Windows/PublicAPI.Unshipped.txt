@@ -9,6 +9,10 @@ Engramic.Baseline.Windows.AuditMutex
 Engramic.Baseline.Windows.AuditMutex.Dispose() -> void
 Engramic.Baseline.Windows.ConsoleSession
 Engramic.Baseline.Windows.CurrentProcess
+Engramic.Baseline.Windows.ReadOnlySecureStore
+Engramic.Baseline.Windows.ReadOnlySecureStore.Dispose() -> void
+Engramic.Baseline.Windows.ReadOnlySecureStore.ReadFile(Engramic.Baseline.Platform.DataFolder folder, string! name, int maxLength) -> byte[]?
+Engramic.Baseline.Windows.ReadOnlySecureStore.RootPath.get -> string!
 Engramic.Baseline.Windows.SecureStore
 Engramic.Baseline.Windows.SecureStore.CreateScratchFolder() -> Engramic.Baseline.Platform.IScratchFolder!
 Engramic.Baseline.Windows.SecureStore.DeleteTree(Engramic.Baseline.Platform.DataFolder folder, string! name) -> System.Collections.Generic.IReadOnlyList<string!>!
@@ -49,6 +53,7 @@ static Engramic.Baseline.Windows.ConsoleSession.GetActiveSessionId() -> uint?
 static Engramic.Baseline.Windows.CurrentProcess.ReadAccount() -> Engramic.Baseline.Platform.ProcessAccount!
 static Engramic.Baseline.Windows.SecureStore.Initialize(Engramic.Baseline.Windows.SecureStoreOptions! options) -> Engramic.Baseline.Windows.SecureStore!
 static Engramic.Baseline.Windows.SecureStore.Open(Engramic.Baseline.Windows.SecureStoreOptions! options) -> Engramic.Baseline.Windows.SecureStore!
+static Engramic.Baseline.Windows.SecureStore.OpenReadOnly(Engramic.Baseline.Windows.SecureStoreOptions! options) -> Engramic.Baseline.Windows.ReadOnlySecureStore?
 static Engramic.Baseline.Windows.SecureStoreOptions.ForMachine(Engramic.Baseline.Platform.IRegistry! registry, System.TimeProvider! time) -> Engramic.Baseline.Windows.SecureStoreOptions!
 static Engramic.Baseline.Windows.SecureStoreOptions.operator !=(Engramic.Baseline.Windows.SecureStoreOptions? left, Engramic.Baseline.Windows.SecureStoreOptions? right) -> bool
 static Engramic.Baseline.Windows.SecureStoreOptions.operator ==(Engramic.Baseline.Windows.SecureStoreOptions? left, Engramic.Baseline.Windows.SecureStoreOptions? right) -> bool

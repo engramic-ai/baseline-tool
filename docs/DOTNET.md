@@ -138,8 +138,9 @@ CsWin32 is still 0.x and pinned to an exact version.
 **Config.** The shipped `config/*.json` files are built into `Engramic.Baseline.Controls` (`ShippedConfig`)
 from the repository's config folder, which the PowerShell module also reads. Nothing reads them from
 disk, so they cannot be changed beside the executable, and no file API is needed for them. A check that
-reads another file adds it there as an `EmbeddedResource`. Administrators' overrides, which replace a
-shipped file whole, will come through SecureStore and its trust checks, in front of the shipped copy.
+reads another file adds it there as an `EmbeddedResource`, and its schema to `ConfigFile` in the same change.
+Administrators' overrides, which replace a shipped file whole, come through SecureStore and the config trust
+gate, in front of the shipped copy (below).
 
 **Text.** Sources are ASCII only (write other characters as escapes, such as `"\u00e9"` in C#),
 user-facing text is British English, and quotes are straight. The Hygiene check below enforces the first.
@@ -190,7 +191,7 @@ tests' own.
 before and while SecureStore runs, at every place it keeps: pre-created folders, junctions, symbolic links, hard
 links and other reparse points, deny entries, rename races (staged between two of the store's steps by
 `SecureStoreHooks`), cloud-style placeholders and files stored online only, oversized files and deep trees, in the
-data folder, its kept folders, and the scratch and undo folders. Most run anywhere, with the account running the
+data folder, its kept folders, the scratch and undo folders, and administrators' config overrides. Most run anywhere, with the account running the
 tests standing in for the trusted accounts. Those with the product's rules, folders owned by Administrators,
 need elevation. `SecureStoreAttackerTests` need a real standard user as the attacker, whom a test impersonates:
 the Security job makes one for each run (`tools/ci/Invoke-SecurityTests.ps1`: a local account with a random name
@@ -244,9 +245,29 @@ SecureStore, which the scheduled audit writes. It has no option to name an outpu
 accepts only the sealed data folder, and a folder named on the command line may be one a standard user
 controls, or once did, which nothing in its state now can rule out.
 
+**Config.** Elevated (an elevated administrator or SYSTEM, the test the config trust gate makes), it reads
+administrators' config overrides from the data folder's `config` folder through the config trust gate, as the
+scheduled audit does, so that an administrator sees the result Intune will report. It opens the data folder with
+`SecureStore.OpenReadOnly` (below), which judges by the same rules but changes nothing: an untrusted data folder or
+`config` folder is refused and left in place, never moved aside, and a missing one is never made. It prints
+`Config override used: <path>` for each override in use, on standard output beside the summary and on standard
+error with `--json`, so that standard output stays the file alone; and `Warning: ...` on standard error for each
+override refused or unreadable, worded as the scheduled audit words it, and once for a data folder or `config`
+folder refused (`Warning: Ignoring the config overrides in the data folder and using the shipped config: <reason>`,
+or `in the config folder`). A refused `config` folder names no override, since nothing in it was opened and it may
+hold none; the scheduled audit would instead move it aside, with the one notice of event 1003. A refusal
+uses the shipped file; an override that cannot be read, such as one a standard user has locked or holds an oplock
+on, makes the checks that need it report Error, as in the scheduled audit. Nothing is written to the event log.
+A data folder or `config` folder that does not exist means no overrides, and no warning.
+
+Not elevated, it reads only the config that ships with the tool, since the data folder is for SYSTEM and
+administrators. `--shipped-config` does the same when elevated: the parity harness passes it, and gives the
+module an empty data folder, so that both read the shipped config whatever the runner's data folder holds.
+
 ```
 baseline.exe audit --id SU-01
 baseline.exe audit --id SU-01 --json status > status.json
+baseline.exe audit --id SU-01 --shipped-config
 ```
 
 ## The data folder: SecureStore
@@ -254,7 +275,8 @@ baseline.exe audit --id SU-01 --json status > status.json
 `SecureStore`, in `Engramic.Baseline.Windows`, is the machine data folder, `%ProgramData%\EngramicBaseline`,
 and the folders kept in it, checked through handles and held open while in use. It is the one file on
 `src/BannedApiExemptions.txt` that opens, creates, renames or deletes files and folders, and product code
-reaches files only through it (`ISecureStore`; the tests share a fake).
+reaches files only through it (`ISecureStore`, or `IDataFolderReader` for code that only reads; the tests share a
+fake).
 
 | Folder | What it holds | Standard users |
 |---|---|---|
@@ -271,11 +293,24 @@ a protected access list granting SYSTEM and Administrators full control, `O:BAD:
 and Users read and execute on `config`. The PowerShell tool's `packs` folder is not made, since code packs are
 not part of this tool; one an older install left is left alone.
 
-**Two ways in.**
+**Three ways in.**
 
 - `SecureStore.Open` is for everything that uses the data folder, such as the scheduled audit: the data folder
   must exist, carry the install's seal and be trusted, or it is refused; it is never created or moved. A folder
   kept in it is checked the first time it is used, and made then if it is missing.
+- `SecureStore.OpenReadOnly` is for a run that promises to change nothing, such as an elevated `baseline.exe audit`
+  reading administrators' config overrides. It checks the data folder exactly as `Open` does, through its handle,
+  and gives a `ReadOnlySecureStore`, or nothing when there is no data folder. That store can only read (`RootPath`
+  and `ReadFile`): it is not an `ISecureStore`, so no cast reaches a writer, and the SecureStore it reads through is
+  out of reach. A folder kept in the data folder is opened as itself and judged by the same rules the first time a
+  file in it is read, then held; one that fails, or that this account may not open to judge, is refused with a
+  `SecureStoreException` that says why (`IsFolderRefused`, since nothing in it was opened) and left as it is, never
+  moved aside or deleted, and a missing one reads as nothing and is not made. So it creates, moves, deletes and
+  writes nothing, and never writes event 1003. A separate type, rather than a flag on SecureStore that every writer
+  would have to check, makes the read-only promise something the compiler keeps for the store's own callers. The one
+  place the product chooses which store an audit opens, `AuditSettings.ForThisDevice`, opens it through a function
+  declared to give a `ReadOnlySecureStore`, so `SecureStore.Open` cannot take its place without that type changing,
+  and `AuditCommandTests` check the type.
 - `SecureStore.Initialize` is for the install and SYSTEM, with the audit mutex held as the installer holds it: it
   makes the data folder and every folder kept in it. An existing data folder is kept only when the seal exists
   and it passes the trust rules through its handle; anything else there is moved aside (below) and a fresh one
@@ -373,7 +408,19 @@ with one name, no longer than its caller allows.
 relative to its folder's handle, as itself, and shared with readers alone, so it cannot change while it is read.
 It is read only when the trust rules pass for it and it is no longer than the length the caller gives, at most
 64 MiB; a longer file is refused, never cut short. A missing file, or a missing folder, reads as nothing, and so
-does an untrusted folder, once it has been moved aside.
+does an untrusted folder, once it has been moved aside. Through `ReadOnlySecureStore`, an untrusted folder is
+refused instead (`SecureStoreException.IsFolderRefused`), and stays where it is.
+
+A file that breaks a rule, or whose access list keeps this account out, is refused. One that cannot be opened or
+read at the time is not judged at all, and the `SecureStoreException` says so (`IsUnavailable`): the file or its
+folder held open by another process without sharing, part of the file locked, or a device error. Anyone who may
+read the file can lock part of it, and standard users may read the `config` folder. Holding the file or its folder
+open without sharing stops the read only when the holder may write to what they hold: Windows ignores a refusal to
+share reading from a holder who may only read it. Nor does the store wait on an oplock another process holds on the
+file or a folder it judges: those opens use `FILE_COMPLETE_IF_OPLOCKED`, so an open that would wait for the holder
+to acknowledge the break comes back at once and is tried again, like one refused for sharing, six times over about
+three seconds. A holder who never acknowledges would otherwise hold the read, and the lock the config trust gate
+holds while it reads, for as long as they liked.
 
 **Scratch folders** (`CreateScratchFolder`) hold the files a Windows tool reads and writes, such as `secedit`'s
 INF and database: each is born locked under a random name in `scratch`, where the module's `New-CEScratchFolder`
@@ -395,7 +442,8 @@ like the rest, so that an elevated restore reads a journal no standard user coul
 
 Tests give the ProgramData path, the seal's location, the event log and the clock (`SecureStoreOptions`), and
 the trust rules and the owner of what the store makes, so that they run without elevation in folders of their
-own. Still to come: the config trust gate, which reads administrators' overrides through `ReadFile`, and
+own. The config trust gate (below) reads administrators' overrides through `ReadFile`, of SecureStore in the
+scheduled audit and of `ReadOnlySecureStore` in an elevated `baseline.exe audit`. Still to come:
 `baseline.exe setup`, which will call `Initialize` and write the seal.
 
 ### Spike 1: walking paths
@@ -463,6 +511,97 @@ are missing (`ClassicDelete` in `SecureStoreHooks` tests that way on any build).
 not relied on: `PathWalkingTests` accepts `STATUS_REPARSE_POINT_ENCOUNTERED` or `STATUS_INVALID_PARAMETER` for it,
 and writes which to the test output. The GitHub runners cover Windows Server 2025 (build 26100) in the meantime.
 
+## Config: the config trust gate
+
+The checks read config through `IConfigFiles`. The shipped files are built into Controls (`ShippedConfig`, above),
+and the config trust gate, `ConfigTrustGate` in Engine, puts in front of each one an administrator's override
+that passes every rule, as the module's `Get-CEConfig` does with `Get-CEDataPathProblem`. An override is a whole
+file of the same name in the data folder's `config` folder, and it replaces the shipped file whole: nothing is
+merged. Two runs read overrides: the scheduled audit, as SYSTEM, through the SecureStore it holds; and
+`baseline.exe audit` when it is elevated and not given `--shipped-config`, through `SecureStore.OpenReadOnly`,
+since it promises to change nothing (above). The gate is the same for both; only what happens to an untrusted
+`config` folder differs. An override is used only when all of these hold:
+
+| Rule | Held by |
+|---|---|
+| The run is elevated or SYSTEM. A run that is not reads no override from the machine: the data folder is for SYSTEM and administrators. | `ConfigTrustGate` |
+| The file ships and has a schema (`ConfigFile.Names`): only a file the tool reads can be overridden. | `ConfigTrustGate` |
+| SecureStore reads it, relative to the handle of the `config` folder it holds (which it checks first, and, when untrusted, moves aside with event 1003 in the scheduled audit, or refuses and leaves in place in `baseline.exe audit`), and as itself: not a junction, symbolic link or other reparse point, not stored online only, an ordinary file with one name, owned by SYSTEM, Administrators or TrustedInstaller, giving no one else a right to change it, denying them nothing, and no longer than 1 MiB (`ConfigTrustGate.MaxOverrideLength`, many times the largest file in the config folder). | `SecureStore.ReadFile`, `DataFolderTrust.FindReadProblem` |
+| It meets its file's schema: UTF-8, with or without a byte order mark; one JSON object and nothing after it; no comments or trailing commas; no member named twice in one object, whatever the case of its letters, since the reader matches names without regard to case; no more than 64 objects and arrays deep; and accepted by the file's source-generated reader, the one the checks use, with its required members and their types. Members the model does not have are allowed and not read, as the shipped files carry notes. | `ConfigFile.FindProblem` |
+
+Otherwise the shipped file is used, and the refusal is one of the gate's notices, naming the override and why, for
+the run to log. Nothing is changed to get round a refusal. Each file is decided the first time the run reads it,
+and later reads give the same bytes. A `config` folder refused as a whole, as `ReadOnlySecureStore` refuses an
+untrusted one (`SecureStoreException.IsFolderRefused`), is one notice that names the folder and no file, since
+nothing in it was opened and it may hold no override; every file is then the shipped copy for the rest of the run.
+The gate may be read from several threads, and reads the data folder one file at a time, as SecureStore needs.
+
+**An override that cannot be read is not refused.** When SecureStore could not open or read it at all
+(`SecureStoreException.IsUnavailable`, above), nothing about it was judged and what it holds is not known. A
+standard user can bring that about for as long as they like, by locking part of the override or holding an oplock
+on it, so falling back to the shipped copy would let them undo an administrator's override without a trace.
+Holding the override or the `config` folder open without sharing does the same for a process that may write to
+them; from a standard user, who may only read them, Windows ignores that refusal. Instead every read of that file
+in the run throws, each check that needs it reports an Error finding, and the gate's notice says why. Any other
+failure to read it counts the same way: only a refusal, by SecureStore's rules or the file's schema, uses the
+shipped copy.
+
+**A file joins with its schema.** A config file that joins the shipped config joins `ConfigFile`'s schemas in the
+same change: `ShippedConfigTests` fails while a shipped file has no schema, and the gate refuses every override of
+such a file. When `network.json` joins for the service client, its reader becomes its schema, and the proxy
+settings come through the gate once the gate is the `IConfigFiles` they are read from.
+
+**Differences from the module**, each deliberate:
+
+- A run that is not elevated reads no override, so a standard user's `baseline.exe audit` uses only the shipped
+  config. The module's audit reads any override it can list when it is not elevated, and the trusted ones when it
+  is. An elevated `baseline.exe audit` reads them as the scheduled audit does, so an administrator's result matches
+  what Intune reports; what is left of the difference is that a run that is not elevated reads none.
+- The data folder must carry the install's seal (SecureStore) before any override in it is read. The module reads
+  overrides wherever the permissions pass.
+- An override that is not valid is refused and the shipped file used. In the module, one that `ConvertFrom-Json`
+  cannot read stops the config load, and with it the audit.
+- An override must be UTF-8, with or without a byte order mark: one strict format for a file that SYSTEM trusts.
+  The module read overrides with `Get-Content -Raw`, which follows a UTF-16 byte order mark (what Windows
+  PowerShell 5.1's `>` and `Out-File` write) and in 5.1 reads a file without one as ANSI (what its `Set-Content`
+  writes), so an override saved either way loaded there. Here it is refused and the shipped file used, and the
+  notice and event 1003 say what was found and what to do: that the file is saved as UTF-16, or is not UTF-8 at a
+  given line and may be ANSI, and to save it as UTF-8, for example with `Set-Content -Encoding utf8`. ANSI text
+  with no character outside ASCII is already UTF-8, and loads.
+- The scheduled audit moves an untrusted `config` folder aside, with event 1003, rather than only ignoring it. An
+  elevated `baseline.exe audit`, which changes nothing, refuses it, warns once of the folder, and uses the shipped
+  files.
+- In the scheduled audit each refused or unreadable override is also event 1003, not only a warning in its output;
+  `baseline.exe audit` warns on standard error alone. An override that cannot be read fails the checks that need
+  it, where in the module it stops the config load and with it the audit.
+
+**Tests.** `ConfigSchemaTests` (Model) hold each rule of the schema. `ConfigTrustGateTests` (Engine) hold the gate's
+rules with a data folder in memory, including each of SecureStore's refusals as `DataFolderTrust` words it, and
+each kind of read failure, which is not a refusal. In the attack suite, `ConfigTrustGateTests` (Windows) plant an
+override that breaks each rule in a data folder of the tests' own and read it through the real SecureStore, without
+elevation, and hold it up in each way a reader can (`Holders`: the override held open without sharing, locked in
+part, or under a batch oplock never acknowledged, and the `config` folder held open without sharing), which must
+fail the checks within the store's retries and never give the shipped copy; `ConfigTrustGateElevatedTests` use the
+product's rules in a data folder made as the installer makes it: an override that a standard user owns (the
+attacker plants it), that standard users can change, or that is a symbolic link, a junction or a hard link is
+refused and the shipped file used, one owned by Administrators loads, the attacker locking an administrator's
+override or holding an oplock on it does not get the shipped copy used in its place, and the attacker holding the
+override or the `config` folder open without sharing does not stop it loading. The Security job runs them as the
+elevated administrator and as SYSTEM; they also read through `SecureStore.OpenReadOnly`, where an untrusted `config`
+folder, made standard-user-changeable or by the attacker, is refused, left in place and named in one notice of the
+folder. `SecureStoreReadOnlyTests` (Windows, without elevation) refuse a missing ProgramData folder and an
+unsealed, untrusted or linked data folder or `config` folder through the read-only store, the `config` folder as a
+folder (`IsFolderRefused`), give nothing for a missing data folder, read a trusted override, and
+show after each that the tree is unchanged name for name and byte for byte (`TreeSnapshot`), that no step that would
+change something was reached, and that no event was written; they also hold that `ReadOnlySecureStore` has no
+writer. `ScheduledAuditTests` (Cli) hold the scheduled audit's use of the gate, and, elevated, read an override
+through the real SecureStore. `AuditCommandTests` (Cli) hold that `baseline.exe audit` reads overrides only when
+elevated and not given `--shipped-config`, what it prints for each override used and refused, that a refusal of the
+data folder or an unreadable override is reported as the scheduled audit reports it, that a refused `config` folder
+is one warning of the folder, that its settings for this device open the data folder only through the read-only way
+in, and, elevated, that through the real read-only store it reads an override, and leaves an untrusted `config`
+folder and an unsealed data folder as they were, with no event.
+
 ## The scheduled audit
 
 `baseline.exe scheduled-audit` is the unattended audit for the scheduled task, as
@@ -477,9 +616,16 @@ installer registers still runs the module's script.
    failed.
 3. It opens the data folder through SecureStore. A refusal is reported with SecureStore's reason, and
    nothing is written.
-4. It runs the machine checks (SU-01 so far) and writes status.json, UTF-8 with a byte order mark, with
-   SecureStore's atomic write. A failed run leaves the old status.json, whose age then keeps growing, as
-   in the module.
+4. It runs the machine checks (SU-01 so far), which read config through the config trust gate from the
+   data folder it holds (above): it prints `Config override used: <path>` for each administrator's override
+   in use, and writes `Warning: Ignoring the config override <name> and using the shipped copy: <reason>` to
+   standard error for each one refused, and carries on, as the module warns. For an override it could not
+   read it writes `Warning: Could not read the config override <name>, ...`, and the checks that need it are
+   Error findings in status.json. Each of those warnings is also Application event 1003 under the
+   `EngramicBaseline` source, worded as SecureStore's notices are, so an administrator sees it without the
+   task's output.
+5. It writes status.json, UTF-8 with a byte order mark, with SecureStore's atomic write. A failed run
+   leaves the old status.json, whose age then keeps growing, as in the module.
 
 | Exit code | Meaning |
 |---|---|
@@ -488,7 +634,7 @@ installer registers still runs the module's script.
 | 2 | Another audit, or an install, held the mutex for 30 minutes. |
 
 Not ported yet: counting failed runs in last-error.json (only into a data folder that was opened and
-checked, as the module does), the report folder and its retention, the log, events 1000 to 1003, and
+checked, as the module does), the report folder and its retention, the log, events 1000 to 1002, and
 `excludeCheckIds` from an administrator's config.
 
 The Contracts job runs it as SYSTEM on its runner, in the data folder the installer makes (below).
@@ -571,7 +717,7 @@ files you make (the redirect from cmd):
 
 ```
 dotnet test --project tests/Engramic.Baseline.Contracts.Tests -c Release
-artifacts\bin\Engramic.Baseline.Cli\release\baseline.exe audit --id SU-01 --json status > baseline.json
+artifacts\bin\Engramic.Baseline.Cli\release\baseline.exe audit --id SU-01 --json status --shipped-config > baseline.json
 powershell -ExecutionPolicy Bypass -File tools\contracts\Write-ModuleStatus.ps1 -Id SU-01 -Path module.json -DataRoot module-data
 powershell -ExecutionPolicy Bypass -File tools\contracts\Invoke-IntuneReaders.ps1 -StatusPath baseline.json -ResultPath readers-baseline.json
 powershell -ExecutionPolicy Bypass -File tools\contracts\Invoke-IntuneReaders.ps1 -StatusPath module.json -ResultPath readers-module.json
@@ -585,7 +731,9 @@ PowerShell 5.1, and in `baseline.exe` on this device, as the account that runs i
 device context each tool saw (computer, account, elevation, Windows), since one difference there explains many
 after it; then every field of every finding and their order, every value of status.json and its byte order
 mark, and every value the Intune discovery and detection scripts report for each file in both hosts
-(`tools/contracts/Invoke-IntuneReaders.ps1`).
+(`tools/contracts/Invoke-IntuneReaders.ps1`). Both tools read only the shipped config: the module is given an empty
+data folder, and `baseline.exe audit` is given `--shipped-config`, so that an elevated run does not read the
+overrides in the runner's data folder.
 
 Every accepted difference is in the ledger, `tests/parity/divergences.json`. An entry names the path it covers
 (and everything under it, with `*` for one part of a name, such as the host in `discovery[*]`); its kind,

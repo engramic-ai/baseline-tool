@@ -6,13 +6,11 @@ namespace Engramic.Baseline.Platform;
 /// </summary>
 /// <remarks>
 /// Engramic.Baseline.Windows has the implementation, SecureStore, which says what is checked; the tests
-/// share a fake. Not safe to use from more than one thread at a time.
+/// share a fake. What only reads, such as the config trust gate, takes an <see cref="IDataFolderReader"/>.
+/// Not safe to use from more than one thread at a time.
 /// </remarks>
-public interface ISecureStore : IDisposable
+public interface ISecureStore : IDataFolderReader
 {
-    /// <summary>Gets the full path of the data folder, as Windows gives it for the handle held open on it.</summary>
-    string RootPath { get; }
-
     /// <summary>
     /// Gets what the store has done about items it could not trust, in order: each link it removed and
     /// each item it moved aside, naming where it went, each of which is also event 1003 in the Application
@@ -40,20 +38,6 @@ public interface ISecureStore : IDisposable
     /// <exception cref="ArgumentException"><paramref name="name"/> is not a plain file name.</exception>
     /// <exception cref="SecureStoreException">The file cannot be written safely; the message says why.</exception>
     void WriteFile(DataFolder folder, string name, ReadOnlySpan<byte> content);
-
-    /// <summary>
-    /// Reads a whole file from one of the data folder's folders, if it is one the tool may trust: an
-    /// ordinary file with one name, not a link, not stored online only, owned by a trusted account and
-    /// changeable by no one else, and no longer than <paramref name="maxLength"/>.
-    /// </summary>
-    /// <param name="folder">The folder.</param>
-    /// <param name="name">The name of the file: a plain name, never a path.</param>
-    /// <param name="maxLength">The most bytes to read; a longer file is refused, not cut short.</param>
-    /// <returns>The content, or null when there is no such file (or no such folder).</returns>
-    /// <exception cref="ArgumentException"><paramref name="name"/> is not a plain file name.</exception>
-    /// <exception cref="ArgumentOutOfRangeException"><paramref name="maxLength"/> is not positive, or is too large.</exception>
-    /// <exception cref="SecureStoreException">The file is not one the tool may trust, or cannot be read; the message says why.</exception>
-    byte[]? ReadFile(DataFolder folder, string name, int maxLength);
 
     /// <summary>
     /// Makes a new folder for one run's scratch files, such as a Windows tool's input and output, locked

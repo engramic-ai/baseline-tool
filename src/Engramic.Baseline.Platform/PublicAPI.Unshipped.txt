@@ -56,6 +56,9 @@ Engramic.Baseline.Platform.FileFacts.Length.get -> long
 Engramic.Baseline.Platform.FileFacts.Length.init -> void
 Engramic.Baseline.Platform.FileFacts.LinkCount.get -> uint
 Engramic.Baseline.Platform.FileFacts.LinkCount.init -> void
+Engramic.Baseline.Platform.IDataFolderReader
+Engramic.Baseline.Platform.IDataFolderReader.ReadFile(Engramic.Baseline.Platform.DataFolder folder, string! name, int maxLength) -> byte[]?
+Engramic.Baseline.Platform.IDataFolderReader.RootPath.get -> string!
 Engramic.Baseline.Platform.IEventLog
 Engramic.Baseline.Platform.IEventLog.Write(int eventId, Engramic.Baseline.Platform.EventLogLevel level, string! message) -> bool
 Engramic.Baseline.Platform.IRegistry
@@ -69,8 +72,6 @@ Engramic.Baseline.Platform.ISecureStore
 Engramic.Baseline.Platform.ISecureStore.CreateScratchFolder() -> Engramic.Baseline.Platform.IScratchFolder!
 Engramic.Baseline.Platform.ISecureStore.DeleteTree(Engramic.Baseline.Platform.DataFolder folder, string! name) -> System.Collections.Generic.IReadOnlyList<string!>!
 Engramic.Baseline.Platform.ISecureStore.Notices.get -> System.Collections.Generic.IReadOnlyList<string!>!
-Engramic.Baseline.Platform.ISecureStore.ReadFile(Engramic.Baseline.Platform.DataFolder folder, string! name, int maxLength) -> byte[]?
-Engramic.Baseline.Platform.ISecureStore.RootPath.get -> string!
 Engramic.Baseline.Platform.ISecureStore.WriteFile(Engramic.Baseline.Platform.DataFolder folder, string! name, System.ReadOnlySpan<byte> content) -> void
 Engramic.Baseline.Platform.ISecureStore.WriteFile(string! name, System.ReadOnlySpan<byte> content) -> void
 Engramic.Baseline.Platform.ItemSecurity
@@ -115,9 +116,13 @@ Engramic.Baseline.Platform.RegistryView
 Engramic.Baseline.Platform.RegistryView.Registry32 = 1 -> Engramic.Baseline.Platform.RegistryView
 Engramic.Baseline.Platform.RegistryView.Registry64 = 0 -> Engramic.Baseline.Platform.RegistryView
 Engramic.Baseline.Platform.SecureStoreException
+Engramic.Baseline.Platform.SecureStoreException.IsFolderRefused.get -> bool
+Engramic.Baseline.Platform.SecureStoreException.IsFolderRefused.init -> void
+Engramic.Baseline.Platform.SecureStoreException.IsUnavailable.get -> bool
 Engramic.Baseline.Platform.SecureStoreException.SecureStoreException() -> void
 Engramic.Baseline.Platform.SecureStoreException.SecureStoreException(string! message) -> void
 Engramic.Baseline.Platform.SecureStoreException.SecureStoreException(string! message, System.Exception! innerException) -> void
+Engramic.Baseline.Platform.SecureStoreException.SecureStoreException(string! message, bool isUnavailable, System.Exception? innerException) -> void
 Engramic.Baseline.Platform.Sid
 Engramic.Baseline.Platform.Sid.<Clone>$() -> Engramic.Baseline.Platform.Sid!
 Engramic.Baseline.Platform.Sid.Equals(Engramic.Baseline.Platform.Sid? other) -> bool

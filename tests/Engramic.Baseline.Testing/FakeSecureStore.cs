@@ -4,11 +4,14 @@ namespace Engramic.Baseline.Testing;
 
 /// <summary>
 /// A data folder in memory, for code that writes through SecureStore: it keeps what is written, by folder
-/// and name, hands out scratch folders in memory, and can be made to refuse a write.
+/// and name, hands out scratch folders in memory, can be made to refuse a write or a read, and records
+/// every read.
 /// </summary>
 public sealed class FakeSecureStore : ISecureStore
 {
     private readonly Dictionary<(DataFolder Folder, string Name), byte[]> _files = [];
+    private readonly Dictionary<(DataFolder Folder, string Name), Exception> _readErrors = [];
+    private readonly List<(DataFolder Folder, string Name, int MaxLength)> _reads = [];
     private readonly List<string> _notices = [];
     private readonly List<FakeScratchFolder> _scratchFolders = [];
 
@@ -37,6 +40,9 @@ public sealed class FakeSecureStore : ISecureStore
     /// <summary>Gets whether it has been disposed.</summary>
     public bool IsDisposed { get; private set; }
 
+    /// <summary>Gets each read asked of it, in order: the folder, the name and the most bytes allowed.</summary>
+    public IReadOnlyList<(DataFolder Folder, string Name, int MaxLength)> Reads => _reads;
+
     /// <summary>Gets the files written in one folder, by name.</summary>
     /// <param name="folder">The folder.</param>
     /// <returns>The files.</returns>
@@ -48,6 +54,24 @@ public sealed class FakeSecureStore : ISecureStore
     /// <summary>Records a notice, as the real store does when it moves something aside.</summary>
     /// <param name="notice">The notice.</param>
     public void AddNotice(string notice) => _notices.Add(notice);
+
+    /// <summary>
+    /// Makes a read of one file throw, as the real store refuses a file it may not trust: such as a
+    /// SecureStoreException that names the file and the rule it breaks.
+    /// </summary>
+    /// <param name="folder">The folder.</param>
+    /// <param name="name">The name of the file.</param>
+    /// <param name="error">What the read throws.</param>
+    public void FailRead(DataFolder folder, string name, Exception error) => _readErrors[(folder, name)] = error;
+
+    /// <summary>Gets the path the real store gives a file: in the data folder itself, or in one of its folders.</summary>
+    /// <param name="folder">The folder.</param>
+    /// <param name="name">The name of the file.</param>
+    /// <returns>Such as C:\ProgramData\EngramicBaseline\config\network.json.</returns>
+    public string PathOf(DataFolder folder, string name)
+    {
+        return folder == DataFolder.Root ? $@"{RootPath}\{name}" : $@"{RootPath}\{DataFolderLayout.NameOf(folder)}\{name}";
+    }
 
     /// <inheritdoc/>
     public void WriteFile(string name, ReadOnlySpan<byte> content) => WriteFile(DataFolder.Root, name, content);
@@ -70,6 +94,12 @@ public sealed class FakeSecureStore : ISecureStore
     {
         ObjectDisposedException.ThrowIf(IsDisposed, this);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxLength);
+        _reads.Add((folder, name, maxLength));
+        if (_readErrors.TryGetValue((folder, name), out var error))
+        {
+            throw error;
+        }
+
         if (!_files.TryGetValue((folder, name), out var content))
         {
             return null;
@@ -77,7 +107,7 @@ public sealed class FakeSecureStore : ISecureStore
 
         return content.Length <= maxLength
             ? content.ToArray()
-            : throw new SecureStoreException($@"{RootPath}\{name} is {content.Length} bytes long, more than the {maxLength} bytes the tool reads from it.");
+            : throw new SecureStoreException($"{PathOf(folder, name)} is {content.Length} bytes long, more than the {maxLength} bytes the tool reads from it.");
     }
 
     /// <inheritdoc/>

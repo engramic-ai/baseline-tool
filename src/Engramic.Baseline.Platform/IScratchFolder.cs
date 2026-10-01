@@ -29,12 +29,12 @@ public interface IScratchFolder : IDisposable
     /// <exception cref="SecureStoreException">The file cannot be written safely; the message says why.</exception>
     void WriteFile(string name, ReadOnlySpan<byte> content);
 
-    /// <summary>Reads a whole file a tool wrote in the folder, with the rules of <see cref="ISecureStore.ReadFile"/>.</summary>
+    /// <summary>Reads a whole file a tool wrote in the folder, with the rules of <see cref="IDataFolderReader.ReadFile"/>.</summary>
     /// <param name="name">The name of the file: a plain name, never a path.</param>
     /// <param name="maxLength">The most bytes to read; a longer file is refused, not cut short.</param>
     /// <returns>The content, or null when there is no such file.</returns>
     /// <exception cref="ArgumentException"><paramref name="name"/> is not a plain file name.</exception>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="maxLength"/> is not positive, or is too large.</exception>
-    /// <exception cref="SecureStoreException">The file is not one the tool may trust, or cannot be read; the message says why.</exception>
+    /// <exception cref="SecureStoreException">The file is not one the tool may trust, or could not be opened or read at the time (<see cref="SecureStoreException.IsUnavailable"/>); the message says why.</exception>
     byte[]? ReadFile(string name, int maxLength);
 }

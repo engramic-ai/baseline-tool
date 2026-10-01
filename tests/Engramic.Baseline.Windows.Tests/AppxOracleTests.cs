@@ -16,7 +16,13 @@ namespace Engramic.Baseline.Windows.Tests;
 /// A package Get-AppxPackage lists as installed that the package runtime, asked about it alone, says is not registered
 /// for the user is reported and not counted, as on CI's runner (docs/DOTNET.md, spike 8). The package runtime's own
 /// answers are compared and reported the same way, without failing the test.
+/// <para>
+/// They run alone, never beside other tests: asking the deployment service about every user's packages can set
+/// Windows' own components sending requests, and the SYSTEM tests of the service client count every request that
+/// reaches the machine's WinHTTP proxy while they have it set.
+/// </para>
 /// </remarks>
+[Collection(nameof(AppxOracleTests))]
 public sealed class AppxOracleTests
 {
     private const string NeedsSystem = "Compares every user's packages as SYSTEM, as CI runs it on its runner; skipped otherwise.";
@@ -115,4 +121,10 @@ public sealed class AppxOracleTests
         TestContext.Current.TestOutputHelper?.WriteLine(comparison.Report);
         Console.WriteLine(comparison.Report);
     }
+}
+
+/// <summary>Runs <see cref="AppxOracleTests"/> on their own, after the tests that run in parallel.</summary>
+[CollectionDefinition(nameof(AppxOracleTests), DisableParallelization = true)]
+public sealed class AppxOracleCollection
+{
 }

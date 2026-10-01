@@ -257,7 +257,8 @@ baseline.exe audit --id SU-01 --json status > status.json
 `SecureStore`, in `Engramic.Baseline.Windows`, is the machine data folder, `%ProgramData%\EngramicBaseline`,
 and the folders kept in it, checked through handles and held open while in use. It is the one file on
 `src/BannedApiExemptions.txt` that opens, creates, renames or deletes files and folders, and product code
-reaches files only through it (`ISecureStore`; the tests share a fake).
+reaches files only through it (`ISecureStore`, or `IDataFolderReader` for code that only reads; the tests share a
+fake).
 
 | Folder | What it holds | Standard users |
 |---|---|---|
@@ -274,11 +275,21 @@ a protected access list granting SYSTEM and Administrators full control, `O:BAD:
 and Users read and execute on `config`. The PowerShell tool's `packs` folder is not made, since code packs are
 not part of this tool; one an older install left is left alone.
 
-**Two ways in.**
+**Three ways in.**
 
 - `SecureStore.Open` is for everything that uses the data folder, such as the scheduled audit: the data folder
   must exist, carry the install's seal and be trusted, or it is refused; it is never created or moved. A folder
   kept in it is checked the first time it is used, and made then if it is missing.
+- `SecureStore.OpenReadOnly` is for a run that promises to change nothing, such as an elevated `baseline.exe audit`
+  reading administrators' config overrides. It checks the data folder exactly as `Open` does, through its handle,
+  and gives a `ReadOnlySecureStore`, or nothing when there is no data folder. That store can only read (`RootPath`
+  and `ReadFile`): it is not an `ISecureStore`, so no cast reaches a writer, and the SecureStore it reads through is
+  out of reach. A folder kept in the data folder is opened as itself and judged by the same rules the first time a
+  file in it is read, then held; one that fails, or that this account may not open to judge, is refused with a
+  `SecureStoreException` that says why and left as it is, never moved aside or deleted, and a missing one reads as
+  nothing and is not made. So it creates, moves, deletes and writes nothing, and never writes event 1003. A separate
+  type, rather than a flag on SecureStore that every writer would have to check, makes the read-only promise
+  something the compiler keeps.
 - `SecureStore.Initialize` is for the install and SYSTEM, with the audit mutex held as the installer holds it: it
   makes the data folder and every folder kept in it. An existing data folder is kept only when the seal exists
   and it passes the trust rules through its handle; anything else there is moved aside (below) and a fresh one
@@ -376,7 +387,8 @@ with one name, no longer than its caller allows.
 relative to its folder's handle, as itself, and shared with readers alone, so it cannot change while it is read.
 It is read only when the trust rules pass for it and it is no longer than the length the caller gives, at most
 64 MiB; a longer file is refused, never cut short. A missing file, or a missing folder, reads as nothing, and so
-does an untrusted folder, once it has been moved aside.
+does an untrusted folder, once it has been moved aside. Through `ReadOnlySecureStore`, an untrusted folder is
+refused instead, and stays where it is.
 
 A file that breaks a rule, or whose access list keeps this account out, is refused. One that cannot be opened or
 read at the time is not judged at all, and the `SecureStoreException` says so (`IsUnavailable`): the file or its
@@ -544,8 +556,14 @@ attacker plants it), that standard users can change, or that is a symbolic link,
 refused and the shipped file used, one owned by Administrators loads, the attacker locking an administrator's
 override or holding an oplock on it does not get the shipped copy used in its place, and the attacker holding the
 override or the `config` folder open without sharing does not stop it loading. The Security job runs them as the
-elevated administrator and as SYSTEM. `ScheduledAuditTests` (Cli) hold the scheduled audit's use of the gate, and,
-elevated, read an override through the real SecureStore.
+elevated administrator and as SYSTEM; they also read through `SecureStore.OpenReadOnly`, where an untrusted `config`
+folder, made standard-user-changeable or by the attacker, is refused and left in place. `SecureStoreReadOnlyTests`
+(Windows, without elevation) refuse a missing ProgramData folder and an unsealed, untrusted or linked data folder or
+`config` folder through the read-only store, give nothing for a missing data folder, read a trusted override, and
+show after each that the tree is unchanged name for name and byte for byte (`TreeSnapshot`), that no step that would
+change something was reached, and that no event was written; they also hold that `ReadOnlySecureStore` has no
+writer. `ScheduledAuditTests` (Cli) hold the scheduled audit's use of the gate, and, elevated, read an override
+through the real SecureStore.
 
 ## The scheduled audit
 

@@ -13,8 +13,10 @@ namespace Engramic.Baseline.Windows.Tests;
 /// made as the installer makes it (owned by Administrators, locked from birth, config readable by Users), and the
 /// gate reads an administrator's override from it as this process, which must be elevated. Overrides that a
 /// standard user owns or can change, or that are linked or hard-linked, are refused and the shipped file used;
-/// one owned by Administrators loads. Only an elevated administrator or SYSTEM can make those folders, so these
-/// skip without elevation; the Security job in CI runs them as the elevated administrator and as SYSTEM.
+/// one owned by Administrators loads. The same holds through SecureStore's read-only way in, as an elevated
+/// baseline.exe audit reads, except that an untrusted config folder is refused and left in place rather than moved
+/// aside. Only an elevated administrator or SYSTEM can make those folders, so these skip without elevation; the
+/// Security job in CI runs them as the elevated administrator and as SYSTEM.
 /// </summary>
 [Trait("Suite", "Security")]
 public sealed class ConfigTrustGateElevatedTests : IDisposable
@@ -213,6 +215,109 @@ public sealed class ConfigTrustGateElevatedTests : IDisposable
         Assert.Empty(gate.Notices);
     }
 
+    [Fact]
+    public void Through_the_read_only_store_an_administrator_s_override_loads_and_nothing_changes()
+    {
+        Arrange();
+        _tree.File(Relative(Override), OverrideText, "O:BA");
+        var before = TreeSnapshot.Of(_programData);
+
+        var (gate, lifecycle) = ReadOnlyAsThisProcess();
+
+        Assert.Equal("2026-01-01", lifecycle.LastReviewed);
+        Assert.Equal([Override], gate.Overrides);
+        Assert.Empty(gate.Notices);
+        Assert.Equal(before, TreeSnapshot.Of(_programData));
+        Assert.Empty(_events.Entries);
+    }
+
+    [Fact]
+    public void Through_the_read_only_store_an_override_standard_users_can_change_is_refused_and_the_shipped_file_used()
+    {
+        Arrange();
+        _tree.File(Relative(Override), OverrideText, "O:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;0x1301bf;;;BU)");
+
+        var (gate, lifecycle) = ReadOnlyAsThisProcess();
+
+        AssertRefused(gate, lifecycle, "can be changed by S-1-5-32-545, not only administrators.");
+    }
+
+    [Fact]
+    public void Through_the_read_only_store_a_config_folder_standard_users_can_change_is_refused_and_left_in_place()
+    {
+        Arrange();
+        Acls.Reset(Config, ConfigAccess + "(A;OICI;0x1301bf;;;BU)");
+        _tree.File(Relative(Override), OverrideText, "O:BA");
+        var before = TreeSnapshot.Of(_programData);
+
+        var (gate, lifecycle) = ReadOnlyAsThisProcess();
+
+        Assert.Equal(ShippedLastReviewed, lifecycle.LastReviewed);
+        Assert.Equal([$"Ignoring the config override {Name} and using the shipped copy: {Config} can be changed by S-1-5-32-545, not only administrators."], gate.Notices);
+        Assert.Empty(gate.Overrides);
+        Assert.Equal(before, TreeSnapshot.Of(_programData));
+        Assert.Empty(_events.Entries);
+    }
+
+    [Fact]
+    public void Through_the_read_only_store_a_config_folder_a_standard_user_made_is_refused_and_left_in_place()
+    {
+        Assert.SkipUnless(Attacker.IsAvailable, Attacker.Unavailable);
+        _programData = _tree.Folder("ProgramData", Descriptors.ProgramDataLike);
+        var dataFolder = _tree.Folder(@"ProgramData\EngramicBaseline", Descriptors.InstallerLocked);
+
+        // The attacker may add a folder to the data folder for a moment, as a mistaken grant could let them, and the
+        // data folder is locked again after: the folder keeps the owner who made it.
+        Acls.Reset(dataFolder, Descriptors.InstallerLocked[4..] + $"(A;;0x100005;;;{Attacker.Sid})");
+        Attacker.Run(() => Directory.CreateDirectory(Config));
+        Acls.Reset(dataFolder, Descriptors.InstallerLocked[4..]);
+        var before = TreeSnapshot.Of(_programData);
+
+        var (gate, lifecycle) = ReadOnlyAsThisProcess();
+
+        Assert.Equal(Attacker.Sid.Value, Acls.Owner(Config));
+        Assert.Equal(ShippedLastReviewed, lifecycle.LastReviewed);
+        Assert.Equal([$"Ignoring the config override {Name} and using the shipped copy: {Config} is owned by {Attacker.Sid}, not SYSTEM, Administrators or TrustedInstaller."], gate.Notices);
+        Assert.Equal(before, TreeSnapshot.Of(_programData));
+        Assert.Empty(_events.Entries);
+    }
+
+    [Theory]
+    [MemberData(nameof(Holders.ReadOnlyHolderWays), MemberType = typeof(Holders))]
+    public void Through_the_read_only_store_an_override_a_standard_user_holds_up_is_not_replaced_by_the_shipped_file(string way)
+    {
+        Assert.SkipUnless(Attacker.IsAvailable, Attacker.Unavailable);
+        Arrange();
+        _tree.File(Relative(Override), OverrideText, "O:BA");
+        var clock = new FakeTimeProvider();
+
+        using var store = SecureStore.OpenReadOnly(Options() with { Time = clock });
+        var gate = new ConfigTrustGate(ShippedConfig.Files, store, CurrentProcess.ReadAccount());
+        using (Attacker.Run(() => Holders.Hold(way, Override, Config)))
+        {
+            var e = Assert.Throws<IOException>(() => Waits.AdvanceUntilDone(clock, () => _ = new AuditConfig(gate).OsLifecycle));
+
+            Assert.StartsWith($"The config override {Override} could not be read, so the shipped copy is not used in its place: ", e.Message, StringComparison.Ordinal);
+        }
+
+        Assert.StartsWith($"Could not read the config override {Name}, so the checks that read it report an error", Assert.Single(gate.Notices), StringComparison.Ordinal);
+        Assert.Empty(gate.Overrides);
+        Assert.Empty(_events.Entries);
+    }
+
+    [Fact]
+    public void Through_the_read_only_store_a_data_folder_that_does_not_exist_gives_no_overrides_and_none_is_made()
+    {
+        Assert.SkipUnless(Elevation.IsElevated, Elevation.NeedsElevation);
+        _programData = _tree.Folder("ProgramData", Descriptors.ProgramDataLike);
+
+        var store = SecureStore.OpenReadOnly(Options());
+
+        Assert.Null(store);
+        Assert.Empty(Directory.GetFileSystemEntries(_programData));
+        Assert.Empty(_events.Entries);
+    }
+
     /// <summary>Makes ProgramData, and the data folder and its config folder as the installer makes them.</summary>
     private void Arrange()
     {
@@ -232,6 +337,20 @@ public sealed class ConfigTrustGateElevatedTests : IDisposable
         var gate = new ConfigTrustGate(ShippedConfig.Files, store, CurrentProcess.ReadAccount());
         return (gate, new AuditConfig(gate).OsLifecycle);
     }
+
+    /// <summary>
+    /// Opens the data folder only to read from it, with the product's rules, and reads os-lifecycle.json through the
+    /// gate as this process reads it, as an elevated baseline.exe audit does.
+    /// </summary>
+    private (ConfigTrustGate Gate, OsLifecycle Lifecycle) ReadOnlyAsThisProcess()
+    {
+        using var store = SecureStore.OpenReadOnly(Options());
+        Assert.NotNull(store);
+        var gate = new ConfigTrustGate(ShippedConfig.Files, store, CurrentProcess.ReadAccount());
+        return (gate, new AuditConfig(gate).OsLifecycle);
+    }
+
+    private SecureStoreOptions Options() => new() { ProgramDataPath = _programData, Registry = DataFolderFixture.Sealed(), EventLog = _events };
 
     private void AssertRefused(ConfigTrustGate gate, OsLifecycle lifecycle, string reason)
     {

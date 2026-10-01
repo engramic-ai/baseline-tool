@@ -19,7 +19,7 @@ namespace Engramic.Baseline.Engine;
 /// <item>The file ships with the tool and has a schema (<see cref="ConfigFile.Names"/>): only a file the tool
 /// reads can be overridden.</item>
 /// <item>SecureStore reads it through the handle of the config folder it holds, and checks it through the
-/// file's own handle (<see cref="ISecureStore.ReadFile"/>): not a junction, symbolic link or other reparse
+/// file's own handle (<see cref="IDataFolderReader.ReadFile"/>): not a junction, symbolic link or other reparse
 /// point, not stored online only, an ordinary file with one name, owned by SYSTEM, Administrators or
 /// TrustedInstaller, with no right to change it for anyone else and no deny entry against them, and no longer
 /// than <see cref="MaxOverrideLength"/>.</item>
@@ -49,7 +49,7 @@ public sealed class ConfigTrustGate : IConfigFiles
     public const int MaxOverrideLength = 1024 * 1024;
 
     private readonly IConfigFiles _shipped;
-    private readonly ISecureStore? _store;
+    private readonly IDataFolderReader? _store;
     private readonly Lock _gate = new();
     private readonly Dictionary<string, Decision> _decided = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<string> _notices = [];
@@ -58,11 +58,12 @@ public sealed class ConfigTrustGate : IConfigFiles
     /// <summary>Makes the gate of a run.</summary>
     /// <param name="shipped">The config files that ship with the tool.</param>
     /// <param name="store">
-    /// The data folder, opened and checked, whose config folder holds the overrides; null for a run that has none.
-    /// It must stay open while the run reads config.
+    /// The data folder, opened and checked, whose config folder holds the overrides: SecureStore for the scheduled
+    /// audit, or a read-only one for a run that changes nothing; null for a run that has none. It must stay open
+    /// while the run reads config.
     /// </param>
     /// <param name="account">The account the run is: overrides are read only when it is elevated or SYSTEM.</param>
-    public ConfigTrustGate(IConfigFiles shipped, ISecureStore? store, ProcessAccount account)
+    public ConfigTrustGate(IConfigFiles shipped, IDataFolderReader? store, ProcessAccount account)
     {
         ArgumentNullException.ThrowIfNull(shipped);
         ArgumentNullException.ThrowIfNull(account);

@@ -79,5 +79,13 @@ internal sealed class DataFolderFixture : IDisposable
         return SecureStore.Initialize(Options, Rules, hooks);
     }
 
+    public ReadOnlySecureStore? OpenReadOnly(SecureStoreHooks? hooks = null)
+    {
+        return SecureStore.OpenReadOnly(Options, Rules, hooks);
+    }
+
+    /// <summary>Gets everything in the fixture's ProgramData folder, name for name and byte for byte (<see cref="TreeSnapshot"/>).</summary>
+    public string[] Snapshot => TreeSnapshot.Of(ProgramData);
+
     public void Dispose() => Tree.Dispose();
 }

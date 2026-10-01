@@ -137,7 +137,7 @@ Engramic.Baseline.Engine.CheckSelection.Matches(Engramic.Baseline.Engine.CheckIn
 Engramic.Baseline.Engine.CheckSelection.Scopes.get -> System.Collections.Generic.IReadOnlyList<Engramic.Baseline.Model.CheckScope>!
 Engramic.Baseline.Engine.CheckSelection.Scopes.init -> void
 Engramic.Baseline.Engine.ConfigTrustGate
-Engramic.Baseline.Engine.ConfigTrustGate.ConfigTrustGate(Engramic.Baseline.Engine.IConfigFiles! shipped, Engramic.Baseline.Platform.ISecureStore? store, Engramic.Baseline.Platform.ProcessAccount! account) -> void
+Engramic.Baseline.Engine.ConfigTrustGate.ConfigTrustGate(Engramic.Baseline.Engine.IConfigFiles! shipped, Engramic.Baseline.Platform.IDataFolderReader? store, Engramic.Baseline.Platform.ProcessAccount! account) -> void
 Engramic.Baseline.Engine.ConfigTrustGate.Notices.get -> System.Collections.Generic.IReadOnlyList<string!>!
 Engramic.Baseline.Engine.ConfigTrustGate.Overrides.get -> System.Collections.Generic.IReadOnlyList<string!>!
 Engramic.Baseline.Engine.ConfigTrustGate.Read(string! name) -> byte[]?

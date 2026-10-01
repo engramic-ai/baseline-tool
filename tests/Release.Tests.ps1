@@ -254,6 +254,62 @@ Describe 'Test-ReleaseSignatures.ps1: every PE file signed and timestamped, ours
     }
 }
 
+Describe 'Get-ReleaseAzureLoginProblem: a login that cannot work stops a release in seconds' {
+    BeforeAll {
+        $script:LoginMetadata = Join-Path $TestDrive 'login-metadata.json'
+    }
+
+    BeforeEach {
+        $script:SavedClientId = $env:AZURE_CLIENT_ID
+        $env:AZURE_CLIENT_ID = $null
+        Set-Content -LiteralPath $script:LoginMetadata -Value '{ "Endpoint": "https://example.test", "ExcludeCredentials": [ "ManagedIdentityCredential" ] }'
+        $global:ReleaseTestAzCalls = New-Object System.Collections.ArrayList
+        Mock -ModuleName Release Invoke-ReleaseAzCli {
+            [void]$global:ReleaseTestAzCalls.Add(@($ArgumentList))
+            [pscustomobject]@{ ExitCode = 0; Output = @() }
+        }
+    }
+
+    AfterEach { $env:AZURE_CLIENT_ID = $script:SavedClientId }
+
+    It 'asks az for an Artifact Signing token without printing it, and passes when it gets one' {
+        Get-ReleaseAzureLoginProblem -Path $script:LoginMetadata | Should -BeNullOrEmpty
+        $global:ReleaseTestAzCalls.Count | Should -Be 1
+        ($global:ReleaseTestAzCalls[0] -join ' ') | Should -Be 'account get-access-token --resource https://codesigning.azure.net --output none'
+    }
+
+    It 'stops when az is not on PATH, saying why a window may not see it and how to sign in another way' {
+        Mock -ModuleName Release Invoke-ReleaseAzCli { $null }
+        $problem = Get-ReleaseAzureLoginProblem -Path $script:LoginMetadata
+        $problem | Should -Match 'not on PATH in this window'
+        $problem | Should -Match 'ExcludeCredentials'
+    }
+
+    It 'stops when az cannot get a token, with what az said' {
+        Mock -ModuleName Release Invoke-ReleaseAzCli { [pscustomobject]@{ ExitCode = 1; Output = @('ERROR: Please run ''az login'' to setup account.') } }
+        $problem = Get-ReleaseAzureLoginProblem -Path $script:LoginMetadata
+        $problem | Should -Match 'could not get an Artifact Signing token'
+        $problem | Should -Match ([regex]::Escape('Please run ''az login'' to setup account.'))
+    }
+
+    It 'asks az nothing when the metadata signs in another way' {
+        Set-Content -LiteralPath $script:LoginMetadata -Value '{ "AccessToken": "stand-in" }'
+        Get-ReleaseAzureLoginProblem -Path $script:LoginMetadata | Should -BeNullOrEmpty
+        Set-Content -LiteralPath $script:LoginMetadata -Value '{ "ExcludeCredentials": [ "ManagedIdentityCredential", "AzureCliCredential" ] }'
+        Get-ReleaseAzureLoginProblem -Path $script:LoginMetadata | Should -BeNullOrEmpty
+        Set-Content -LiteralPath $script:LoginMetadata -Value '{ "ExcludeCredentials": [ "ManagedIdentityCredential" ] }'
+        $env:AZURE_CLIENT_ID = '00000000-0000-0000-0000-000000000000'
+        Get-ReleaseAzureLoginProblem -Path $script:LoginMetadata | Should -BeNullOrEmpty
+        $global:ReleaseTestAzCalls.Count | Should -Be 0
+    }
+
+    It 'stops on metadata that is not JSON, without asking az' {
+        Set-Content -LiteralPath $script:LoginMetadata -Value 'not json'
+        Get-ReleaseAzureLoginProblem -Path $script:LoginMetadata | Should -Match 'not readable JSON'
+        $global:ReleaseTestAzCalls.Count | Should -Be 0
+    }
+}
+
 Describe 'Sign-Release.ps1 with .exe and .dll: only what this repository built' {
     BeforeAll {
         $script:Sign = Join-Path $script:Tools 'Sign-Release.ps1'
@@ -308,6 +364,22 @@ Describe 'Sign-Release.ps1 with .exe and .dll: only what this repository built' 
     It 'fails, saying what signtool said, when signtool fails' {
         Mock Invoke-ReleaseSignTool { [pscustomobject]@{ ExitCode = 1; Output = @('SignTool Error: 403 Forbidden') } }
         { & $script:Sign -Path $script:Payload @azure 6>$null 3>$null } | Should -Throw '*signtool exit 1*403 Forbidden*'
+    }
+
+    It 'stops before signtool when the Azure CLI login cannot work' {
+        $cliMetadata = Join-Path $script:Kit 'cli-metadata.json'
+        Set-Content -LiteralPath $cliMetadata -Value '{ "ExcludeCredentials": [ "ManagedIdentityCredential" ] }'
+        $savedClientId = $env:AZURE_CLIENT_ID
+        $env:AZURE_CLIENT_ID = $null
+        try {
+            Mock -ModuleName Release Invoke-ReleaseAzCli { $null }
+            Mock Invoke-ReleaseSignTool { [void]$global:ReleaseTestSignToolCalls.Add(@($ArgumentList)); [pscustomobject]@{ ExitCode = 0; Output = @() } }
+            $cli = $azure.Clone()
+            $cli['AzureMetadata'] = $cliMetadata
+            { & $script:Sign -Path $script:Payload @cli 6>$null 3>$null } | Should -Throw '*not on PATH in this window*'
+            $global:ReleaseTestSignToolCalls.Count | Should -Be 0
+        }
+        finally { $env:AZURE_CLIENT_ID = $savedClientId }
     }
 
     It 'refuses a folder without a .deps.json' {
@@ -417,6 +489,17 @@ Describe 'New-SignedRelease.ps1 -DotNet' {
             $at = $next
         }
         $block.IndexOf('return') | Should -BeLessThan $block.IndexOf('Build-IntunePackage.ps1') -Because 'the PowerShell release is untouched by -DotNet'
+    }
+
+    It 'checks the signing login before the tests and the build, and stops if it cannot work' {
+        $text = Get-Content -LiteralPath (Join-Path $script:Tools 'New-SignedRelease.ps1') -Raw
+        $check = $text.IndexOf('$loginProblem = Get-ReleaseAzureLoginProblem -Path $AzureMetadata')
+        $check | Should -BeGreaterThan 0
+        $text.Substring($check) | Should -Match '^[^\r\n]+\r?\nif \(\$loginProblem\) \{ throw \$loginProblem \}'
+        $check | Should -BeLessThan $text.IndexOf("'tools\Invoke-PreFlight.ps1'")
+        $build = [regex]::Match($text, '(?m)^if \(\$DotNet\) \{')
+        $build.Success | Should -BeTrue
+        $check | Should -BeLessThan $build.Index
     }
 }
 

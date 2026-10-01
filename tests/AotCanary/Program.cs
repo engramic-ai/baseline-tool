@@ -1,9 +1,15 @@
+using System.Diagnostics;
+using System.Globalization;
+using System.Security.Principal;
 using Engramic.Baseline.Engine;
 using Engramic.Baseline.Model;
 using Engramic.Baseline.Platform;
 using Engramic.Baseline.Windows;
 
-// Calls into each AOT-clean library, compiled with Native AOT. Exits 1 if any gives a wrong answer.
+// Calls into each AOT-clean library, compiled with Native AOT. Exits 1 if any gives a wrong answer. Then prints
+// what the run cost (Measure), and, compiled with Native AOT beside a JIT build of itself, compares the two.
+var mainStarted = DateTime.Now;
+var running = Stopwatch.StartNew();
 var failures = 0;
 
 Expect("Model", Utf8Bom.GetBytes("{}") is [0xEF, 0xBB, 0xBF, (byte)'{', (byte)'}']);
@@ -22,7 +28,20 @@ Expect("Platform: service addresses and proxy rules", await ProxyRules());
 Expect("Windows: WinHTTP proxy", WinHttpReads());
 Expect("Windows: service client", await ServiceClientSends());
 
+// Detection, as the agent and the AI tool checks will need it, from AOT-clean code alone.
+Detect("Windows: processes, owner and elevation from tokens", ReadProcesses);
+Detect("Windows: installed programs, both views and loaded user hives", ReadInstalledPrograms);
+Detect("Windows: Authenticode, embedded and catalog", CheckSignatures);
+Detect("Runtime: file version (FileVersionInfo, by path)", ReadFileVersion);
+
 Console.WriteLine(failures == 0 ? "AOT canary: all libraries ran." : $"AOT canary: {failures} failed.");
+running.Stop();
+Console.WriteLine(Measure(mainStarted, running.Elapsed));
+if (failures == 0 && IsNativeAot() && !args.Contains("--no-compare"))
+{
+    CompareWithJit();
+}
+
 return failures == 0 ? 0 : 1;
 
 void Expect(string library, bool passed)
@@ -30,6 +49,26 @@ void Expect(string library, bool passed)
     Console.WriteLine($"{library}: {(passed ? "ok" : "FAILED")}");
     if (!passed)
     {
+        failures++;
+    }
+}
+
+// A detection step: ok with a short fact and how long it took, or FAILED with what went wrong, an exception included.
+void Detect(string step, Func<(bool Passed, string Fact)> run)
+{
+    try
+    {
+        var clock = Stopwatch.StartNew();
+        var (passed, fact) = run();
+        Console.WriteLine($"{step}: {(passed ? "ok" : "FAILED")} ({fact}; {clock.ElapsedMilliseconds} ms)");
+        if (!passed)
+        {
+            failures++;
+        }
+    }
+    catch (Exception e)
+    {
+        Console.WriteLine($"{step}: FAILED ({e.GetType().Name}: {e.Message})");
         failures++;
     }
 }
@@ -215,6 +254,168 @@ static async Task<bool> ServiceClientSends()
     return refused is { StatusCode: 0, Route: null }
         && response is { StatusCode: 200, ETag: "\"canary\"", Route.Source: ProxySource.Local }
         && response.Body.Span.SequenceEqual("ok"u8);
+}
+
+static (bool, string) ReadProcesses()
+{
+    // Every process, with its owner and elevation from its token: this one must be found as itself.
+    var processes = new WindowsProcessList().Read();
+    using var identity = WindowsIdentity.GetCurrent();
+    var self = processes.SingleOrDefault(p => p.Id == (uint)Environment.ProcessId);
+    var passed = self is { IsElevated: not null, CommandLine: not null }
+        && self.Owner?.Value == identity.User?.Value
+        && string.Equals(self.ImagePath, Environment.ProcessPath, StringComparison.OrdinalIgnoreCase);
+    return (passed, $"{processes.Count} processes; {processes.Count(p => p.Owner is not null)} owners, {processes.Count(p => p.IsElevated == true)} elevated, "
+        + $"{processes.Count(p => p.ImagePath is not null)} paths and {processes.Count(p => p.CommandLine is not null)} command lines read");
+}
+
+static (bool, string) ReadInstalledPrograms()
+{
+    // As the PowerShell tool lists them: the uninstall keys of both registry views, and of each loaded user hive,
+    // counting entries with a display name that are not system components.
+    const string Uninstall = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall";
+    var registry = new WindowsRegistry();
+    int Count(RegistryHive hive, RegistryView view, string key)
+    {
+        return (registry.GetSubKeyNames(hive, view, key) ?? []).Count(name =>
+            registry.GetValue(hive, view, key + "\\" + name, "DisplayName") is { Text.Length: > 0 }
+            && registry.GetValue(hive, view, key + "\\" + name, "SystemComponent") is not { Number: 1 });
+    }
+
+    var native = Count(RegistryHive.LocalMachine, RegistryView.Registry64, Uninstall);
+    var wow = Count(RegistryHive.LocalMachine, RegistryView.Registry32, Uninstall);
+    var hives = (registry.GetSubKeyNames(RegistryHive.Users, RegistryView.Registry64, string.Empty) ?? [])
+        .Where(name => Sid.TryParse(name, out _) && (name.StartsWith("S-1-5-21-", StringComparison.Ordinal) || name.StartsWith("S-1-12-1-", StringComparison.Ordinal)))
+        .ToList();
+    int perUser = 0, unreadable = 0;
+    foreach (var hive in hives)
+    {
+        try
+        {
+            perUser += Count(RegistryHive.Users, RegistryView.Registry64, hive + "\\" + Uninstall);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // Another person's hive, which only they, SYSTEM and administrators may read.
+            unreadable++;
+        }
+    }
+
+    var passed = registry.GetSubKeyNames(RegistryHive.LocalMachine, RegistryView.Registry64, Uninstall) is not null && hives.Count > 0;
+    return (passed, $"{native} 64-bit and {wow} 32-bit for the machine, {perUser} in {hives.Count - unreadable} of {hives.Count} loaded user hives");
+}
+
+static (bool, string) CheckSignatures()
+{
+    // A file of Windows through its catalog, this unsigned canary, and the first file found with its signature
+    // embedded (the Visual C++ runtime, or the malicious software removal tool).
+    var system = Environment.SystemDirectory;
+    var catalog = Verify(Path.Combine(system, "cmd.exe"));
+    var self = Verify(Environment.ProcessPath!);
+    var embedded = new[] { "vcruntime140.dll", "msvcp140.dll", "MRT.exe" }.Select(name => Path.Combine(system, name)).FirstOrDefault(File.Exists);
+    var embeddedSignature = embedded is null ? null : Verify(embedded);
+    var passed = catalog is { State: SignatureState.Valid, InCatalog: true, Signer: "Microsoft Windows" }
+        && self is { State: SignatureState.NotSigned, InCatalog: false }
+        && embeddedSignature is null or { State: SignatureState.Valid, InCatalog: false, Signer.Length: > 0 };
+    var embeddedFact = embeddedSignature is null ? "no file with an embedded signature found" : $"{Path.GetFileName(embedded)} embedded by {embeddedSignature.Signer ?? embeddedSignature.State.ToString()}";
+    return (passed, $"cmd.exe in a catalog by {catalog.Signer ?? catalog.State.ToString()}; {embeddedFact}; this canary {self.State}");
+
+    static FileSignature Verify(string path)
+    {
+        using var file = File.OpenHandle(path);
+        return FileSignatures.Verify(file, path);
+    }
+}
+
+static (bool, string) ReadFileVersion()
+{
+    // The libraries have no version reader: product code may not read a file by path, and the PowerShell tool reads
+    // no file versions. This shows the runtime's own reader works compiled ahead of time. Windows reports the fixed
+    // version of its own files as 6.2 to a process whose manifest does not declare Windows 10, as neither exe here does.
+    var info = FileVersionInfo.GetVersionInfo(Path.Combine(Environment.SystemDirectory, "cmd.exe"));
+    return (info.FileBuildPart > 0 && info.CompanyName == "Microsoft Corporation" && !string.IsNullOrEmpty(info.FileVersion),
+        $"cmd.exe fixed {info.FileMajorPart}.{info.FileMinorPart}.{info.FileBuildPart}.{info.FilePrivatePart}, text {info.FileVersion}");
+}
+
+static bool IsNativeAot()
+{
+    // Not RuntimeFeature.IsDynamicCodeSupported: PublishAot sets it false in a JIT build's runtimeconfig.json too.
+    using var process = Process.GetCurrentProcess();
+    return !process.Modules.Cast<ProcessModule>().Any(m => string.Equals(m.ModuleName, "coreclr.dll", StringComparison.OrdinalIgnoreCase));
+}
+
+static string Measure(DateTime mainStarted, TimeSpan run)
+{
+    // From the process's creation to Main, which is the runtime's start-up, then Main to here; the peak working set;
+    // and the size of the files this build ships beside its exe.
+    using var process = Process.GetCurrentProcess();
+    var startUp = mainStarted - process.StartTime;
+    var folder = AppContext.BaseDirectory;
+    var shipped = Directory.EnumerateFiles(folder).Where(f => f.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) || f.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)).ToList();
+    var mode = IsNativeAot() ? "Native AOT" : "JIT";
+    return string.Create(CultureInfo.InvariantCulture,
+        $"Measure: mode={mode}; start-up ms={startUp.TotalMilliseconds:F1}; run ms={run.TotalMilliseconds:F0}; peak working set MB={process.PeakWorkingSet64 / 1048576.0:F1}; "
+        + $"exe MB={new FileInfo(Environment.ProcessPath!).Length / 1048576.0:F2}; files={shipped.Count}; files MB={shipped.Sum(f => new FileInfo(f).Length) / 1048576.0:F2}");
+}
+
+static void CompareWithJit()
+{
+    // CI builds the solution before it publishes this canary, so a JIT build of it sits in the build output. Both
+    // run five times on the same machine, each with --no-compare, and the medians are printed.
+    var jit = Path.GetFullPath(Path.Combine("artifacts", "bin", "AotCanary", "release", "AotCanary.exe"));
+    if (!File.Exists(jit))
+    {
+        Console.WriteLine($"Compare: skipped, no JIT build at {jit}");
+        return;
+    }
+
+    foreach (var (name, exe) in new[] { ("Native AOT", Environment.ProcessPath!), ("JIT", jit) })
+    {
+        var runs = Enumerable.Range(0, 5).Select(_ => RunOnce(exe)).ToList();
+        if (runs.Any(r => r is null))
+        {
+            Console.WriteLine($"Compare: {name} run failed");
+            continue;
+        }
+
+        double Median(Func<(double Wall, Dictionary<string, double> Values), double> pick)
+        {
+            var sorted = runs.Select(r => pick(r!.Value)).Order().ToList();
+            return sorted[sorted.Count / 2];
+        }
+
+        Console.WriteLine(string.Create(CultureInfo.InvariantCulture,
+            $"Compare: {name}, median of 5: wall ms={Median(r => r.Wall):F0}; start-up ms={Median(r => r.Values["start-up ms"]):F1}; run ms={Median(r => r.Values["run ms"]):F0}; "
+            + $"peak working set MB={Median(r => r.Values["peak working set MB"]):F1}; files MB={runs[0]!.Value.Values["files MB"]:F2}"));
+    }
+
+    static (double Wall, Dictionary<string, double> Values)? RunOnce(string exe)
+    {
+        var start = new ProcessStartInfo(exe, "--no-compare") { RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true };
+        var clock = Stopwatch.StartNew();
+        using var child = Process.Start(start)!;
+        var output = child.StandardOutput.ReadToEnd();
+        child.WaitForExit();
+        clock.Stop();
+        var line = output.Split('\n').Select(l => l.Trim()).FirstOrDefault(l => l.StartsWith("Measure: ", StringComparison.Ordinal));
+        if (child.ExitCode != 0 || line is null)
+        {
+            Console.WriteLine(output);
+            return null;
+        }
+
+        var values = new Dictionary<string, double>();
+        foreach (var part in line["Measure: ".Length..].Split("; "))
+        {
+            var pair = part.Split('=');
+            if (pair.Length == 2 && double.TryParse(pair[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var value))
+            {
+                values[pair[0]] = value;
+            }
+        }
+
+        return (clock.Elapsed.TotalMilliseconds, values);
+    }
 }
 
 /// <summary>A check that passes, to run the engine end to end.</summary>

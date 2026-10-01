@@ -16,7 +16,7 @@ This note covers the layout, the rules the build enforces, and how to build and 
 | `src/Engramic.Baseline.Platform` | The interfaces and records of the primitives (registry, files, the event log, processes, tokens, HTTP and so on), the layout and trust rules of the data folder, and the rules that choose a service request's proxy. |
 | `src/Engramic.Baseline.Engine` | The check and fix contracts, the runner, the framework rollups, changesets and undo. |
 | `src/Engramic.Baseline.Controls` | The checks, the fixes, the readers that interpret what the primitives return, and the shipped config. |
-| `src/Engramic.Baseline.Windows` | The Windows primitives, calling Win32 through code that CsWin32 generates from `NativeMethods.txt`, including SecureStore, the audit mutex and the service client. |
+| `src/Engramic.Baseline.Windows` | The Windows primitives, calling Win32 through code that CsWin32 generates from `NativeMethods.txt`, including SecureStore, the audit mutex, the service client and the sources of each user's Store packages. |
 | `src/Engramic.Baseline.Cli` | `baseline.exe`, the command line. |
 | `tests/Engramic.Baseline.*.Tests` | xUnit v3 tests: one project for each library, and one for the command line. |
 | `tests/Engramic.Baseline.Contracts.Tests` | The status.json contract: golden files of its bytes, and the Intune scripts run on it (below). |
@@ -518,6 +518,228 @@ are missing (`ClassicDelete` in `SecureStoreHooks` tests that way on any build).
 not relied on: `PathWalkingTests` accepts `STATUS_REPARSE_POINT_ENCOUNTERED` or `STATUS_INVALID_PARAMETER` for it,
 and writes which to the test output. The GitHub runners cover Windows Server 2025 (build 26100) in the meantime.
 
+## Store packages (Appx)
+
+`ai-tools.json` names some AI tools by their Store package (`appx`), such as `Claude` and `OpenAI.ChatGPT-Desktop`.
+The checks need to know which of those packages are installed, for which users, and what each one is: its name,
+publisher identifier, version, architecture and folder. WinRT's `PackageManager`, which Get-AppxPackage uses, is
+not AOT-ready, so it stays out of the AOT-clean libraries (a later `.Windows.Management` project may hold it as a
+cross-check). The contract is portable: `IAppxPackageSource` lists, for each user, an `AppxUserPackages` with an
+outcome and the packages, each an `AppxPackage` whose identity is read from its full name
+(`Name_Version_Architecture_ResourceId_PublisherId`). The outcome is `Read`, or why the user was not read:
+`NotLoaded`, `Denied`, `Failed`, or `Unsupported` for an account the source never reads, such as the service
+accounts. A user who was not read is listed with the reason, never left out, so that a check can tell "not
+installed" from "not known". A check may leave out `Unsupported` accounts, which are not people's.
+
+Windows keeps three records of packages in the registry, none of them documented as an interface:
+
+| Key | What it holds |
+|---|---|
+| `HKLM\SOFTWARE\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\PackageRepository\Packages` | The device's package repository: a key for each package on the device, staged or registered for anyone, with its folder in `Path`. Resource packages and bundles have keys too. A package removed from the device loses its key. |
+| `HKEY_USERS\<sid>_Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\Repository\Packages` | Each user's package repository, in their classes hive (`UsrClass.dat`), loaded while they are signed in: a key for each main and framework package registered for them. Keys of packages since updated or removed are not always deleted. |
+| `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList` | A key for each account with a profile on the device, signed in or not. |
+
+Two sources implement the contract in `Engramic.Baseline.Windows`, both AOT-clean:
+
+- **`AppxRegistrySource`** reads only the registry, through the registry primitive, which now also lists a key's
+  subkeys and reads `HKEY_USERS`. It takes a package as installed for a user when their own repository and the
+  device's both list it. A key left in the user's repository by a package since updated or removed is passed over
+  only once no one on the device keeps that version: while another user still has it, the device's repository
+  lists it, the key passes, and the user is reported with the version they updated from, or the package they
+  removed (spike 8; a test holds this limit). Its folder is the device repository's `Path`. Every account with a
+  profile or a loaded hive is listed. One whose classes hive is not loaded is `NotLoaded`, and so is one whose
+  classes hive is unloaded while the source reads, as when they sign out. The service accounts SYSTEM,
+  LocalService and NetworkService never have a classes hive, so they are `Unsupported`, and a package registered
+  for one of them alone is never seen. As SYSTEM it reads every user whose classes hive is loaded, and an elevated
+  administrator should too, though no device in the spike had a second person signed in to show it. Without
+  elevation it reads the current user, and another person's hive would normally be `Denied`.
+- **`AppxAppModelSource`** asks the package runtime (appmodel.h, through CsWin32): for every package in the
+  device's repository and every user, `OpenPackageInfoByFullNameForUser`, then `GetPackageInfo` for the package's
+  properties and folder, leaving out resource packages and bundles. It needs no elevation to answer for another
+  account. Only the first fields of `PACKAGE_INFO` are read, since its packing differs by architecture and CsWin32
+  will not generate it for AnyCPU.
+
+**The PowerShell module** (`Get-CEStorePackageName`) reads the user's repository for one user, the current user,
+or as SYSTEM the console user's loaded hive. It keeps only the names, the text before the first `_`, and every key,
+stale keys included. Differences, if the registry source is chosen:
+
+| The module | The registry source | Why |
+|---|---|---|
+| One user: the current user, or as SYSTEM the console user | Every user with a loaded hive; every other profile listed as `NotLoaded`, and the service accounts as `Unsupported` | AI tools on a shared device, and "not known" said rather than silent |
+| Every key in the user's repository | Only keys the device's repository also lists | Stale keys: 135 of 301 on the maintainer's device, which by name add 16 packages that are not installed, such as an uninstalled `Malwarebytes.AntiMalware`. A stale key whose version another user keeps passes in both |
+| Names only | The full identity and the folder | Version and publisher identifier, for the checks and the report |
+| As SYSTEM with nobody at the console, no packages and no word of it | Each user's outcome | The same |
+
+The tests compare both sources with Get-AppxPackage, run in a separate Windows PowerShell so that WinRT never comes
+near the product's libraries, user by user and package by package (`AppxOracleTests`). They run for the account
+running the tests, for every user as the elevated administrator in the build job, and as SYSTEM in the Tests as
+SYSTEM job (explicit, with the trait `Context=System`). They fail on any difference of the registry source for a
+user it read, and report the package runtime's differences without failing. The only misses they let off are four
+packages seen on CI's runner (`AppxKnownDifferences`, below), by name, and only when the user's own repository
+does not list them either; each is still reported, and a test holds that none is a package `ai-tools.json` names.
+So that a comparison of nobody cannot pass, they also fail when Get-AppxPackage names no user with packages, or
+when the registry source did not read every user whose classes hive `HKEY_USERS` lists (for the first test, the
+account running it). The comparisons run alone, not beside other tests, since asking about every user's packages
+can set Windows' own components sending requests while the service client's SYSTEM tests have the machine's
+WinHTTP proxy set. `AppxSourceTests` hold each source's rules on a registry in memory, `AppxComparisonTests` hold
+what a comparison counts, and the AOT canary runs both sources and fails unless each finds packages for its own
+account.
+
+### Spike 8: Store packages without WinRT
+
+The question was how to list each user's Store packages, as SYSTEM and elevated, AOT-clean and without WinRT: from
+the AppModel package repositories in the registry, or from appmodel.h's package queries, and how either compares
+with WinRT's `PackageManager` for every user with a loaded hive.
+
+**Proposed decision: the registry source, once the lab tests below have run.** `AppxRegistrySource` is what the AI
+tool checks would use. It is flat registry reads through the existing primitive, with no new native code, and takes
+milliseconds. On the maintainer's device it gave exactly what Get-AppxPackage gives for the one person there. On
+CI's runner, for runneradmin, 4 of the 50 packages Get-AppxPackage -AllUsers lists as installed are not in the
+user's repository, so the source leaves them out. Why, and which view is right, are not known: nothing ran those
+packages as runneradmin (below). A user whose hive is not loaded, or is unloaded while it reads, is reported as not
+known, which a check can say plainly, and the module saw no more than that.
+
+What it cannot see, if chosen:
+
+- a package registered for a service account alone, such as SYSTEM: their registrations (41 for SYSTEM on the
+  runner, the system packages registered for every account) are never read;
+- which user has a version when more than one person uses the device: a stale key whose version another user
+  keeps passes, so the user is reported with a version they updated from or a package they removed. On the
+  maintainer's device, 134 of the 135 stale keys are other versions of packages still on the device in a later
+  one, left by OS servicing (such as 14 of `MicrosoftWindows.Client.CoreAI` and 12 of
+  `MicrosoftWindows.Client.CBS`) and by updates to a provisioned app (3 of `DellInc.DellCommandUpdate`); 1 is a
+  removed package (`Malwarebytes.AntiMalware`). Apps the Store updates in the user's session, such as `Claude`,
+  `Microsoft.Copilot` and `MSTeams`, have one key each. So the exposure is to updates that servicing, provisioning
+  or a device-wide deployment brings to a device more than one person uses;
+- whatever the runner's 4 packages are, if Get-AppxPackage is right about them. Two of them are provisioned for
+  every user, the way images and device-wide deployments such as Intune's deliver Store apps, so an AI tool
+  delivered that way might be reported as not installed for a user who has it.
+
+So the decision needs these first, on a lab machine (CI's runner has one person and cannot sign in a second):
+
+1. **Provisioned packages.** Provision an MSIX (`Add-AppxProvisionedPackage`) and make a local user. Before and
+   after their first interactive sign-in, compare Get-AppxPackage, the user's repository and the package runtime
+   for them, and launch the package as them through `shell:AppsFolder`, to learn which view says what the user can
+   run. Do the same for a package Intune installs for a user while they are signed out.
+2. **Two people, one version each.** One person updates a package by a provisioned or device-wide deployment while
+   the other is signed out and keeps the old version; and one removes a package the other keeps. For each, what the
+   registry source reports for the first person, and what the package runtime answers for their stale key, since
+   the fallback's gate rests on it.
+
+The package runtime source is not proposed: it answers "registered" for the system packages registered for every
+user, even for an account that does not exist, so a signed-out user would look like one with only those. It also
+finds last-known-good system packages that Get-AppxPackage hides, and it costs one native call for each package
+and user. On the runner it agreed with the registry source package for package, leaving out the same 4, but that
+is not independent evidence (below).
+
+**The tests do not depend on the package runtime.** The comparisons let off only the four runner packages, by name,
+decided by the user's own repository; the runtime's answer is printed beside each miss for the report and changes
+no result. Unless the fallback is needed, the package runtime source, its `NativeMethods.txt` entries and the
+printed line come out before the spike's branch merges, and the tests pass the same. The other ways were to keep
+`PackageRegistrations` in the product as a gate, as the fallback would, or to declare the lookup in the test
+project; either would leave the tests trusting a view not shown to be independent of the source under test.
+
+**Proposed fallback**, by what the lab shows:
+
+- If a build lacks the device's repository (`ReadInstalled` then throws), or the lab shows stale keys passing that
+  another user's copy keeps, the gate changes and nothing else does, provided the lab also shows the package
+  runtime rejecting such a key. The user's repository still gives the candidates, and the package runtime decides,
+  asked only about those keys for that user (`OpenPackageInfoByFullNameForUser`, already AOT-proven here).
+  Candidates from the user's own repository avoid the any-account answers. It may not reject them: on the
+  maintainer's device it answered "registered" for an older `MicrosoftWindows.55182690.Taskbar` that neither
+  Get-AppxPackage nor the user's repository lists.
+- If the lab shows Get-AppxPackage right about packages like the runner's 4, so that the user can run them, neither
+  source will do, since both leave them out. Then the answer is `PackageManager` out of process, in
+  `.Windows.Management`, which the section above keeps to a cross-check, so that role would change.
+- If nothing holds on a build, the checks report Error for Store apps there.
+
+**Evidence, on the maintainer's device**, build 26200 (Windows 11 25H2), as a standard user, for that user:
+
+| Source | Packages | Against Get-AppxPackage | Time |
+|---|---|---|---|
+| Get-AppxPackage | 166 main and framework | - | 0.4 to 1.0 s, with Windows PowerShell's start |
+| Registry | 166 | The same, full name for full name. Passed over 135 stale keys of the 301 in the user's repository | 8 to 17 ms for 4 accounts |
+| Package runtime | 173 | The same 166, and 7 that Get-AppxPackage does not list even with `-PackageTypeFilter All`: `MicrosoftWindows.LKG.*` (6) and an older `MicrosoftWindows.55182690.Taskbar`, with the same properties as listed packages | 100 to 207 ms for 4 accounts |
+| The module's way, names from the user's repository | 148 names | The 132 installed names, and 16 of packages no longer installed | - |
+
+`Claude_2.16120.0.0_x64__pzs8sxrjxfjjc` was found by both sources. `Microsoft.MicrosoftOfficeHub` is staged on the
+device (9 keys in its repository) but removed by this user, and both sources leave it out. The device's repository
+alone would not.
+
+**Evidence, on CI's runner**, build 26100 (Windows Server 2025), from the logs of PR 44's runs (builds and tests
+only, no workflow change). Its users are runneradmin (the built-in Administrator, `-500`) and the three
+service accounts, all with hives loaded, so no user whose hive is not loaded could be compared there.
+
+| Account | Get-AppxPackage -AllUsers, installed | Registry | Package runtime |
+|---|---|---|---|
+| runneradmin, elevated (build job) and as SYSTEM (Tests as SYSTEM) | 50 or 51 | `Read`, 46 to 48: 3 or 4 fewer, the packages below; no other difference | The same as the registry, package for package |
+| SYSTEM, S-1-5-18 | 41, and 4 or 5 in another state | `Unsupported` (`NotLoaded` before): SYSTEM has no classes hive | 41, the same |
+| LocalService and NetworkService, S-1-5-19 and -20 | none named | `Unsupported` (`NotLoaded` before) | 41 each: the set it gives any account |
+
+| Time on the runner | Elevated | As SYSTEM |
+|---|---|---|
+| Get-AppxPackage -AllUsers, with Windows PowerShell's start | 0.7 to 1.1 s | 2.1 to 7.2 s |
+| Registry, 4 accounts | 1 to 15 ms | 13 to 23 ms |
+| Package runtime, 4 accounts, every package on the device for each | 16 to 41 ms warm, 0.7 to 2.2 s cold | 0.2 to 6.4 s |
+
+The packages Get-AppxPackage lists for runneradmin that neither source does were `Microsoft.SecHealthUI`,
+`Microsoft.Windows.NarratorQuickStart`, `Microsoft.WindowsFeedbackHub` and
+`MicrosoftCorporationII.WindowsSubsystemForLinux`: 4 of the 50 in each SYSTEM run. Plain `Get-AppxPackage`, run as
+runneradmin, lists them too. For each one:
+
+| What | Says |
+|---|---|
+| Get-AppxPackage | Installed for runneradmin, status Ok, signed Store, System or Developer, folder present |
+| The device's repository | Listed, with that folder |
+| runneradmin's repository | Not listed |
+| `OpenPackageInfoByFullNameForUser` for runneradmin | `ERROR_NOT_FOUND` (1168) |
+| `AppxAllUserStore\<sid>`, the deployment service's pending work | Not listed. Two of the four, `SecHealthUI` and `WindowsSubsystemForLinux`, are provisioned (`AppxAllUserStore\Applications`) |
+
+So Windows' views disagree there, and which is right is not known: nothing launched these packages as runneradmin.
+The registry source and the package runtime leave them out, and Get-AppxPackage, the reference the spike compares
+with, lists them. The runtime's agreement with the registry source adds little, since it may read the same per-user
+registration as the user's repository: for an account with no hive, even one that does not exist, it answers only
+the set registered for every account (below), and on all 4 it sided with the user's repository against the
+deployment service's records, which Get-AppxPackage reports. It does draw on more than the user's repository,
+since it answers for that any-account set and for the 7 packages Get-AppxPackage hides on the maintainer's device, but
+whether its answer for a user's own packages comes from that user's hive is not known. With none of the 4 let off,
+the comparisons failed on them, in the build job and as SYSTEM. The runner's image is the likeliest cause, since
+the maintainer's device showed no such package, but that is not established.
+
+**The package runtime and accounts.** Asked about every package on the device, `OpenPackageInfoByFullNameForUser`
+answers "registered" for the same 55 packages on the maintainer's device for SYSTEM, LocalService, NetworkService,
+Everyone, Users, the device's built-in Administrator (which has no profile there) and `S-1-5-21-1-2-3-4444`, which
+does not exist. On the runner it answered the same 41 for SYSTEM, LocalService and NetworkService, and for SYSTEM
+those were exactly Get-AppxPackage's 41. They are system packages registered for every user, such as
+`Microsoft.LockApp`, `Microsoft.AAD.BrokerPlugin` and the GUID-named ones. Beyond those its answers are per user:
+`Claude` gave `ERROR_NOT_FOUND` for the account that does not exist.
+
+**AOT.** CsWin32 generates `OpenPackageInfoByFullNameForUser`, `GetPackageInfo` and `ClosePackageInfo` with no
+platform attribute newer than build 14393, so CA1416 passes; `PACKAGE_INFO` it will not generate for AnyCPU. The AOT
+canary, published with Native AOT and every warning an error, runs both sources, and fails unless each reads its
+own account and finds packages for it. On the runner, as the elevated runneradmin, it printed:
+
+```
+Appx: as runnervmfi6oq\runneradmin (S-1-5-21-1643835476-1616584234-1346609752-500); registry 2 ms, appmodel 33 ms.
+Appx S-1-5-18: registry Unsupported 0, appmodel Read 41 (A service account has no classes hive (UsrClass.dat), ...)
+Appx S-1-5-19: registry Unsupported 0, appmodel Read 41 (...)
+Appx S-1-5-20: registry Unsupported 0, appmodel Read 41 (...)
+Appx S-1-5-21-1643835476-1616584234-1346609752-500: registry Read 46, appmodel Read 46; only registry 0, only appmodel 0
+Windows: Appx packages: ok
+```
+
+**Also still to run**, on lab machines of builds 14393, 17763 and 19045, beside the two lab tests above:
+
+- that the device's repository exists and is laid out as above on each build (only 26100 and 26200 are seen). On
+  14393 the key may not exist yet, which is what the fallback is for;
+- that `OpenPackageInfoByFullNameForUser` exists and answers the same way on 14393, which CsWin32's metadata does not
+  rule out but nothing has run;
+- a second user, signed out, with a Store app of their own: the registry source must say `NotLoaded`, and what the
+  package runtime answers for them is the open question, given its any-account answers;
+- the same user signed in through fast user switching, so that two people's hives are loaded, read as SYSTEM, as
+  an elevated administrator and as each of them;
+- an Entra ID account (`S-1-12-1-...`).
+
 ## Config: the config trust gate
 
 The checks read config through `IConfigFiles`. The shipped files are built into Controls (`ShippedConfig`, above),
@@ -935,7 +1157,7 @@ same slice on that build too, as it was signed.
 | Contracts | On Windows: the contract tests (the golden files, and the Intune scripts in both hosts with the deliberate changes), then `baseline.exe` published self-contained under Program Files and `tools/contracts/Test-StatusContract.ps1`: the install, `scheduled-audit` as SYSTEM, and the Intune scripts on its status.json and the module's, as SYSTEM and as administrator. It uploads what its steps wrote only when it fails. |
 | Parity | On Windows: `baseline.exe` published the same way, and `Compare-Parity.ps1` for SU-01 as the elevated administrator and as SYSTEM, which fails on any difference the ledger does not explain. It uploads both comparisons only when it fails. |
 | Security | On Windows: the attack suite (`Suite=Security`) with a throwaway standard user as the attacker (`tools/ci/Invoke-SecurityTests.ps1`), as the elevated administrator and, through `tools/ci/Invoke-AsSystem.ps1`, as SYSTEM. It runs the built test assembly directly, since `dotnet test` run as SYSTEM took the project for a VSTest one, so there is no hang dump; the SYSTEM run's task has a time limit, and a run in which no test ran fails. It uploads the results only when it fails. |
-| Tests as SYSTEM | On Windows: the Windows tests built, and the explicit ones with the trait `Context=System` run as SYSTEM through `tools/ci/Test-AsSystem.ps1`, which counts a skip as a failure and fails unless at least five ran and every one passed: the service client's proxies from `network.json`, the WinHTTP proxy netsh sets, a named PAC file and WPAD, the sign-in sent only where it is allowed, and plain http refused. It keeps the results when it fails. |
+| Tests as SYSTEM | On Windows: the Windows tests built, and the explicit ones with the trait `Context=System` run as SYSTEM through `tools/ci/Test-AsSystem.ps1`, which counts a skip as a failure and fails unless at least five ran and every one passed: the service client's proxies from `network.json`, the WinHTTP proxy netsh sets, a named PAC file and WPAD, the sign-in sent only where it is allowed, and plain http refused; and each user's Store packages from both Appx sources against Get-AppxPackage -AllUsers, with the registry source reading every user whose classes hive is loaded. It keeps the results when it fails. |
 | Hygiene | Every tracked text file is ASCII, and every URL host in `src/`, `tests/`, `tools/` and `docs/`, every `engramic-ai/` repository and every `engramic.ai` name anywhere is on `tools/hygiene/public-allowlist.txt`. |
 
 The PowerShell module's jobs stay in `ci.yml`.

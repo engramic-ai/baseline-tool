@@ -34,12 +34,16 @@ public static class ConfigFile
     /// <summary>The name of the Windows lifecycle data that SU-01 judges against.</summary>
     public const string OsLifecycleName = "os-lifecycle.json";
 
+    /// <summary>The name of the proxy settings for the tool's own requests.</summary>
+    public const string NetworkName = "network.json";
+
     /// <summary>The deepest a config file's objects and arrays may nest: 64, as the JSON reader allows.</summary>
     public const int MaxDepth = 64;
 
     /// <summary>The reader of each file, by name, which throws <see cref="JsonException"/> for a copy that is not valid.</summary>
     private static readonly Dictionary<string, Reader> Schemas = new(StringComparer.OrdinalIgnoreCase)
     {
+        [NetworkName] = utf8 => _ = ReadNetwork(utf8),
         [OsLifecycleName] = utf8 => _ = ReadOsLifecycle(utf8),
     };
 
@@ -63,6 +67,21 @@ public static class ConfigFile
     public static OsLifecycle ReadOsLifecycle(ReadOnlySpan<byte> utf8)
     {
         return ModelJson.Read(utf8, ModelJson.OsLifecycleReader);
+    }
+
+    /// <summary>Reads config/network.json, with or without a byte order mark.</summary>
+    /// <param name="utf8">The bytes of the file.</param>
+    /// <returns>The settings, with the default of each member the file does not give as a value of its type.</returns>
+    /// <remarks>
+    /// Also network.json's schema (<see cref="FindProblem"/>). Every member is optional and one of another type takes
+    /// its default (<see cref="NetworkConfig"/>), so what refuses an override is almost always a rule every file
+    /// meets, such as a member named twice or text that is not UTF-8; this reader adds only an address that is no
+    /// text, such as an escaped lone surrogate.
+    /// </remarks>
+    /// <exception cref="JsonException">The bytes are not a JSON object.</exception>
+    public static NetworkConfig ReadNetwork(ReadOnlySpan<byte> utf8)
+    {
+        return ModelJson.Read(utf8, ModelJson.NetworkReader);
     }
 
     /// <summary>

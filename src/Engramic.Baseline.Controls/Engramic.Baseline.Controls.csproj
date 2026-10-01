@@ -16,9 +16,10 @@
   <ItemGroup>
     <!--
       The shipped config (ShippedConfig): the repository's config folder, which the PowerShell tool also
-      reads, built in under config/<name>. A file joins when a ported check first reads it, with its schema
+      reads, built in under config/<name>. A file joins when ported code first reads it, with its schema
       in ConfigFile, which an administrator's override of it must meet (docs/DOTNET.md).
     -->
+    <EmbeddedResource Include="..\..\config\network.json" LogicalName="config/network.json" Visible="false" />
     <EmbeddedResource Include="..\..\config\os-lifecycle.json" LogicalName="config/os-lifecycle.json" Visible="false" />
   </ItemGroup>
 </Project>

@@ -3,6 +3,10 @@ const Engramic.Baseline.Platform.DataFolderLayout.NoticeEventId = 1003 -> int
 const Engramic.Baseline.Platform.DataFolderLayout.ScratchFolderName = "scratch" -> string!
 const Engramic.Baseline.Platform.DataFolderLayout.UntrustedMarker = ".untrusted-" -> string!
 const Engramic.Baseline.Platform.DataFolderTrust.WriteRights = 1343029590 -> uint
+const Engramic.Baseline.Platform.ProxyChooser.ProxyHint = "If this device uses a proxy, set proxyUrl in network.json." -> string!
+const Engramic.Baseline.Platform.ServiceRequest.DefaultMaxBytes = 65536 -> int
+const Engramic.Baseline.Platform.ServiceRequest.LargestMaxBytes = 16777216 -> int
+const Engramic.Baseline.Platform.ServiceRequest.SmallestMaxBytes = 1024 -> int
 Engramic.Baseline.Platform.AccessEntry
 Engramic.Baseline.Platform.AccessEntry.<Clone>$() -> Engramic.Baseline.Platform.AccessEntry!
 Engramic.Baseline.Platform.AccessEntry.AccessEntry(Engramic.Baseline.Platform.AccessEntryType Type, Engramic.Baseline.Platform.Sid? Trustee, uint Mask) -> void
@@ -18,6 +22,22 @@ Engramic.Baseline.Platform.AccessEntryType
 Engramic.Baseline.Platform.AccessEntryType.Allow = 0 -> Engramic.Baseline.Platform.AccessEntryType
 Engramic.Baseline.Platform.AccessEntryType.Deny = 1 -> Engramic.Baseline.Platform.AccessEntryType
 Engramic.Baseline.Platform.AccessEntryType.Other = 2 -> Engramic.Baseline.Platform.AccessEntryType
+Engramic.Baseline.Platform.AutoProxyAnswer
+Engramic.Baseline.Platform.AutoProxyAnswer.<Clone>$() -> Engramic.Baseline.Platform.AutoProxyAnswer!
+Engramic.Baseline.Platform.AutoProxyAnswer.AutoProxyAnswer(Engramic.Baseline.Platform.AutoProxyOutcome Outcome, string! Proxy, string! Detail) -> void
+Engramic.Baseline.Platform.AutoProxyAnswer.Deconstruct(out Engramic.Baseline.Platform.AutoProxyOutcome Outcome, out string! Proxy, out string! Detail) -> void
+Engramic.Baseline.Platform.AutoProxyAnswer.Detail.get -> string!
+Engramic.Baseline.Platform.AutoProxyAnswer.Detail.init -> void
+Engramic.Baseline.Platform.AutoProxyAnswer.Equals(Engramic.Baseline.Platform.AutoProxyAnswer? other) -> bool
+Engramic.Baseline.Platform.AutoProxyAnswer.Outcome.get -> Engramic.Baseline.Platform.AutoProxyOutcome
+Engramic.Baseline.Platform.AutoProxyAnswer.Outcome.init -> void
+Engramic.Baseline.Platform.AutoProxyAnswer.Proxy.get -> string!
+Engramic.Baseline.Platform.AutoProxyAnswer.Proxy.init -> void
+Engramic.Baseline.Platform.AutoProxyOutcome
+Engramic.Baseline.Platform.AutoProxyOutcome.Direct = 1 -> Engramic.Baseline.Platform.AutoProxyOutcome
+Engramic.Baseline.Platform.AutoProxyOutcome.Failed = 3 -> Engramic.Baseline.Platform.AutoProxyOutcome
+Engramic.Baseline.Platform.AutoProxyOutcome.NotFound = 2 -> Engramic.Baseline.Platform.AutoProxyOutcome
+Engramic.Baseline.Platform.AutoProxyOutcome.Proxy = 0 -> Engramic.Baseline.Platform.AutoProxyOutcome
 Engramic.Baseline.Platform.DataFolder
 Engramic.Baseline.Platform.DataFolder.Cache = 4 -> Engramic.Baseline.Platform.DataFolder
 Engramic.Baseline.Platform.DataFolder.Config = 3 -> Engramic.Baseline.Platform.DataFolder
@@ -74,6 +94,11 @@ Engramic.Baseline.Platform.ISecureStore.DeleteTree(Engramic.Baseline.Platform.Da
 Engramic.Baseline.Platform.ISecureStore.Notices.get -> System.Collections.Generic.IReadOnlyList<string!>!
 Engramic.Baseline.Platform.ISecureStore.WriteFile(Engramic.Baseline.Platform.DataFolder folder, string! name, System.ReadOnlySpan<byte> content) -> void
 Engramic.Baseline.Platform.ISecureStore.WriteFile(string! name, System.ReadOnlySpan<byte> content) -> void
+Engramic.Baseline.Platform.IServiceClient
+Engramic.Baseline.Platform.IServiceClient.GetAsync(Engramic.Baseline.Platform.ServiceRequest! request, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Engramic.Baseline.Platform.ServiceResponse!>!
+Engramic.Baseline.Platform.ISystemProxy
+Engramic.Baseline.Platform.ISystemProxy.FindAutoProxyAsync(System.Uri! target, System.Uri? scriptUrl, System.TimeSpan timeout) -> System.Threading.Tasks.Task<Engramic.Baseline.Platform.AutoProxyAnswer!>!
+Engramic.Baseline.Platform.ISystemProxy.ReadMachineProxy() -> Engramic.Baseline.Platform.MachineProxy?
 Engramic.Baseline.Platform.ItemSecurity
 Engramic.Baseline.Platform.ItemSecurity.<Clone>$() -> Engramic.Baseline.Platform.ItemSecurity!
 Engramic.Baseline.Platform.ItemSecurity.Dacl.get -> System.Collections.Generic.IReadOnlyList<Engramic.Baseline.Platform.AccessEntry!>?
@@ -83,6 +108,15 @@ Engramic.Baseline.Platform.ItemSecurity.Equals(Engramic.Baseline.Platform.ItemSe
 Engramic.Baseline.Platform.ItemSecurity.ItemSecurity(Engramic.Baseline.Platform.Sid? Owner, System.Collections.Generic.IReadOnlyList<Engramic.Baseline.Platform.AccessEntry!>? Dacl) -> void
 Engramic.Baseline.Platform.ItemSecurity.Owner.get -> Engramic.Baseline.Platform.Sid?
 Engramic.Baseline.Platform.ItemSecurity.Owner.init -> void
+Engramic.Baseline.Platform.MachineProxy
+Engramic.Baseline.Platform.MachineProxy.<Clone>$() -> Engramic.Baseline.Platform.MachineProxy!
+Engramic.Baseline.Platform.MachineProxy.Bypass.get -> string!
+Engramic.Baseline.Platform.MachineProxy.Bypass.init -> void
+Engramic.Baseline.Platform.MachineProxy.Deconstruct(out string! Proxy, out string! Bypass) -> void
+Engramic.Baseline.Platform.MachineProxy.Equals(Engramic.Baseline.Platform.MachineProxy? other) -> bool
+Engramic.Baseline.Platform.MachineProxy.MachineProxy(string! Proxy, string! Bypass) -> void
+Engramic.Baseline.Platform.MachineProxy.Proxy.get -> string!
+Engramic.Baseline.Platform.MachineProxy.Proxy.init -> void
 Engramic.Baseline.Platform.ProcessAccount
 Engramic.Baseline.Platform.ProcessAccount.<Clone>$() -> Engramic.Baseline.Platform.ProcessAccount!
 Engramic.Baseline.Platform.ProcessAccount.Deconstruct(out string! Name, out bool IsAdministrator, out bool IsLocalSystem) -> void
@@ -95,6 +129,45 @@ Engramic.Baseline.Platform.ProcessAccount.IsLocalSystem.init -> void
 Engramic.Baseline.Platform.ProcessAccount.Name.get -> string!
 Engramic.Baseline.Platform.ProcessAccount.Name.init -> void
 Engramic.Baseline.Platform.ProcessAccount.ProcessAccount(string! Name, bool IsAdministrator, bool IsLocalSystem) -> void
+Engramic.Baseline.Platform.ProxyChooser
+Engramic.Baseline.Platform.ProxyChooser.ChooseAsync(System.Uri! target, System.TimeSpan autoProxyTimeout, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Engramic.Baseline.Platform.ProxyRoute!>!
+Engramic.Baseline.Platform.ProxyChooser.ProxyChooser(Engramic.Baseline.Platform.ProxySettings! settings, Engramic.Baseline.Platform.ISystemProxy! system, bool isSystem, System.TimeProvider? time = null) -> void
+Engramic.Baseline.Platform.ProxyRoute
+Engramic.Baseline.Platform.ProxyRoute.<Clone>$() -> Engramic.Baseline.Platform.ProxyRoute!
+Engramic.Baseline.Platform.ProxyRoute.Equals(Engramic.Baseline.Platform.ProxyRoute? other) -> bool
+Engramic.Baseline.Platform.ProxyRoute.IsDirect.get -> bool
+Engramic.Baseline.Platform.ProxyRoute.Notes.get -> System.Collections.Generic.IReadOnlyList<string!>!
+Engramic.Baseline.Platform.ProxyRoute.Notes.init -> void
+Engramic.Baseline.Platform.ProxyRoute.Proxy.get -> System.Uri?
+Engramic.Baseline.Platform.ProxyRoute.Proxy.init -> void
+Engramic.Baseline.Platform.ProxyRoute.ProxyRoute() -> void
+Engramic.Baseline.Platform.ProxyRoute.Source.get -> Engramic.Baseline.Platform.ProxySource
+Engramic.Baseline.Platform.ProxyRoute.Source.init -> void
+Engramic.Baseline.Platform.ProxyRoute.UseDefaultCredentials.get -> bool
+Engramic.Baseline.Platform.ProxyRoute.UseDefaultCredentials.init -> void
+Engramic.Baseline.Platform.ProxySettings
+Engramic.Baseline.Platform.ProxySettings.<Clone>$() -> Engramic.Baseline.Platform.ProxySettings!
+Engramic.Baseline.Platform.ProxySettings.Equals(Engramic.Baseline.Platform.ProxySettings? other) -> bool
+Engramic.Baseline.Platform.ProxySettings.Problems.get -> System.Collections.Generic.IReadOnlyList<string!>!
+Engramic.Baseline.Platform.ProxySettings.Problems.init -> void
+Engramic.Baseline.Platform.ProxySettings.ProxyAutoConfigUrl.get -> string!
+Engramic.Baseline.Platform.ProxySettings.ProxyAutoConfigUrl.init -> void
+Engramic.Baseline.Platform.ProxySettings.ProxyAutoDetect.get -> bool
+Engramic.Baseline.Platform.ProxySettings.ProxyAutoDetect.init -> void
+Engramic.Baseline.Platform.ProxySettings.ProxySettings() -> void
+Engramic.Baseline.Platform.ProxySettings.ProxyUrl.get -> string!
+Engramic.Baseline.Platform.ProxySettings.ProxyUrl.init -> void
+Engramic.Baseline.Platform.ProxySettings.ProxyUseDefaultCredentials.get -> bool
+Engramic.Baseline.Platform.ProxySettings.ProxyUseDefaultCredentials.init -> void
+Engramic.Baseline.Platform.ProxySettings.UseWinHttpProxyWhenSystem.get -> bool
+Engramic.Baseline.Platform.ProxySettings.UseWinHttpProxyWhenSystem.init -> void
+Engramic.Baseline.Platform.ProxySource
+Engramic.Baseline.Platform.ProxySource.AutoConfigUrl = 4 -> Engramic.Baseline.Platform.ProxySource
+Engramic.Baseline.Platform.ProxySource.AutoDetect = 5 -> Engramic.Baseline.Platform.ProxySource
+Engramic.Baseline.Platform.ProxySource.Local = 1 -> Engramic.Baseline.Platform.ProxySource
+Engramic.Baseline.Platform.ProxySource.NetworkConfig = 2 -> Engramic.Baseline.Platform.ProxySource
+Engramic.Baseline.Platform.ProxySource.None = 0 -> Engramic.Baseline.Platform.ProxySource
+Engramic.Baseline.Platform.ProxySource.WinHttp = 3 -> Engramic.Baseline.Platform.ProxySource
 Engramic.Baseline.Platform.RegistryHive
 Engramic.Baseline.Platform.RegistryHive.LocalMachine = 0 -> Engramic.Baseline.Platform.RegistryHive
 Engramic.Baseline.Platform.RegistryValue
@@ -123,6 +196,33 @@ Engramic.Baseline.Platform.SecureStoreException.SecureStoreException() -> void
 Engramic.Baseline.Platform.SecureStoreException.SecureStoreException(string! message) -> void
 Engramic.Baseline.Platform.SecureStoreException.SecureStoreException(string! message, System.Exception! innerException) -> void
 Engramic.Baseline.Platform.SecureStoreException.SecureStoreException(string! message, bool isUnavailable, System.Exception? innerException) -> void
+Engramic.Baseline.Platform.ServiceRequest
+Engramic.Baseline.Platform.ServiceRequest.<Clone>$() -> Engramic.Baseline.Platform.ServiceRequest!
+Engramic.Baseline.Platform.ServiceRequest.Equals(Engramic.Baseline.Platform.ServiceRequest? other) -> bool
+Engramic.Baseline.Platform.ServiceRequest.ETag.get -> string?
+Engramic.Baseline.Platform.ServiceRequest.ETag.init -> void
+Engramic.Baseline.Platform.ServiceRequest.MaxBytes.get -> int
+Engramic.Baseline.Platform.ServiceRequest.MaxBytes.init -> void
+Engramic.Baseline.Platform.ServiceRequest.ServiceRequest(System.Uri! uri) -> void
+Engramic.Baseline.Platform.ServiceRequest.Timeout.get -> System.TimeSpan
+Engramic.Baseline.Platform.ServiceRequest.Timeout.init -> void
+Engramic.Baseline.Platform.ServiceRequest.Uri.get -> System.Uri!
+Engramic.Baseline.Platform.ServiceResponse
+Engramic.Baseline.Platform.ServiceResponse.<Clone>$() -> Engramic.Baseline.Platform.ServiceResponse!
+Engramic.Baseline.Platform.ServiceResponse.Body.get -> System.ReadOnlyMemory<byte>
+Engramic.Baseline.Platform.ServiceResponse.Body.init -> void
+Engramic.Baseline.Platform.ServiceResponse.Equals(Engramic.Baseline.Platform.ServiceResponse? other) -> bool
+Engramic.Baseline.Platform.ServiceResponse.Error.get -> string!
+Engramic.Baseline.Platform.ServiceResponse.Error.init -> void
+Engramic.Baseline.Platform.ServiceResponse.ETag.get -> string!
+Engramic.Baseline.Platform.ServiceResponse.ETag.init -> void
+Engramic.Baseline.Platform.ServiceResponse.Route.get -> Engramic.Baseline.Platform.ProxyRoute?
+Engramic.Baseline.Platform.ServiceResponse.Route.init -> void
+Engramic.Baseline.Platform.ServiceResponse.ServiceResponse() -> void
+Engramic.Baseline.Platform.ServiceResponse.StatusCode.get -> int
+Engramic.Baseline.Platform.ServiceResponse.StatusCode.init -> void
+Engramic.Baseline.Platform.ServiceResponse.Succeeded.get -> bool
+Engramic.Baseline.Platform.ServiceUri
 Engramic.Baseline.Platform.Sid
 Engramic.Baseline.Platform.Sid.<Clone>$() -> Engramic.Baseline.Platform.Sid!
 Engramic.Baseline.Platform.Sid.Equals(Engramic.Baseline.Platform.Sid? other) -> bool
@@ -130,23 +230,47 @@ Engramic.Baseline.Platform.Sid.Value.get -> string!
 override Engramic.Baseline.Platform.AccessEntry.Equals(object? obj) -> bool
 override Engramic.Baseline.Platform.AccessEntry.GetHashCode() -> int
 override Engramic.Baseline.Platform.AccessEntry.ToString() -> string!
+override Engramic.Baseline.Platform.AutoProxyAnswer.Equals(object? obj) -> bool
+override Engramic.Baseline.Platform.AutoProxyAnswer.GetHashCode() -> int
+override Engramic.Baseline.Platform.AutoProxyAnswer.ToString() -> string!
 override Engramic.Baseline.Platform.FileFacts.Equals(object? obj) -> bool
 override Engramic.Baseline.Platform.FileFacts.GetHashCode() -> int
 override Engramic.Baseline.Platform.FileFacts.ToString() -> string!
 override Engramic.Baseline.Platform.ItemSecurity.Equals(object? obj) -> bool
 override Engramic.Baseline.Platform.ItemSecurity.GetHashCode() -> int
 override Engramic.Baseline.Platform.ItemSecurity.ToString() -> string!
+override Engramic.Baseline.Platform.MachineProxy.Equals(object? obj) -> bool
+override Engramic.Baseline.Platform.MachineProxy.GetHashCode() -> int
+override Engramic.Baseline.Platform.MachineProxy.ToString() -> string!
 override Engramic.Baseline.Platform.ProcessAccount.Equals(object? obj) -> bool
 override Engramic.Baseline.Platform.ProcessAccount.GetHashCode() -> int
 override Engramic.Baseline.Platform.ProcessAccount.ToString() -> string!
+override Engramic.Baseline.Platform.ProxyRoute.Equals(object? obj) -> bool
+override Engramic.Baseline.Platform.ProxyRoute.GetHashCode() -> int
+override Engramic.Baseline.Platform.ProxyRoute.ToString() -> string!
+override Engramic.Baseline.Platform.ProxySettings.Equals(object? obj) -> bool
+override Engramic.Baseline.Platform.ProxySettings.GetHashCode() -> int
+override Engramic.Baseline.Platform.ProxySettings.ToString() -> string!
 override Engramic.Baseline.Platform.RegistryValue.Equals(object? obj) -> bool
 override Engramic.Baseline.Platform.RegistryValue.GetHashCode() -> int
 override Engramic.Baseline.Platform.RegistryValue.ToString() -> string!
+override Engramic.Baseline.Platform.ServiceRequest.Equals(object? obj) -> bool
+override Engramic.Baseline.Platform.ServiceRequest.GetHashCode() -> int
+override Engramic.Baseline.Platform.ServiceRequest.ToString() -> string!
+override Engramic.Baseline.Platform.ServiceResponse.Equals(object? obj) -> bool
+override Engramic.Baseline.Platform.ServiceResponse.GetHashCode() -> int
+override Engramic.Baseline.Platform.ServiceResponse.ToString() -> string!
 override Engramic.Baseline.Platform.Sid.Equals(object? obj) -> bool
 override Engramic.Baseline.Platform.Sid.GetHashCode() -> int
 override Engramic.Baseline.Platform.Sid.ToString() -> string!
 static Engramic.Baseline.Platform.AccessEntry.operator !=(Engramic.Baseline.Platform.AccessEntry? left, Engramic.Baseline.Platform.AccessEntry? right) -> bool
 static Engramic.Baseline.Platform.AccessEntry.operator ==(Engramic.Baseline.Platform.AccessEntry? left, Engramic.Baseline.Platform.AccessEntry? right) -> bool
+static Engramic.Baseline.Platform.AutoProxyAnswer.Failed(string! detail) -> Engramic.Baseline.Platform.AutoProxyAnswer!
+static Engramic.Baseline.Platform.AutoProxyAnswer.GoDirect() -> Engramic.Baseline.Platform.AutoProxyAnswer!
+static Engramic.Baseline.Platform.AutoProxyAnswer.NotFound(string! detail) -> Engramic.Baseline.Platform.AutoProxyAnswer!
+static Engramic.Baseline.Platform.AutoProxyAnswer.operator !=(Engramic.Baseline.Platform.AutoProxyAnswer? left, Engramic.Baseline.Platform.AutoProxyAnswer? right) -> bool
+static Engramic.Baseline.Platform.AutoProxyAnswer.operator ==(Engramic.Baseline.Platform.AutoProxyAnswer? left, Engramic.Baseline.Platform.AutoProxyAnswer? right) -> bool
+static Engramic.Baseline.Platform.AutoProxyAnswer.UseProxy(string! proxy) -> Engramic.Baseline.Platform.AutoProxyAnswer!
 static Engramic.Baseline.Platform.DataFolderLayout.AsideName(string! dataFolderName, string! id, string? relativePath = null) -> string!
 static Engramic.Baseline.Platform.DataFolderLayout.EventMessage(string! notice) -> string!
 static Engramic.Baseline.Platform.DataFolderLayout.IsAsideName(string! name) -> bool
@@ -161,8 +285,14 @@ static Engramic.Baseline.Platform.FileFacts.operator !=(Engramic.Baseline.Platfo
 static Engramic.Baseline.Platform.FileFacts.operator ==(Engramic.Baseline.Platform.FileFacts? left, Engramic.Baseline.Platform.FileFacts? right) -> bool
 static Engramic.Baseline.Platform.ItemSecurity.operator !=(Engramic.Baseline.Platform.ItemSecurity? left, Engramic.Baseline.Platform.ItemSecurity? right) -> bool
 static Engramic.Baseline.Platform.ItemSecurity.operator ==(Engramic.Baseline.Platform.ItemSecurity? left, Engramic.Baseline.Platform.ItemSecurity? right) -> bool
+static Engramic.Baseline.Platform.MachineProxy.operator !=(Engramic.Baseline.Platform.MachineProxy? left, Engramic.Baseline.Platform.MachineProxy? right) -> bool
+static Engramic.Baseline.Platform.MachineProxy.operator ==(Engramic.Baseline.Platform.MachineProxy? left, Engramic.Baseline.Platform.MachineProxy? right) -> bool
 static Engramic.Baseline.Platform.ProcessAccount.operator !=(Engramic.Baseline.Platform.ProcessAccount? left, Engramic.Baseline.Platform.ProcessAccount? right) -> bool
 static Engramic.Baseline.Platform.ProcessAccount.operator ==(Engramic.Baseline.Platform.ProcessAccount? left, Engramic.Baseline.Platform.ProcessAccount? right) -> bool
+static Engramic.Baseline.Platform.ProxyRoute.operator !=(Engramic.Baseline.Platform.ProxyRoute? left, Engramic.Baseline.Platform.ProxyRoute? right) -> bool
+static Engramic.Baseline.Platform.ProxyRoute.operator ==(Engramic.Baseline.Platform.ProxyRoute? left, Engramic.Baseline.Platform.ProxyRoute? right) -> bool
+static Engramic.Baseline.Platform.ProxySettings.operator !=(Engramic.Baseline.Platform.ProxySettings? left, Engramic.Baseline.Platform.ProxySettings? right) -> bool
+static Engramic.Baseline.Platform.ProxySettings.operator ==(Engramic.Baseline.Platform.ProxySettings? left, Engramic.Baseline.Platform.ProxySettings? right) -> bool
 static Engramic.Baseline.Platform.RegistryValue.FromBinary(System.ReadOnlySpan<byte> bytes) -> Engramic.Baseline.Platform.RegistryValue!
 static Engramic.Baseline.Platform.RegistryValue.FromDWord(uint number) -> Engramic.Baseline.Platform.RegistryValue!
 static Engramic.Baseline.Platform.RegistryValue.FromExpandText(string! text) -> Engramic.Baseline.Platform.RegistryValue!
@@ -170,6 +300,16 @@ static Engramic.Baseline.Platform.RegistryValue.FromMultiText(System.Collections
 static Engramic.Baseline.Platform.RegistryValue.FromOther(System.ReadOnlySpan<byte> bytes) -> Engramic.Baseline.Platform.RegistryValue!
 static Engramic.Baseline.Platform.RegistryValue.FromQWord(ulong number) -> Engramic.Baseline.Platform.RegistryValue!
 static Engramic.Baseline.Platform.RegistryValue.FromText(string! text) -> Engramic.Baseline.Platform.RegistryValue!
+static Engramic.Baseline.Platform.ServiceRequest.DefaultTimeout.get -> System.TimeSpan
+static Engramic.Baseline.Platform.ServiceRequest.LongestTimeout.get -> System.TimeSpan
+static Engramic.Baseline.Platform.ServiceRequest.operator !=(Engramic.Baseline.Platform.ServiceRequest? left, Engramic.Baseline.Platform.ServiceRequest? right) -> bool
+static Engramic.Baseline.Platform.ServiceRequest.operator ==(Engramic.Baseline.Platform.ServiceRequest? left, Engramic.Baseline.Platform.ServiceRequest? right) -> bool
+static Engramic.Baseline.Platform.ServiceRequest.ShortestTimeout.get -> System.TimeSpan
+static Engramic.Baseline.Platform.ServiceResponse.operator !=(Engramic.Baseline.Platform.ServiceResponse? left, Engramic.Baseline.Platform.ServiceResponse? right) -> bool
+static Engramic.Baseline.Platform.ServiceResponse.operator ==(Engramic.Baseline.Platform.ServiceResponse? left, Engramic.Baseline.Platform.ServiceResponse? right) -> bool
+static Engramic.Baseline.Platform.ServiceUri.IsAllowed(System.Uri! uri) -> bool
+static Engramic.Baseline.Platform.ServiceUri.IsThisDevice(System.Uri! uri) -> bool
+static Engramic.Baseline.Platform.ServiceUri.TryResolve(string? baseUrl, string! path, out System.Uri? uri, out string! error) -> bool
 static Engramic.Baseline.Platform.Sid.Administrators.get -> Engramic.Baseline.Platform.Sid!
 static Engramic.Baseline.Platform.Sid.CreatorOwner.get -> Engramic.Baseline.Platform.Sid!
 static Engramic.Baseline.Platform.Sid.LocalSystem.get -> Engramic.Baseline.Platform.Sid!

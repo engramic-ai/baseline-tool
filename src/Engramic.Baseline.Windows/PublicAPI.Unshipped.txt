@@ -38,6 +38,25 @@ Engramic.Baseline.Windows.SecureStoreOptions.SealValueName.init -> void
 Engramic.Baseline.Windows.SecureStoreOptions.SecureStoreOptions() -> void
 Engramic.Baseline.Windows.SecureStoreOptions.Time.get -> System.TimeProvider!
 Engramic.Baseline.Windows.SecureStoreOptions.Time.init -> void
+Engramic.Baseline.Windows.ServiceClient
+Engramic.Baseline.Windows.ServiceClient.GetAsync(Engramic.Baseline.Platform.ServiceRequest! request, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Engramic.Baseline.Platform.ServiceResponse!>!
+Engramic.Baseline.Windows.ServiceClient.ServiceClient(Engramic.Baseline.Windows.ServiceClientOptions! options) -> void
+Engramic.Baseline.Windows.ServiceClientOptions
+Engramic.Baseline.Windows.ServiceClientOptions.<Clone>$() -> Engramic.Baseline.Windows.ServiceClientOptions!
+Engramic.Baseline.Windows.ServiceClientOptions.AutoProxyTimeout.get -> System.TimeSpan
+Engramic.Baseline.Windows.ServiceClientOptions.AutoProxyTimeout.init -> void
+Engramic.Baseline.Windows.ServiceClientOptions.Equals(Engramic.Baseline.Windows.ServiceClientOptions? other) -> bool
+Engramic.Baseline.Windows.ServiceClientOptions.IsSystem.get -> bool
+Engramic.Baseline.Windows.ServiceClientOptions.IsSystem.init -> void
+Engramic.Baseline.Windows.ServiceClientOptions.Proxy.get -> Engramic.Baseline.Platform.ProxySettings!
+Engramic.Baseline.Windows.ServiceClientOptions.Proxy.init -> void
+Engramic.Baseline.Windows.ServiceClientOptions.ServiceClientOptions() -> void
+Engramic.Baseline.Windows.ServiceClientOptions.SystemProxy.get -> Engramic.Baseline.Platform.ISystemProxy!
+Engramic.Baseline.Windows.ServiceClientOptions.SystemProxy.init -> void
+Engramic.Baseline.Windows.ServiceClientOptions.Time.get -> System.TimeProvider!
+Engramic.Baseline.Windows.ServiceClientOptions.Time.init -> void
+Engramic.Baseline.Windows.ServiceClientOptions.UserAgent.get -> string!
+Engramic.Baseline.Windows.ServiceClientOptions.UserAgent.init -> void
 Engramic.Baseline.Windows.WindowsEventLog
 Engramic.Baseline.Windows.WindowsEventLog.Source.get -> string!
 Engramic.Baseline.Windows.WindowsEventLog.WindowsEventLog(string! source) -> void
@@ -45,9 +64,16 @@ Engramic.Baseline.Windows.WindowsEventLog.Write(int eventId, Engramic.Baseline.P
 Engramic.Baseline.Windows.WindowsRegistry
 Engramic.Baseline.Windows.WindowsRegistry.GetValue(Engramic.Baseline.Platform.RegistryHive hive, Engramic.Baseline.Platform.RegistryView view, string! keyPath, string! valueName) -> Engramic.Baseline.Platform.RegistryValue?
 Engramic.Baseline.Windows.WindowsRegistry.WindowsRegistry() -> void
+Engramic.Baseline.Windows.WinHttpProxy
+Engramic.Baseline.Windows.WinHttpProxy.FindAutoProxyAsync(System.Uri! target, System.Uri? scriptUrl, System.TimeSpan timeout) -> System.Threading.Tasks.Task<Engramic.Baseline.Platform.AutoProxyAnswer!>!
+Engramic.Baseline.Windows.WinHttpProxy.ReadMachineProxy() -> Engramic.Baseline.Platform.MachineProxy?
+Engramic.Baseline.Windows.WinHttpProxy.WinHttpProxy() -> void
 override Engramic.Baseline.Windows.SecureStoreOptions.Equals(object? obj) -> bool
 override Engramic.Baseline.Windows.SecureStoreOptions.GetHashCode() -> int
 override Engramic.Baseline.Windows.SecureStoreOptions.ToString() -> string!
+override Engramic.Baseline.Windows.ServiceClientOptions.Equals(object? obj) -> bool
+override Engramic.Baseline.Windows.ServiceClientOptions.GetHashCode() -> int
+override Engramic.Baseline.Windows.ServiceClientOptions.ToString() -> string!
 static Engramic.Baseline.Windows.AuditMutex.TryAcquire(string! name, System.TimeSpan timeout) -> Engramic.Baseline.Windows.AuditMutex?
 static Engramic.Baseline.Windows.ConsoleSession.GetActiveSessionId() -> uint?
 static Engramic.Baseline.Windows.CurrentProcess.ReadAccount() -> Engramic.Baseline.Platform.ProcessAccount!
@@ -57,3 +83,7 @@ static Engramic.Baseline.Windows.SecureStore.OpenReadOnly(Engramic.Baseline.Wind
 static Engramic.Baseline.Windows.SecureStoreOptions.ForMachine(Engramic.Baseline.Platform.IRegistry! registry, System.TimeProvider! time) -> Engramic.Baseline.Windows.SecureStoreOptions!
 static Engramic.Baseline.Windows.SecureStoreOptions.operator !=(Engramic.Baseline.Windows.SecureStoreOptions? left, Engramic.Baseline.Windows.SecureStoreOptions? right) -> bool
 static Engramic.Baseline.Windows.SecureStoreOptions.operator ==(Engramic.Baseline.Windows.SecureStoreOptions? left, Engramic.Baseline.Windows.SecureStoreOptions? right) -> bool
+static Engramic.Baseline.Windows.ServiceClientOptions.DefaultUserAgent.get -> string!
+static Engramic.Baseline.Windows.ServiceClientOptions.ForThisProcess(Engramic.Baseline.Platform.ProxySettings! proxy) -> Engramic.Baseline.Windows.ServiceClientOptions!
+static Engramic.Baseline.Windows.ServiceClientOptions.operator !=(Engramic.Baseline.Windows.ServiceClientOptions? left, Engramic.Baseline.Windows.ServiceClientOptions? right) -> bool
+static Engramic.Baseline.Windows.ServiceClientOptions.operator ==(Engramic.Baseline.Windows.ServiceClientOptions? left, Engramic.Baseline.Windows.ServiceClientOptions? right) -> bool

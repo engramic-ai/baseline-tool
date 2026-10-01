@@ -96,6 +96,15 @@ public sealed class BannedApiTests
     }
 
     [Fact]
+    public void Every_way_to_send_an_HTTP_request_is_banned()
+    {
+        // A client or handler made anywhere but the service client would fall back to .NET's default proxy.
+        AssertBanned(
+            "way to send an HTTP request (only the service client sends one, through the proxy it chose)",
+            new MemberInfo[] { typeof(HttpClient), typeof(HttpClientHandler), typeof(SocketsHttpHandler) });
+    }
+
+    [Fact]
     public void Every_line_names_an_API_that_exists()
     {
         var unknown = new List<string>();

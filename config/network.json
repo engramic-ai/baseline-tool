@@ -1,6 +1,8 @@
 {
-  "notes": "Proxy for the tool's own HTTPS requests (the firmware catalog). proxyUrl is the proxy's http:// address (https sites still go through it encrypted; Windows PowerShell can't use an https:// proxy address). Empty proxyUrl uses the system default; when running as SYSTEM it falls back to the machine WinHTTP proxy (netsh winhttp set proxy). Set proxyUseDefaultCredentials to true only if the proxy in proxyUrl needs Windows sign-in (NTLM or Kerberos); as SYSTEM that is the computer account. The WinHTTP proxy always gets it.",
+  "notes": "Proxy for the tool's own HTTPS requests (the firmware catalog). proxyUrl is the proxy's http:// address (https sites still go through it encrypted; Windows PowerShell can't use an https:// proxy address). Empty proxyUrl: the PowerShell tool uses the system default, and as SYSTEM the machine WinHTTP proxy (netsh winhttp set proxy); baseline.exe uses the WinHTTP proxy, then the PAC file at proxyAutoConfigUrl or, if proxyAutoDetect is true, one that WPAD finds, and otherwise connects directly. useWinHttpProxyWhenSystem false skips the WinHTTP proxy when running as SYSTEM. Set proxyUseDefaultCredentials to true only if the proxy needs Windows sign-in (NTLM or Kerberos); as SYSTEM that is the computer account. The PowerShell tool always sends it to the WinHTTP proxy; baseline.exe sends it to no proxy unless this is true, and never to one that WPAD found.",
   "proxyUrl": "",
   "proxyUseDefaultCredentials": false,
-  "useWinHttpProxyWhenSystem": true
+  "useWinHttpProxyWhenSystem": true,
+  "proxyAutoConfigUrl": "",
+  "proxyAutoDetect": true
 }

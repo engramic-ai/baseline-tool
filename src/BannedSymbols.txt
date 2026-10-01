@@ -58,6 +58,12 @@ M:System.IO.Pipes.PipesAclExtensions.SetAccessControl(System.IO.Pipes.PipeStream
 T:Microsoft.Win32.Registry;Use the registry primitive, which always names its view
 T:Microsoft.Win32.RegistryKey;Use the registry primitive, which always names its view
 
+// HTTP. Only the service client sends a request: it names the proxy for each one, or none, and never leaves
+// it to .NET's default proxy, which follows environment variables and, as SYSTEM, SYSTEM's own settings.
+T:System.Net.Http.HttpClient;Send requests through the service client (IServiceClient), which chooses each request's proxy itself
+T:System.Net.Http.HttpClientHandler;Send requests through the service client (IServiceClient), which chooses each request's proxy itself
+T:System.Net.Http.SocketsHttpHandler;Send requests through the service client (IServiceClient), which chooses each request's proxy itself
+
 // WMI. System.Management is not AOT-ready, so only the CIM layer uses it, in its own project.
 N:System.Management;Only the CIM layer uses System.Management
 

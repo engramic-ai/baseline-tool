@@ -1,5 +1,6 @@
 #nullable enable
 const Engramic.Baseline.Model.ConfigFile.MaxDepth = 64 -> int
+const Engramic.Baseline.Model.ConfigFile.NetworkName = "network.json" -> string!
 const Engramic.Baseline.Model.ConfigFile.OsLifecycleName = "os-lifecycle.json" -> string!
 const Engramic.Baseline.Model.FindingsFile.FileName = "findings.json" -> string!
 const Engramic.Baseline.Model.StatusDocument.CurrentSchemaVersion = 1 -> int
@@ -115,6 +116,21 @@ Engramic.Baseline.Model.FrameworkRollup.Met.init -> void
 Engramic.Baseline.Model.FrameworkRollup.MetPct.get -> int
 Engramic.Baseline.Model.FrameworkRollup.NotApplicable.get -> int
 Engramic.Baseline.Model.FrameworkRollup.NotApplicable.init -> void
+Engramic.Baseline.Model.NetworkConfig
+Engramic.Baseline.Model.NetworkConfig.<Clone>$() -> Engramic.Baseline.Model.NetworkConfig!
+Engramic.Baseline.Model.NetworkConfig.Deconstruct(out string! ProxyUrl, out bool ProxyUseDefaultCredentials, out bool UseWinHttpProxyWhenSystem, out string! ProxyAutoConfigUrl, out bool ProxyAutoDetect) -> void
+Engramic.Baseline.Model.NetworkConfig.Equals(Engramic.Baseline.Model.NetworkConfig? other) -> bool
+Engramic.Baseline.Model.NetworkConfig.NetworkConfig(string! ProxyUrl = "", bool ProxyUseDefaultCredentials = false, bool UseWinHttpProxyWhenSystem = true, string! ProxyAutoConfigUrl = "", bool ProxyAutoDetect = true) -> void
+Engramic.Baseline.Model.NetworkConfig.ProxyAutoConfigUrl.get -> string!
+Engramic.Baseline.Model.NetworkConfig.ProxyAutoConfigUrl.init -> void
+Engramic.Baseline.Model.NetworkConfig.ProxyAutoDetect.get -> bool
+Engramic.Baseline.Model.NetworkConfig.ProxyAutoDetect.init -> void
+Engramic.Baseline.Model.NetworkConfig.ProxyUrl.get -> string!
+Engramic.Baseline.Model.NetworkConfig.ProxyUrl.init -> void
+Engramic.Baseline.Model.NetworkConfig.ProxyUseDefaultCredentials.get -> bool
+Engramic.Baseline.Model.NetworkConfig.ProxyUseDefaultCredentials.init -> void
+Engramic.Baseline.Model.NetworkConfig.UseWinHttpProxyWhenSystem.get -> bool
+Engramic.Baseline.Model.NetworkConfig.UseWinHttpProxyWhenSystem.init -> void
 Engramic.Baseline.Model.OsLifecycle
 Engramic.Baseline.Model.OsLifecycle.<Clone>$() -> Engramic.Baseline.Model.OsLifecycle!
 Engramic.Baseline.Model.OsLifecycle.Equals(Engramic.Baseline.Model.OsLifecycle? other) -> bool
@@ -320,6 +336,9 @@ override Engramic.Baseline.Model.FindingsDocument.ToString() -> string!
 override Engramic.Baseline.Model.FrameworkRollup.Equals(object? obj) -> bool
 override Engramic.Baseline.Model.FrameworkRollup.GetHashCode() -> int
 override Engramic.Baseline.Model.FrameworkRollup.ToString() -> string!
+override Engramic.Baseline.Model.NetworkConfig.Equals(object? obj) -> bool
+override Engramic.Baseline.Model.NetworkConfig.GetHashCode() -> int
+override Engramic.Baseline.Model.NetworkConfig.ToString() -> string!
 override Engramic.Baseline.Model.OsLifecycle.Equals(object? obj) -> bool
 override Engramic.Baseline.Model.OsLifecycle.GetHashCode() -> int
 override Engramic.Baseline.Model.OsLifecycle.ToString() -> string!
@@ -359,6 +378,7 @@ static Engramic.Baseline.Model.CePlusTestCaseStates.operator !=(Engramic.Baselin
 static Engramic.Baseline.Model.CePlusTestCaseStates.operator ==(Engramic.Baseline.Model.CePlusTestCaseStates? left, Engramic.Baseline.Model.CePlusTestCaseStates? right) -> bool
 static Engramic.Baseline.Model.ConfigFile.FindProblem(string! name, string! path, System.ReadOnlySpan<byte> utf8) -> string?
 static Engramic.Baseline.Model.ConfigFile.Names.get -> System.Collections.Generic.IReadOnlyList<string!>!
+static Engramic.Baseline.Model.ConfigFile.ReadNetwork(System.ReadOnlySpan<byte> utf8) -> Engramic.Baseline.Model.NetworkConfig!
 static Engramic.Baseline.Model.ConfigFile.ReadOsLifecycle(System.ReadOnlySpan<byte> utf8) -> Engramic.Baseline.Model.OsLifecycle!
 static Engramic.Baseline.Model.Finding.operator !=(Engramic.Baseline.Model.Finding? left, Engramic.Baseline.Model.Finding? right) -> bool
 static Engramic.Baseline.Model.Finding.operator ==(Engramic.Baseline.Model.Finding? left, Engramic.Baseline.Model.Finding? right) -> bool
@@ -368,6 +388,8 @@ static Engramic.Baseline.Model.FindingsFile.Parse(System.ReadOnlySpan<byte> utf8
 static Engramic.Baseline.Model.FindingsFile.ToBytes(Engramic.Baseline.Model.FindingsDocument! findings) -> byte[]!
 static Engramic.Baseline.Model.FrameworkRollup.operator !=(Engramic.Baseline.Model.FrameworkRollup? left, Engramic.Baseline.Model.FrameworkRollup? right) -> bool
 static Engramic.Baseline.Model.FrameworkRollup.operator ==(Engramic.Baseline.Model.FrameworkRollup? left, Engramic.Baseline.Model.FrameworkRollup? right) -> bool
+static Engramic.Baseline.Model.NetworkConfig.operator !=(Engramic.Baseline.Model.NetworkConfig? left, Engramic.Baseline.Model.NetworkConfig? right) -> bool
+static Engramic.Baseline.Model.NetworkConfig.operator ==(Engramic.Baseline.Model.NetworkConfig? left, Engramic.Baseline.Model.NetworkConfig? right) -> bool
 static Engramic.Baseline.Model.OsLifecycle.operator !=(Engramic.Baseline.Model.OsLifecycle? left, Engramic.Baseline.Model.OsLifecycle? right) -> bool
 static Engramic.Baseline.Model.OsLifecycle.operator ==(Engramic.Baseline.Model.OsLifecycle? left, Engramic.Baseline.Model.OsLifecycle? right) -> bool
 static Engramic.Baseline.Model.RemediationRef.operator !=(Engramic.Baseline.Model.RemediationRef? left, Engramic.Baseline.Model.RemediationRef? right) -> bool

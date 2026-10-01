@@ -102,6 +102,27 @@ public sealed class AuditCommandTests
         Assert.Equal(0, _opens);
     }
 
+    [Theory]
+    [InlineData("an elevated administrator", false, "http://proxy.contoso.com:8080")]
+    [InlineData("an elevated administrator", true, "")]
+    [InlineData("a standard user", false, "")]
+    public async Task Gives_the_checks_the_proxy_settings_of_the_config_it_reads(string account, bool shippedConfig, string proxyUrl)
+    {
+        // As the first check that sends a request will read them: through the gate when the run reads overrides.
+        _store.WriteFile(DataFolder.Config, ConfigFile.NetworkName, Encoding.UTF8.GetBytes("""{ "proxyUrl": "http://proxy.contoso.com:8080" }"""));
+        _planted.Add(ConfigFile.NetworkName);
+        var probe = new ProxyProbe();
+        var settings = Settings(account == "a standard user" ? StandardUser : Administrator) with { Catalog = probe.Catalog() };
+        string[] args = shippedConfig ? ["--json", "status", "--shipped-config"] : ["--json", "status"];
+
+        var code = await RunAsync(settings, args);
+
+        Assert.Equal(0, code);
+        Assert.Equal(proxyUrl, probe.Seen?.ProxyUrl);
+        Assert.Empty(probe.Seen!.Problems);
+        AssertNothingWritten();
+    }
+
     [Fact]
     public async Task Reads_overrides_as_SYSTEM()
     {

@@ -7,6 +7,7 @@
 //   the registry primitive, with an explicit 64-bit view
 //   the trusted process runner, for the few Windows tools that have no API
 //   the service client, the one place an HTTP request is sent, with the proxy it chose for it
+//   the signature check, which has Windows verify a file through a handle, never by its path
 //
 // In a listed file, each use sits between "#pragma warning disable RS0030 // <why>" and
 // "#pragma warning restore RS0030", around as few lines as possible. Adding a file here, or a use to
@@ -19,3 +20,4 @@
 src/Engramic.Baseline.Windows/WindowsRegistry.cs; the registry primitive: opens a key read-only in the view its caller names, and reads one value as stored or lists its subkeys
 src/Engramic.Baseline.Windows/SecureStore.cs; SecureStore, the machine data folder: opens ProgramData by its path as itself and checks its final path, opens everything below it one name at a time relative to a held folder's handle and as itself (never through a link), creates folders and files exclusively with their security set in the same call, renames untrusted items aside and deletes links, trees and its own files through their handles, and asks the known-folder API for ProgramData, whose answer follows the environment, checking it against the Windows drive
 src/Engramic.Baseline.Windows/ServiceClient.cs; the service client: sends each request through an HttpClient and handler of its own, with the proxy it chose for that request and never .NET's default proxy, no redirects or cookies, and the Windows sign-in only for a proxy allowed it
+src/Engramic.Baseline.Windows/FileSignatures.cs; the signature check: has Windows verify a file's Authenticode signature through the handle its caller opened on the file, never by the file's path, which WinVerifyTrust would open if given no handle; for a catalog signature Windows opens the catalog by the path the catalog database gives, in System32\CatRoot

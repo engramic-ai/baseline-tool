@@ -30,6 +30,9 @@ public sealed partial class NativeCodeTests
             Names(@"(Nt|Zw)?(Create|Open|ReOpen)File(2|Transacted|ById)?", @"(Copy|Move|Delete|Replace)File\w*", @"(Nt|Zw)DeleteFile",
                 @"(Create|Remove)Directory\w*", @"SHCreateDirectory\w*", @"SHFileOperation", @"Create(Symbolic|Hard)Link\w*",
                 @"FindFirstFile\w*", @"(Get|Set)FileAttributes\w*")),
+        // WinVerifyTrust reads the file through hFile or hMemberFile when one is given, and otherwise opens the
+        // path beside it; a catalog it always opens by the path given.
+        ("opens the file or catalog a path names unless given a handle", Names(@"WinVerifyTrust(Ex)?")),
         // Through a handle, but a rename names where the file goes, and SetFileInformationByHandle reads a
         // relative name against the current directory: a move by path in all but name.
         ("renames or deletes an open file, moving it to a path it names",
@@ -178,6 +181,8 @@ public sealed partial class NativeCodeTests
     [InlineData("LoadLibraryEx")]
     [InlineData("GetProcAddress")]
     [InlineData("CoCreateInstance")]
+    [InlineData("WinVerifyTrust")]
+    [InlineData("WinVerifyTrustEx")]
     public void The_sensitive_list_holds_the_functions_that_do_what_a_banned_API_does(string name)
     {
         Assert.NotNull(WhySensitive(name));
@@ -199,6 +204,10 @@ public sealed partial class NativeCodeTests
     [InlineData("RegisterEventSource")]
     [InlineData("ReportEvent")]
     [InlineData("DeregisterEventSource")]
+    [InlineData("CryptCATAdminCalcHashFromFileHandle2")]
+    [InlineData("CryptCATAdminEnumCatalogFromHash")]
+    [InlineData("CryptCATCatalogInfoFromContext")]
+    [InlineData("WTHelperProvDataFromStateData")]
     public void The_sensitive_list_leaves_out_functions_that_work_on_a_handle_or_read_state(string name)
     {
         Assert.Null(WhySensitive(name));

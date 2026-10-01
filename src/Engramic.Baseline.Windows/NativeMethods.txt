@@ -69,7 +69,8 @@ TOKEN_USER
 TOKEN_ELEVATION
 
 // File signatures (FileSignatures): Authenticode, embedded in the file or in a catalog of Windows, read
-// through a handle open on the file.
+// through a handle open on the file. WinVerifyTrust is sensitive: given no handle, it opens the file by its
+// path, so only FileSignatures, which always passes one, may name it.
 WinVerifyTrust
 WINTRUST_DATA
 WINTRUST_FILE_INFO

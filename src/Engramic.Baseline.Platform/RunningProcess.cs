@@ -23,7 +23,11 @@ public sealed record RunningProcess
     /// <summary>Gets the full path of its image, such as C:\Program Files\Claude\claude.exe, when it could be read.</summary>
     public string? ImagePath { get; init; }
 
-    /// <summary>Gets its command line, as the process holds it now, when it could be read.</summary>
+    /// <summary>
+    /// Gets its command line, as the process holds it now, when it could be read. Windows copies it from the
+    /// process's own memory, which the process may rewrite at any time, as it may for Win32_Process.CommandLine: it
+    /// is the process's own claim, so a check should not rely on it alone.
+    /// </summary>
     public string? CommandLine { get; init; }
 
     /// <summary>Gets the session it runs in (0 for services), when it could be read.</summary>

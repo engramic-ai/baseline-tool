@@ -13,9 +13,12 @@ namespace Engramic.Baseline.Windows;
 /// else a catalog of Windows that holds the file's hash, as most files of Windows are signed.
 /// </summary>
 /// <remarks>
-/// The file is read through the handle the caller opened on it (WinVerifyTrust and the catalog functions take
-/// one), so what is checked is what the handle holds, even if its path now names something else. The path is
-/// passed beside it only for Windows to choose how to read the file's format. Revocation is not checked and no
+/// The file is read through the handle the caller opened on it (Windows' trust verification and the catalog
+/// functions take one), so what is checked is what the handle holds, even if its path now names something else.
+/// The path is passed beside it only for Windows to choose how to read the file's format. For a catalog signature
+/// Windows opens the catalog itself by the path the catalog database gives, in System32\CatRoot, which only
+/// Windows and administrators may change. The trust verification would open the file by its path if given no
+/// handle, so it is named only in this file, where every call passes one. Revocation is not checked and no
 /// certificate is fetched from the network, so a check never waits on one; a revoked certificate that Windows has
 /// already learned of still fails. A catalog signature covers the file's hash, not its place: a copy of a file of
 /// Windows anywhere is valid, so a caller that trusts a file for where it is checks that too.
@@ -36,7 +39,7 @@ public static class FileSignatures
 
     /// <summary>Checks the Authenticode signature of a file.</summary>
     /// <param name="file">A handle open on the file with read access.</param>
-    /// <param name="path">The file's path, which tells Windows its format; it is not opened.</param>
+    /// <param name="path">The path the handle was opened from, which tells Windows the file's format; the file is read through the handle.</param>
     /// <returns>What Windows says of the signature.</returns>
     public static FileSignature Verify(SafeFileHandle file, string path)
     {
@@ -176,11 +179,13 @@ public static class FileSignatures
         };
     }
 
-    /// <summary>Asks WinVerifyTrust, reads the signer when the signature is valid, and closes what it kept.</summary>
+    /// <summary>Asks Windows to verify the signature, reads the signer when it is valid, and closes what Windows kept.</summary>
     private static unsafe FileSignature Run(WINTRUST_DATA* data, bool inCatalog)
     {
         var action = PInvoke.WINTRUST_ACTION_GENERIC_VERIFY_V2;
+#pragma warning disable RS0030 // FileSignatures: verifies the file through the caller's handle on it (hFile or hMemberFile, always set), never by its path; a catalog is opened by the path the catalog database gave
         var status = PInvoke.WinVerifyTrust(NoWindow, &action, data);
+#pragma warning restore RS0030
         try
         {
             if (status != 0)
@@ -194,11 +199,13 @@ public static class FileSignatures
         finally
         {
             data->dwStateAction = WINTRUST_DATA_STATE_ACTION.WTD_STATEACTION_CLOSE;
+#pragma warning disable RS0030 // FileSignatures: frees what the verification above kept; nothing is opened
             _ = PInvoke.WinVerifyTrust(NoWindow, &action, data);
+#pragma warning restore RS0030
         }
     }
 
-    /// <summary>Reads the common name of the signing certificate from what WinVerifyTrust kept, or null.</summary>
+    /// <summary>Reads the common name of the signing certificate from what the verification kept, or null.</summary>
     private static unsafe string? ReadSigner(HANDLE state)
     {
         var provider = PInvoke.WTHelperProvDataFromStateData(state);

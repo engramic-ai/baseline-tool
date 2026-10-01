@@ -18,10 +18,12 @@ namespace Engramic.Baseline.Windows;
 /// </summary>
 /// <remarks>
 /// Each process is opened with PROCESS_QUERY_LIMITED_INFORMATION and its token with TOKEN_QUERY, the least
-/// either can be opened with, so nothing is read from the process's memory and nothing can be changed. The
-/// owner and elevation come from the token, not from WMI, so this stays free of System.Management. The command
-/// line comes from NtQueryInformationProcess's ProcessCommandLineInformation (Windows 8.1 and later), which needs
-/// no more access than that.
+/// either can be opened with, so this process cannot read the other's memory or change anything. The owner and
+/// elevation come from the token, not from WMI, so this stays free of System.Management. The image path, session
+/// and token are Windows' own records of the process. The command line is not: NtQueryInformationProcess's
+/// ProcessCommandLineInformation (Windows 8.1 and later, with no more access than that) has Windows copy it from
+/// the process's own memory, where the process may have rewritten it since it started. Win32_Process.CommandLine
+/// reads the same copy, so it is the process's own claim either way.
 /// </remarks>
 public sealed class WindowsProcessList : IProcessList
 {

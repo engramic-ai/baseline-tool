@@ -28,9 +28,9 @@ Expect("Platform: service addresses and proxy rules", await ProxyRules());
 Expect("Windows: WinHTTP proxy", WinHttpReads());
 Expect("Windows: service client", await ServiceClientSends());
 
-// Detection, as the agent and the AI tool checks will need it, from AOT-clean code alone.
+// Detection, as the AI tool checks will need it, from AOT-clean code alone.
 Detect("Windows: processes, owner and elevation from tokens", ReadProcesses);
-Detect("Windows: installed programs, both views and loaded user hives", ReadInstalledPrograms);
+Detect("Windows: installed programs, both views and this account's hive", ReadInstalledPrograms);
 Detect("Windows: Authenticode, embedded and catalog", CheckSignatures);
 Detect("Runtime: file version (FileVersionInfo, by path)", ReadFileVersion);
 
@@ -271,8 +271,10 @@ static (bool, string) ReadProcesses()
 
 static (bool, string) ReadInstalledPrograms()
 {
-    // As the PowerShell tool lists them: the uninstall keys of both registry views, and of each loaded user hive,
-    // counting entries with a display name that are not system components.
+    // As the PowerShell tool's Get-CEInstalledSoftware lists them: the uninstall keys of both registry views of
+    // HKLM and of one user's hive, counting entries with a display name that are not system components. That hive
+    // is HKCU, this account's own under HKEY_USERS; as SYSTEM the module reads the console user's hive instead,
+    // which the canary does not look up. No other loaded hive is read, as the module reads none.
     const string Uninstall = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall";
     var registry = new WindowsRegistry();
     int Count(RegistryHive hive, RegistryView view, string key)
@@ -284,25 +286,14 @@ static (bool, string) ReadInstalledPrograms()
 
     var native = Count(RegistryHive.LocalMachine, RegistryView.Registry64, Uninstall);
     var wow = Count(RegistryHive.LocalMachine, RegistryView.Registry32, Uninstall);
-    var hives = (registry.GetSubKeyNames(RegistryHive.Users, RegistryView.Registry64, string.Empty) ?? [])
-        .Where(name => Sid.TryParse(name, out _) && (name.StartsWith("S-1-5-21-", StringComparison.Ordinal) || name.StartsWith("S-1-12-1-", StringComparison.Ordinal)))
-        .ToList();
-    int perUser = 0, unreadable = 0;
-    foreach (var hive in hives)
-    {
-        try
-        {
-            perUser += Count(RegistryHive.Users, RegistryView.Registry64, hive + "\\" + Uninstall);
-        }
-        catch (UnauthorizedAccessException)
-        {
-            // Another person's hive, which only they, SYSTEM and administrators may read.
-            unreadable++;
-        }
-    }
+    using var identity = WindowsIdentity.GetCurrent();
+    var own = identity.User?.Value ?? string.Empty;
+    var loaded = registry.GetSubKeyNames(RegistryHive.Users, RegistryView.Registry64, string.Empty) ?? [];
+    var perUser = own.Length > 0 ? Count(RegistryHive.Users, RegistryView.Registry64, own + "\\" + Uninstall) : 0;
 
-    var passed = registry.GetSubKeyNames(RegistryHive.LocalMachine, RegistryView.Registry64, Uninstall) is not null && hives.Count > 0;
-    return (passed, $"{native} 64-bit and {wow} 32-bit for the machine, {perUser} in {hives.Count - unreadable} of {hives.Count} loaded user hives");
+    var passed = registry.GetSubKeyNames(RegistryHive.LocalMachine, RegistryView.Registry64, Uninstall) is not null
+        && own.Length > 0 && loaded.Contains(own, StringComparer.OrdinalIgnoreCase);
+    return (passed, $"{native} 64-bit and {wow} 32-bit for the machine, {perUser} in this account's hive");
 }
 
 static (bool, string) CheckSignatures()

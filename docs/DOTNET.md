@@ -87,8 +87,8 @@ RS0030 and says what to use instead.
 | Reflection-based `JsonSerializer` overloads | Not AOT-safe | A `JsonTypeInfo` from a source-generated `JsonSerializerContext` |
 
 **Exemptions.** A few audited classes, added as the port goes on, do these things safely: SecureStore,
-ProfileReader, the registry primitive, the trusted process runner and the service client. Only the files they
-live in may use a banned API, and only like this:
+ProfileReader, the registry primitive, the trusted process runner, the service client and the signature check.
+Only the files they live in may use a banned API, and only like this:
 
 1. The file is listed in `src/BannedApiExemptions.txt`, with the reason.
 2. Each use sits between `#pragma warning disable RS0030 // <reason>` and `#pragma warning restore RS0030`,
@@ -122,7 +122,8 @@ checked by `Engramic.Baseline.Invariants.Tests`:
   directory, and `NtSetInformationFile`), uses the temp folder, touches the registry, starts a process, sets a security descriptor,
   reads or sets the environment or answers from it (the known-folder API builds ProgramData from
   `%SystemDrive%`), loads a library or creates a COM object is sensitive (the list is in
-  `NativeCodeTests`). It may be named only in a file on `src/BannedApiExemptions.txt`, only between the same
+  `NativeCodeTests`). So is `WinVerifyTrust`, which opens the file by its path when it is given no handle, and
+  a catalog always by its path. It may be named only in a file on `src/BannedApiExemptions.txt`, only between the same
   `#pragma warning disable RS0030 // <reason>` and restore as a banned API, and it comes off
   `NativeMethods.txt` when no exempt file uses it.
 
@@ -524,28 +525,43 @@ and writes which to the test output. The GitHub runners cover Windows Server 202
 ## Detection
 
 What the AI tool checks will read about the device, from primitives in the Windows library that compile with
-Native AOT. None of them uses WMI, WinRT or a file's path.
+Native AOT. None of them uses WMI or WinRT, and none opens a file by a path it is given: the signature check has
+Windows read the file through a handle, and Windows opens a catalog itself, by the path its catalog database
+holds.
 
 - **Processes** (`WindowsProcessList`, behind `IProcessList`): the process table from a Toolhelp snapshot, then
   for each process its image path (`QueryFullProcessImageName`), its command line (`NtQueryInformationProcess`
   with `ProcessCommandLineInformation`, Windows 8.1 and later), its session, and from its access token its owner
   (`TokenUser`) and elevation (`TokenElevation`). Each process is opened with
   `PROCESS_QUERY_LIMITED_INFORMATION` and its token with `TOKEN_QUERY`, the least either can be opened with, so
-  nothing is read from a process's memory and nothing can be changed. What this account may not open stays null:
-  not elevated, the tokens of other accounts' processes; elevated, a few of Windows' own (the runner read the
-  owners of 150 of 151); either way, a process that ended between the snapshot and the open. A process identifier
-  can be reused, so an entry describes the process that had it when it was opened.
+  the reader can neither read another process's memory nor change anything. The image path, session, owner and
+  elevation are Windows' own records of the process. The command line is not: Windows copies it from the
+  process's own memory, where the process may have rewritten it since it started, and `Win32_Process.CommandLine`
+  reads the same copy. It is the process's own claim, so a check should not rely on it alone. Parity is
+  unaffected: the module tells the AI tools that run in `node.exe` apart by command line alone
+  (`config/ai-tools.json`), so a tool that rewrites its own escapes that match in both. What this account may not
+  open stays null: not elevated, the tokens of other accounts' processes; elevated, a few of Windows' own (the
+  runner read the owners of 150 of 151); either way, a process that ended between the snapshot and the open. A
+  process identifier can be reused, so an entry describes the process that had it when it was opened.
 - **Installed programs**: the registry primitive lists a key's subkeys (`IRegistry.GetSubKeyNames`) and reads
-  `HKEY_USERS`, so a reader can walk `SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall` in both views of
-  HKLM and in each loaded user hive, as the module's `Get-CEInstalledSoftware` does. Another person's hive throws
-  `UnauthorizedAccessException` unless the reader is elevated or SYSTEM.
+  `HKEY_USERS`, so a reader can do what the module's `Get-CEInstalledSoftware` does: walk
+  `SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall` in both views of HKLM and in one user's hive. That
+  hive is HKCU, or as SYSTEM the hive of the person signed in at the console, under `HKEY_USERS` (none when no
+  one is). The module reads no other hive. A reader that walked every loaded hive would also count the programs
+  of a second person signed in, or of a service account whose profile is loaded: a difference from the module
+  that `tests/parity/divergences.json` would have to record. Neither reads `HKEY_USERS\S-1-5-18`, SYSTEM's own
+  hive, where a per-user installer run as SYSTEM (by Intune, for example) registers, nor the hive of anyone not
+  signed in. Another person's hive throws `UnauthorizedAccessException` unless the reader is elevated or SYSTEM.
 - **Signatures** (`FileSignatures.Verify`): Authenticode, read through a handle the caller opened, as
   `Get-AuthenticodeSignature` checks it: a signature embedded in the file, or else a catalog of Windows that holds
   the file's hash (SHA-256, then SHA-1), which is how most files of Windows are signed. It gives the state, the
   signer's common name, whether the signature came from a catalog, and WinVerifyTrust's result. It checks no
   revocation and fetches nothing from the network, so it never waits on one. A catalog signs a hash, not a
   place: a copy of `cmd.exe` in a temp folder is valid, so the trusted process runner must also check where a tool
-  is.
+  is. `WinVerifyTrust` is sensitive (above), so `FileSignatures.cs` is on `src/BannedApiExemptions.txt` and
+  names it only in pragma regions. Every call passes the caller's handle; for a catalog signature Windows opens
+  the catalog by the path its catalog database gives, in `System32\CatRoot`, which only Windows and
+  administrators may change.
 - **File versions**: no primitive. `FileVersionInfo.GetVersionInfo` reads by path, which product code may not, and
   the module reads no file versions. A check that needs one would read the version resource through a handle.
   Windows also gives a process whose manifest does not declare Windows 10, as `baseline.exe`'s does not, the
@@ -641,7 +657,8 @@ runner's canary runs as its elevated administrator, whose hive holds no programs
 signed Native AOT exe under Smart App Control and App Control. The ReadyToRun figures come from the laptop only,
 since the runner publishes no ReadyToRun build of the canary. `ProcessCommandLineInformation` is not among the
 classes `NtQueryInformationProcess`'s documentation lists, though Windows has had it since 8.1. Matching the AI
-tool catalog, Store packages and the profile reads are not in this spike.
+tool catalog, Store packages, the profile reads, and the console user's SID that a reader running as SYSTEM
+needs to find that person's hive, are not in this spike.
 
 ## Config: the config trust gate
 

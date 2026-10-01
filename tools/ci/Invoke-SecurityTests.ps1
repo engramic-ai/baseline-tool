@@ -37,12 +37,17 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$Dotnet,
-    [string]$Project = (Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'tests\Engramic.Baseline.Windows.Tests\Engramic.Baseline.Windows.Tests.csproj'),
+    # No default here: Windows PowerShell 5.1 leaves $PSScriptRoot empty in an advanced script's parameter
+    # defaults when it is run with -File, as the SYSTEM run is. It is filled in below.
+    [string]$Project,
     [Parameter(Mandatory = $true)][string]$ResultsPath
 )
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
+
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+if (-not $Project) { $Project = Join-Path $repoRoot 'tests\Engramic.Baseline.Windows.Tests\Engramic.Baseline.Windows.Tests.csproj' }
 
 $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -79,7 +84,7 @@ try {
     $env:MSBUILDDISABLENODEREUSE = '1'
 
     # From the repository's root, where global.json names the SDK and the test runner.
-    Push-Location -LiteralPath (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))
+    Push-Location -LiteralPath $repoRoot
     try {
         $arguments = @('test', '--project', $Project, '--configuration', 'Release', '--no-build', '--results-directory', $ResultsPath,
             '--', '--filter-trait', 'Suite=Security')

@@ -577,8 +577,8 @@ Native AOT costs and buys.
 **Proposed decision: keep the four libraries AOT-clean with detection in them, held there by the canary on every
 change, and keep `baseline.exe` and the desktop app JIT with ReadyToRun.** Detection runs under Native AOT with no
 warning and no change to how the libraries are written. An app built on them that wants a small, quick-starting
-exe may publish Native AOT: on the runner the canary started in about half the time, ran in about 40 percent of
-it, peaked at 68 percent of the memory and shipped one 9 MB file instead of a 78 MB folder. The cost is a C++
+exe may publish Native AOT: on the runner the canary started in about half the time, ran in 40 to 44 percent of
+it, peaked at 68 to 69 percent of the memory and shipped one 9 MB file instead of a 78 MB folder. The cost is a C++
 linker wherever it is published, and a rebuild for each .NET patch, as for `baseline.exe` today.
 
 **Fallback.** Such an app publishes self-contained JIT with ReadyToRun, as `baseline.exe` does; the libraries need
@@ -597,8 +597,8 @@ machine's WinHTTP proxy, and the service client's `HttpClient` sending to a loop
 
 | Step | Through | On the runner (Server 2025, build 26100) |
 |---|---|---|
-| Processes, with owner and elevation from tokens | `WindowsProcessList` | 151 processes; 150 owners, 134 elevated, 148 paths and 147 command lines read; this canary found as itself; 10 ms |
-| Installed programs | `WindowsRegistry.GetSubKeyNames` and `GetValue` | 40 in the 64-bit view and 19 in the 32-bit view of HKLM; 1 loaded user hive, with none; 24 ms |
+| Processes, with owner and elevation from tokens | `WindowsProcessList` | 151 processes; 150 owners, 134 elevated, 148 paths and 147 command lines read; this canary found as itself; 9 to 10 ms |
+| Installed programs | `WindowsRegistry.GetSubKeyNames` and `GetValue` | 40 in the 64-bit view and 19 in the 32-bit view of HKLM; none in the canary's own hive, HKCU; 20 ms |
 | Authenticode | `FileSignatures.Verify` | `cmd.exe` valid in a catalog, signed by Microsoft Windows; `vcruntime140.dll` valid, embedded; the canary itself not signed; 133 to 246 ms, most of it the first catalog lookup |
 | File version | `FileVersionInfo`, in the canary | `cmd.exe` read; product code has no version reader (above) |
 
@@ -618,12 +618,12 @@ one after another, and prints the medians. That JIT build is framework-dependent
 switches `PublishAot` sets in its `runtimeconfig.json`. Both use invariant globalization, as `AotCanary.csproj`
 sets, so neither loads ICU, which `baseline.exe` does: they compare like for like, but their run times and
 working sets leave out what ICU costs (the laptop's figures below show it). On the runner (`windows-latest`,
-Windows Server 2025, build 26100), from the "Run the AOT canary" step of two runs:
+Windows Server 2025, build 26100), from the "Run the AOT canary" step of three runs:
 
 | Build | Files | Size | Start-up | Run | Wall | Peak working set |
 |---|---|---|---|---|---|---|
-| Native AOT | 1 | 8.99 MB | 21 to 24 ms | 149 to 166 ms | 183 to 201 ms | 31.9 MB |
-| JIT, framework-dependent | 6, and the shared runtime | 0.81 MB | 42 to 44 ms | 377 to 398 ms | 453 to 476 ms | 46.6 MB |
+| Native AOT | 1 | 8.99 MB | 21 to 24 ms | 149 to 166 ms | 183 to 202 ms | 31.9 MB |
+| JIT, framework-dependent | 6, and the shared runtime | 0.81 MB | 42 to 44 ms | 377 to 398 ms | 453 to 476 ms | 46.5 to 46.6 MB |
 
 On the maintainer's laptop (build 26200), JIT builds only, since it has no C++ linker. Each figure is the median
 of 7 runs, each build run in turn with the others after one warm-up run of each, in two passes; a range spans the

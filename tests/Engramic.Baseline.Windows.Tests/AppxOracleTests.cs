@@ -13,8 +13,9 @@ namespace Engramic.Baseline.Windows.Tests;
 /// Each writes the whole comparison to the test output and to standard output, which the SYSTEM job's log carries,
 /// and fails on any difference of the registry source, the one the product is to use, for a user it says it read: a
 /// user it could not read because their hive is not loaded is reported, not failed, since not knowing is what it says.
-/// The package runtime's answers are compared and reported the same way, without failing the test: docs/DOTNET.md
-/// (spike 8) records what they showed.
+/// A package Get-AppxPackage lists as installed that the package runtime, asked about it alone, says is not registered
+/// for the user is reported and not counted, as on CI's runner (docs/DOTNET.md, spike 8). The package runtime's own
+/// answers are compared and reported the same way, without failing the test.
 /// </remarks>
 public sealed class AppxOracleTests
 {
@@ -77,10 +78,11 @@ public sealed class AppxOracleTests
     }
 
     /// <summary>
-    /// Where each source would have found a package: in the device's package repository, in the user's, and what the
-    /// package runtime answers when asked about it directly; and whether its folder exists.
+    /// Where each source would have found a package: in the deployment service's lists, the device's package
+    /// repository and the user's, and what the package runtime answers when asked about it directly, which also says
+    /// whether the package is registered for the user.
     /// </summary>
-    private static string Explain(string sid, string fullName)
+    private static (string Text, bool Registered) Explain(string sid, string fullName)
     {
         var registry = new WindowsRegistry();
         string Listed(RegistryHive hive, string key)
@@ -105,7 +107,7 @@ public sealed class AppxOracleTests
         var user = Listed(RegistryHive.Users, sid + AppxRepository.ClassesSuffix + @"\" + AppxRepository.UserRepositoryKey);
         var answer = new PackageRegistrations().Find(Sid.Parse(sid), fullName);
         var folder = AppxRepository.ReadInstallLocation(registry, fullName);
-        return $"AppxAllUserStore\\<user>: {pending}; AppxAllUserStore\\Applications: {provisioned}; device repository: {machine}; user's repository: {user}; package runtime asked directly: error {answer.Error}, properties 0x{answer.Properties:X}, folder {(answer.Path.Length > 0 ? answer.Path : "none")}; device repository's folder: {(folder.Length > 0 ? folder : "none")}";
+        return ($"AppxAllUserStore\\<user>: {pending}; AppxAllUserStore\\Applications: {provisioned}; device repository: {machine}; user's repository: {user}; package runtime asked directly: error {answer.Error}, properties 0x{answer.Properties:X}, folder {(answer.Path.Length > 0 ? answer.Path : "none")}; device repository's folder: {(folder.Length > 0 ? folder : "none")}", answer.Error == PackageRegistration.Success);
     }
 
     private static void Report(AppxComparison comparison)

@@ -12,6 +12,7 @@ internal sealed class AppxComparison
 {
     private readonly StringBuilder _report = new();
     private readonly List<(string Source, string Text)> _differences = [];
+    private readonly List<(string Source, string Name)> _unregistered = [];
 
     private AppxComparison()
     {
@@ -36,8 +37,11 @@ internal sealed class AppxComparison
     /// <param name="oracle">What Get-AppxPackage said.</param>
     /// <param name="sources">Each source's name, what it read, and how long it took.</param>
     /// <param name="onlyUser">The one user to compare, when the oracle answered for one user only.</param>
-    /// <param name="explain">Says, for a package a source missed for a user, where each source would have found it.</param>
-    public static AppxComparison Compare(OracleAnswer oracle, IReadOnlyList<(string Name, IReadOnlyList<AppxUserPackages> Users, TimeSpan Took)> sources, Func<string, string, string> explain, Sid? onlyUser = null)
+    /// <param name="explain">
+    /// Says, for a package a source missed for a user, where each source would have found it, and whether Windows'
+    /// package runtime says it is registered for the user.
+    /// </param>
+    public static AppxComparison Compare(OracleAnswer oracle, IReadOnlyList<(string Name, IReadOnlyList<AppxUserPackages> Users, TimeSpan Took)> sources, Func<string, string, (string Text, bool Registered)> explain, Sid? onlyUser = null)
     {
         var comparison = new AppxComparison();
         var r = comparison._report;
@@ -78,12 +82,13 @@ internal sealed class AppxComparison
         foreach (var (name, _, _) in sources)
         {
             var count = comparison._differences.Count(d => d.Source == name);
-            r.AppendLine(CultureInfo.InvariantCulture, $"{name}: {(count == 0 ? "no differences" : $"{count} differences")} from {oracle.Command} for the users it read.");
+            var unregistered = comparison._unregistered.Count(d => d.Source == name);
+            r.AppendLine(CultureInfo.InvariantCulture, $"{name}: {(count == 0 ? "no differences" : $"{count} differences")} from {oracle.Command} for the users it read{(unregistered > 0 ? $", not counting {unregistered} it lists that the package runtime says are not registered" : string.Empty)}.");
         }
         return comparison;
     }
 
-    private void CompareUser(string source, string sid, AppxUserPackages? read, HashSet<string> expected, bool known, OracleAnswer answer, Func<string, string, string> explain)
+    private void CompareUser(string source, string sid, AppxUserPackages? read, HashSet<string> expected, bool known, OracleAnswer answer, Func<string, string, (string Text, bool Registered)> explain)
     {
         var oracle = answer.Command;
         if (read is null)
@@ -123,10 +128,21 @@ internal sealed class AppxComparison
         _report.AppendLine(CultureInfo.InvariantCulture, $"  {source}: read {got.Count}; missed {missed.Count} that {oracle} has, and listed {extra.Count} that it does not{(known ? string.Empty : " (it names no package for this user, so these cannot be checked)")}.{detail}");
         foreach (var name in missed)
         {
-            _report.AppendLine(CultureInfo.InvariantCulture, $"    missed: {name}");
+            // A package Get-AppxPackage lists as installed for the user that the package runtime, asked about it alone,
+            // says is not registered for them is reported but not counted: two of Windows' own views disagree, and the
+            // source agrees with the one that says what the user can run.
+            var (why, registered) = explain(sid, name);
+            _report.AppendLine(CultureInfo.InvariantCulture, $"    missed: {name}{(registered ? string.Empty : " (not counted: the package runtime says it is not registered for this user)")}");
             _report.AppendLine(CultureInfo.InvariantCulture, $"      {oracle}: {(answer.Facts.TryGetValue(name, out var facts) ? facts : "no facts")}");
-            _report.AppendLine(CultureInfo.InvariantCulture, $"      {explain(sid, name)}");
-            _differences.Add((source, $"{source} missed {name} for {sid}"));
+            _report.AppendLine(CultureInfo.InvariantCulture, $"      {why}");
+            if (registered)
+            {
+                _differences.Add((source, $"{source} missed {name} for {sid}"));
+            }
+            else
+            {
+                _unregistered.Add((source, name));
+            }
         }
 
         foreach (var name in extra)

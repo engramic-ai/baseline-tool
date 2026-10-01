@@ -66,13 +66,60 @@ public sealed class AppxSourceTests
     [Fact]
     public void Registry_says_when_only_the_classes_hive_is_missing()
     {
-        // SYSTEM's own hive is always loaded, without a classes hive beside it.
-        var registry = Device().CreateKey(RegistryHive.Users, @"S-1-5-18\Software");
+        // As when something runs as the user and loads their own hive but not their classes hive.
+        var registry = Device().CreateKey(RegistryHive.Users, Sam + @"\Software");
 
-        var system = Assert.Single(new AppxRegistrySource(registry).ReadInstalled());
+        var sam = Assert.Single(new AppxRegistrySource(registry).ReadInstalled());
 
-        Assert.Equal(AppxReadOutcome.NotLoaded, system.Outcome);
-        Assert.Contains("classes hive", system.Detail, StringComparison.Ordinal);
+        Assert.Equal(AppxReadOutcome.NotLoaded, sam.Outcome);
+        Assert.Contains("classes hive", sam.Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Registry_never_reads_the_service_accounts_and_says_so()
+    {
+        // As on every device: SYSTEM's own hive loaded, and the three with profiles, none with a classes hive.
+        var registry = Device().WithUser(Alex, Claude)
+            .CreateKey(RegistryHive.Users, @"S-1-5-18\Software")
+            .CreateKey(RegistryHive.Users, @"S-1-5-19\Software")
+            .CreateKey(RegistryHive.LocalMachine, AppxRepository.ProfileListKey + @"\S-1-5-18")
+            .CreateKey(RegistryHive.LocalMachine, AppxRepository.ProfileListKey + @"\S-1-5-19")
+            .CreateKey(RegistryHive.LocalMachine, AppxRepository.ProfileListKey + @"\S-1-5-20");
+
+        var users = new AppxRegistrySource(registry).ReadInstalled();
+
+        Assert.Equal(["S-1-5-18", "S-1-5-19", "S-1-5-20"], users.Where(u => u.Outcome == AppxReadOutcome.Unsupported).Select(u => u.User.Value));
+        Assert.All(users.Where(u => u.Outcome == AppxReadOutcome.Unsupported), u => Assert.Contains("service account", u.Detail, StringComparison.Ordinal));
+        Assert.Equal(AppxReadOutcome.Read, users.Single(u => u.User.Value == Alex).Outcome);
+    }
+
+    [Fact]
+    public void Registry_a_user_whose_classes_hive_is_unloaded_while_it_reads_is_not_known()
+    {
+        // HKEY_USERS lists Alex's classes hive, and Alex signs out before their repository is opened.
+        var registry = Device().WithUser(Alex, Claude).WithUser(Sam, ChatGpt)
+            .AfterListing(RegistryHive.Users, string.Empty, r => r.RemoveTree(RegistryHive.Users, Alex + AppxRepository.ClassesSuffix));
+
+        var users = new AppxRegistrySource(registry).ReadInstalled();
+
+        var alex = users.Single(u => u.User.Value == Alex);
+        Assert.Equal(AppxReadOutcome.NotLoaded, alex.Outcome);
+        Assert.Contains("unloaded while", alex.Detail, StringComparison.Ordinal);
+        Assert.Equal([ChatGpt], users.Single(u => u.User.Value == Sam).Packages.Select(p => p.FullName));
+    }
+
+    [Fact]
+    public void Registry_cannot_tell_a_stale_key_while_another_user_keeps_that_version_a_known_limit()
+    {
+        // Alex updated Claude and removed ChatGPT, and their repository kept both keys; Sam, signed out, still has the
+        // old Claude and ChatGPT, so the device keeps them. The device's repository cannot tell whose they are, so
+        // Alex is reported with both versions of Claude and with ChatGPT (docs/DOTNET.md, spike 8).
+        var registry = Device(extra: OldClaude).WithUser(Alex, Claude, OldClaude, ChatGpt)
+            .CreateKey(RegistryHive.LocalMachine, AppxRepository.ProfileListKey + @"\" + Signedout);
+
+        var alex = Assert.Single(new AppxRegistrySource(registry).ReadInstalled(), u => u.User.Value == Alex);
+
+        Assert.Equal([OldClaude, Claude, ChatGpt], alex.Packages.Select(p => p.FullName));
     }
 
     [Fact]
@@ -92,12 +139,13 @@ public sealed class AppxSourceTests
     [Fact]
     public void Registry_a_user_with_no_repository_has_no_packages()
     {
-        var registry = Device().CreateKey(RegistryHive.Users, @"S-1-5-19\Software").CreateKey(RegistryHive.Users, @"S-1-5-19_Classes\Local Settings");
+        // Both hives loaded, and nothing ever registered for the user.
+        var registry = Device().CreateKey(RegistryHive.Users, Sam + @"\Software").CreateKey(RegistryHive.Users, Sam + AppxRepository.ClassesSuffix + @"\Local Settings");
 
-        var service = Assert.Single(new AppxRegistrySource(registry).ReadInstalled());
+        var sam = Assert.Single(new AppxRegistrySource(registry).ReadInstalled());
 
-        Assert.Equal(AppxReadOutcome.Read, service.Outcome);
-        Assert.Empty(service.Packages);
+        Assert.Equal(AppxReadOutcome.Read, sam.Outcome);
+        Assert.Empty(sam.Packages);
     }
 
     [Fact]

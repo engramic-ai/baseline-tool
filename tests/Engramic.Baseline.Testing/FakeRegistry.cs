@@ -11,6 +11,7 @@ public sealed class FakeRegistry : IRegistry
     private readonly Dictionary<(RegistryHive Hive, RegistryView View, string Key), Dictionary<string, RegistryValue>> _keys = new(new KeyComparer());
     private readonly HashSet<(RegistryHive Hive, RegistryView View, string Key)> _denied = new(new KeyComparer());
     private readonly List<(RegistryHive Hive, RegistryView View, string Key, string Name)> _reads = [];
+    private readonly List<(RegistryHive Hive, string Key, Action<FakeRegistry> Then)> _afterListing = [];
 
     /// <summary>Gets every read, in order, so a test can check the hive and view a reader named.</summary>
     public IReadOnlyList<(RegistryHive Hive, RegistryView View, string Key, string Name)> Reads => _reads;
@@ -32,6 +33,29 @@ public sealed class FakeRegistry : IRegistry
     public FakeRegistry CreateKey(RegistryHive hive, string key, RegistryView view = RegistryView.Registry64)
     {
         _keys.TryAdd((hive, view, key), new Dictionary<string, RegistryValue>(StringComparer.OrdinalIgnoreCase));
+        return this;
+    }
+
+    /// <summary>Deletes a key and every key below it, as when a hive is unloaded.</summary>
+    public FakeRegistry RemoveTree(RegistryHive hive, string key, RegistryView view = RegistryView.Registry64)
+    {
+        var trimmed = key.TrimEnd('\\');
+        foreach (var path in _keys.Keys.Where(k => k.Hive == hive && k.View == view
+            && (string.Equals(k.Key.TrimEnd('\\'), trimmed, StringComparison.OrdinalIgnoreCase) || k.Key.StartsWith(trimmed + "\\", StringComparison.OrdinalIgnoreCase))).ToList())
+        {
+            _keys.Remove(path);
+        }
+
+        return this;
+    }
+
+    /// <summary>
+    /// Changes the registry once, right after the first time a key's subkeys are listed, as when a hive is unloaded
+    /// while a reader goes through what it listed.
+    /// </summary>
+    public FakeRegistry AfterListing(RegistryHive hive, string key, Action<FakeRegistry> then)
+    {
+        _afterListing.Add((hive, key.TrimEnd('\\'), then));
         return this;
     }
 
@@ -91,6 +115,14 @@ public sealed class FakeRegistry : IRegistry
                     names.Add(child);
                 }
             }
+        }
+
+        var after = _afterListing.FindIndex(a => a.Hive == hive && string.Equals(a.Key, key, StringComparison.OrdinalIgnoreCase));
+        if (after >= 0)
+        {
+            var then = _afterListing[after].Then;
+            _afterListing.RemoveAt(after);
+            then(this);
         }
 
         return exists ? names : null;

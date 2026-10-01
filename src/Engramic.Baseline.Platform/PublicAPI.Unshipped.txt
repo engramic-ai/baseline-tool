@@ -39,6 +39,7 @@ Engramic.Baseline.Platform.AppxReadOutcome.Denied = 2 -> Engramic.Baseline.Platf
 Engramic.Baseline.Platform.AppxReadOutcome.Failed = 3 -> Engramic.Baseline.Platform.AppxReadOutcome
 Engramic.Baseline.Platform.AppxReadOutcome.NotLoaded = 1 -> Engramic.Baseline.Platform.AppxReadOutcome
 Engramic.Baseline.Platform.AppxReadOutcome.Read = 0 -> Engramic.Baseline.Platform.AppxReadOutcome
+Engramic.Baseline.Platform.AppxReadOutcome.Unsupported = 4 -> Engramic.Baseline.Platform.AppxReadOutcome
 Engramic.Baseline.Platform.AppxUserPackages
 Engramic.Baseline.Platform.AppxUserPackages.<Clone>$() -> Engramic.Baseline.Platform.AppxUserPackages!
 Engramic.Baseline.Platform.AppxUserPackages.AppxUserPackages(Engramic.Baseline.Platform.Sid! User, Engramic.Baseline.Platform.AppxReadOutcome Outcome, System.Collections.Generic.IReadOnlyList<Engramic.Baseline.Platform.AppxPackage!>! Packages, string! Detail) -> void

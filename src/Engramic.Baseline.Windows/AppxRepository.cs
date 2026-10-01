@@ -77,6 +77,13 @@ internal static class AppxRepository
             ? "The user's classes hive (UsrClass.dat) is not loaded, so their package repository cannot be read."
             : "The user's registry hive is not loaded, as when they are not signed in, so their package repository cannot be read.";
     }
+
+    /// <summary>
+    /// Whether an account is one of the service accounts, SYSTEM (S-1-5-18), LocalService (S-1-5-19) and
+    /// NetworkService (S-1-5-20): every device has their profiles, and their own hives are loaded, but they never have
+    /// a classes hive, so no package repository of theirs can be read.
+    /// </summary>
+    public static bool IsServiceAccount(Sid sid) => sid.Value is "S-1-5-18" or "S-1-5-19" or "S-1-5-20";
 }
 
 /// <summary>A user of the device, and which of their hives are loaded.</summary>

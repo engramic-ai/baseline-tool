@@ -252,8 +252,10 @@ scheduled audit does, so that an administrator sees the result Intune will repor
 `config` folder is refused and left in place, never moved aside, and a missing one is never made. It prints
 `Config override used: <path>` for each override in use, on standard output beside the summary and on standard
 error with `--json`, so that standard output stays the file alone; and `Warning: ...` on standard error for each
-override refused or unreadable, worded as the scheduled audit words it, and for a data folder refused
-(`Warning: Ignoring the config overrides in the data folder and using the shipped config: <reason>`). A refusal
+override refused or unreadable, worded as the scheduled audit words it, and once for a data folder or `config`
+folder refused (`Warning: Ignoring the config overrides in the data folder and using the shipped config: <reason>`,
+or `in the config folder`). A refused `config` folder names no override, since nothing in it was opened and it may
+hold none; the scheduled audit would instead move it aside, with the one notice of event 1003. A refusal
 uses the shipped file; an override that cannot be read, such as one a standard user has locked or holds an oplock
 on, makes the checks that need it report Error, as in the scheduled audit. Nothing is written to the event log.
 A data folder or `config` folder that does not exist means no overrides, and no warning.
@@ -302,10 +304,13 @@ not part of this tool; one an older install left is left alone.
   and `ReadFile`): it is not an `ISecureStore`, so no cast reaches a writer, and the SecureStore it reads through is
   out of reach. A folder kept in the data folder is opened as itself and judged by the same rules the first time a
   file in it is read, then held; one that fails, or that this account may not open to judge, is refused with a
-  `SecureStoreException` that says why and left as it is, never moved aside or deleted, and a missing one reads as
-  nothing and is not made. So it creates, moves, deletes and writes nothing, and never writes event 1003. A separate
-  type, rather than a flag on SecureStore that every writer would have to check, makes the read-only promise
-  something the compiler keeps.
+  `SecureStoreException` that says why (`IsFolderRefused`, since nothing in it was opened) and left as it is, never
+  moved aside or deleted, and a missing one reads as nothing and is not made. So it creates, moves, deletes and
+  writes nothing, and never writes event 1003. A separate type, rather than a flag on SecureStore that every writer
+  would have to check, makes the read-only promise something the compiler keeps for the store's own callers. The one
+  place the product chooses which store an audit opens, `AuditSettings.ForThisDevice`, opens it through a function
+  declared to give a `ReadOnlySecureStore`, so `SecureStore.Open` cannot take its place without that type changing,
+  and `AuditCommandTests` check the type.
 - `SecureStore.Initialize` is for the install and SYSTEM, with the audit mutex held as the installer holds it: it
   makes the data folder and every folder kept in it. An existing data folder is kept only when the seal exists
   and it passes the trust rules through its handle; anything else there is moved aside (below) and a fresh one
@@ -404,7 +409,7 @@ relative to its folder's handle, as itself, and shared with readers alone, so it
 It is read only when the trust rules pass for it and it is no longer than the length the caller gives, at most
 64 MiB; a longer file is refused, never cut short. A missing file, or a missing folder, reads as nothing, and so
 does an untrusted folder, once it has been moved aside. Through `ReadOnlySecureStore`, an untrusted folder is
-refused instead, and stays where it is.
+refused instead (`SecureStoreException.IsFolderRefused`), and stays where it is.
 
 A file that breaks a rule, or whose access list keeps this account out, is refused. One that cannot be opened or
 read at the time is not judged at all, and the `SecureStoreException` says so (`IsUnavailable`): the file or its
@@ -526,8 +531,10 @@ since it promises to change nothing (above). The gate is the same for both; only
 
 Otherwise the shipped file is used, and the refusal is one of the gate's notices, naming the override and why, for
 the run to log. Nothing is changed to get round a refusal. Each file is decided the first time the run reads it,
-and later reads give the same bytes. The gate may be read from several threads, and reads the data folder one file
-at a time, as SecureStore needs.
+and later reads give the same bytes. A `config` folder refused as a whole, as `ReadOnlySecureStore` refuses an
+untrusted one (`SecureStoreException.IsFolderRefused`), is one notice that names the folder and no file, since
+nothing in it was opened and it may hold no override; every file is then the shipped copy for the rest of the run.
+The gate may be read from several threads, and reads the data folder one file at a time, as SecureStore needs.
 
 **An override that cannot be read is not refused.** When SecureStore could not open or read it at all
 (`SecureStoreException.IsUnavailable`, above), nothing about it was judged and what it holds is not known. A
@@ -562,7 +569,8 @@ settings come through the gate once the gate is the `IConfigFiles` they are read
   given line and may be ANSI, and to save it as UTF-8, for example with `Set-Content -Encoding utf8`. ANSI text
   with no character outside ASCII is already UTF-8, and loads.
 - The scheduled audit moves an untrusted `config` folder aside, with event 1003, rather than only ignoring it. An
-  elevated `baseline.exe audit`, which changes nothing, refuses it, warns, and uses the shipped files.
+  elevated `baseline.exe audit`, which changes nothing, refuses it, warns once of the folder, and uses the shipped
+  files.
 - In the scheduled audit each refused or unreadable override is also event 1003, not only a warning in its output;
   `baseline.exe audit` warns on standard error alone. An override that cannot be read fails the checks that need
   it, where in the module it stops the config load and with it the audit.
@@ -580,17 +588,19 @@ refused and the shipped file used, one owned by Administrators loads, the attack
 override or holding an oplock on it does not get the shipped copy used in its place, and the attacker holding the
 override or the `config` folder open without sharing does not stop it loading. The Security job runs them as the
 elevated administrator and as SYSTEM; they also read through `SecureStore.OpenReadOnly`, where an untrusted `config`
-folder, made standard-user-changeable or by the attacker, is refused and left in place. `SecureStoreReadOnlyTests`
-(Windows, without elevation) refuse a missing ProgramData folder and an unsealed, untrusted or linked data folder or
-`config` folder through the read-only store, give nothing for a missing data folder, read a trusted override, and
+folder, made standard-user-changeable or by the attacker, is refused, left in place and named in one notice of the
+folder. `SecureStoreReadOnlyTests` (Windows, without elevation) refuse a missing ProgramData folder and an
+unsealed, untrusted or linked data folder or `config` folder through the read-only store, the `config` folder as a
+folder (`IsFolderRefused`), give nothing for a missing data folder, read a trusted override, and
 show after each that the tree is unchanged name for name and byte for byte (`TreeSnapshot`), that no step that would
 change something was reached, and that no event was written; they also hold that `ReadOnlySecureStore` has no
 writer. `ScheduledAuditTests` (Cli) hold the scheduled audit's use of the gate, and, elevated, read an override
 through the real SecureStore. `AuditCommandTests` (Cli) hold that `baseline.exe audit` reads overrides only when
 elevated and not given `--shipped-config`, what it prints for each override used and refused, that a refusal of the
-data folder or an unreadable override is reported as the scheduled audit reports it, and, elevated, that through the
-real read-only store it reads an override, and leaves an untrusted `config` folder and an unsealed data folder as
-they were, with no event.
+data folder or an unreadable override is reported as the scheduled audit reports it, that a refused `config` folder
+is one warning of the folder, that its settings for this device open the data folder only through the read-only way
+in, and, elevated, that through the real read-only store it reads an override, and leaves an untrusted `config`
+folder and an unsealed data folder as they were, with no event.
 
 ## The scheduled audit
 

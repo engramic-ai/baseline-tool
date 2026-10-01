@@ -178,6 +178,7 @@ public sealed class SecureStoreReadOnlyTests : IDisposable
 
             Assert.Equal($"{Config} can be changed by S-1-5-32-545, not only administrators.", e.Message);
             Assert.False(e.IsUnavailable);
+            Assert.True(e.IsFolderRefused);
 
             // Judged again, and refused again, each time: a refused folder is not held.
             Assert.Throws<SecureStoreException>(() => store!.ReadFile(DataFolder.Config, Name, 1024));
@@ -201,6 +202,7 @@ public sealed class SecureStoreReadOnlyTests : IDisposable
 
             Assert.Equal($"{Config} is a junction, symbolic link or other reparse point, so where it leads cannot be trusted.", e.Message);
             Assert.False(e.IsUnavailable);
+            Assert.True(e.IsFolderRefused);
         }
 
         Assert.True(File.GetAttributes(Config).HasFlag(FileAttributes.ReparsePoint));
@@ -218,6 +220,7 @@ public sealed class SecureStoreReadOnlyTests : IDisposable
             var e = Assert.Throws<SecureStoreException>(() => store!.ReadFile(DataFolder.Config, Name, 1024));
 
             Assert.Equal($"{Config} is a file, not a folder.", e.Message);
+            Assert.True(e.IsFolderRefused);
         }
 
         AssertUnchanged(_fixture, before);
@@ -238,6 +241,7 @@ public sealed class SecureStoreReadOnlyTests : IDisposable
 
                 Assert.Equal($"{Config} cannot be read by this account (access is denied), so who may change it cannot be judged.", e.Message);
                 Assert.False(e.IsUnavailable);
+                Assert.True(e.IsFolderRefused);
             }
 
             AssertUnchanged(_fixture, before);
@@ -261,6 +265,7 @@ public sealed class SecureStoreReadOnlyTests : IDisposable
             var e = Assert.Throws<SecureStoreException>(() => store!.ReadFile(DataFolder.Config, Name, 1024));
 
             Assert.Equal($"{Override} has 2 names (hard links), not one, so it may also be a file somewhere else.", e.Message);
+            Assert.False(e.IsFolderRefused);
         }
 
         Assert.Equal(2u, Links.LinkCount(outside));
@@ -284,6 +289,7 @@ public sealed class SecureStoreReadOnlyTests : IDisposable
             var e = Assert.Throws<SecureStoreException>(() => Waits.AdvanceUntilDone(clock, () => store!.ReadFile(DataFolder.Config, Name, 10)));
 
             Assert.True(e.IsUnavailable, e.Message);
+            Assert.False(e.IsFolderRefused);
             Assert.StartsWith("Could not read ", e.Message, StringComparison.Ordinal);
             if (holder is Oplock oplock)
             {

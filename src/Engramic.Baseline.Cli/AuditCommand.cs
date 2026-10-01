@@ -21,11 +21,13 @@ namespace Engramic.Baseline.Cli;
 /// Elevated, it reads administrators' config overrides from the data folder's config folder through the config
 /// trust gate, as the scheduled audit does, so that an administrator sees what Intune will report; but through
 /// SecureStore's read-only way in (<see cref="Windows.SecureStore.OpenReadOnly(Windows.SecureStoreOptions)"/>),
-/// which refuses an untrusted folder rather than moving it aside. It names each override it used, and warns of
-/// each one refused or unreadable, and of a data folder refused, on standard error and nowhere else. A data
-/// folder or config folder that does not exist means no overrides. Not elevated, or with
-/// <c>--shipped-config</c>, it reads only the config that ships with the tool; the parity harness passes that
-/// switch, and runs the module with an empty data folder, so that both read the same config.
+/// which refuses an untrusted folder rather than moving it aside. It names each override it used on standard
+/// output beside the summary, or on standard error with <c>--json</c>, so that standard output stays the file
+/// alone. It warns on standard error, always, of each override refused or unreadable, and once of a data folder or
+/// config folder refused. Nothing goes to the event log. A data folder or config folder that does not exist means
+/// no overrides. Not elevated, or with <c>--shipped-config</c>, it reads only the config that ships with the tool;
+/// the parity harness passes that switch, and runs the module with an empty data folder, so that both read the
+/// same config.
 /// </para>
 /// </remarks>
 internal static class AuditCommand

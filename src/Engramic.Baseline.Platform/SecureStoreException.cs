@@ -8,7 +8,8 @@ namespace Engramic.Baseline.Platform;
 /// Most are judgements: the item breaks a rule, and will until an administrator changes it. When
 /// <see cref="IsUnavailable"/> is set, nothing was judged: the item could not be opened or read at the
 /// time, as when another process holds it open without sharing, locks part of it or holds an oplock on it,
-/// or a device fails, so what it holds is not known.
+/// or a device fails, so what it holds is not known. When <see cref="IsFolderRefused"/> is set, what was
+/// judged and refused is the folder a file was to be read from, not the file.
 /// </remarks>
 public sealed class SecureStoreException : IOException
 {
@@ -49,4 +50,12 @@ public sealed class SecureStoreException : IOException
     /// later may succeed, and nothing is known about what the item holds.
     /// </summary>
     public bool IsUnavailable { get; }
+
+    /// <summary>
+    /// Gets whether what was refused is the folder kept in the data folder that a file was to be read from, rather
+    /// than the file: the folder fails the trust rules, or this account may not open it to judge it. Nothing in it
+    /// was opened, so whether the file is there is not known. Only a store that changes nothing refuses such a
+    /// folder; SecureStore moves it aside instead, and reads nothing from it.
+    /// </summary>
+    public bool IsFolderRefused { get; init; }
 }

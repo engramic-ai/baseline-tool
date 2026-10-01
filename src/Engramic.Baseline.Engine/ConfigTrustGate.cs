@@ -31,6 +31,12 @@ namespace Engramic.Baseline.Engine;
 /// the first time it is read, and every later read in the run gives the same bytes.
 /// </para>
 /// <para>
+/// A config folder refused as a whole (<see cref="SecureStoreException.IsFolderRefused"/>), as a store that
+/// changes nothing refuses an untrusted one rather than moving it aside, is one notice that names the folder and
+/// no file, since nothing in it was opened and whether it holds any override is not known. Every file is then the
+/// shipped copy for the rest of the run, and the folder is not read again.
+/// </para>
+/// <para>
 /// An override that could not be opened or read at all is not refused: nothing about it was judged, and what
 /// it holds is not known. A standard user, who may only read the config folder and what is in it, can bring
 /// that about for as long as they like by locking part of the file or holding an oplock on it. A process that
@@ -54,6 +60,7 @@ public sealed class ConfigTrustGate : IConfigFiles
     private readonly Dictionary<string, Decision> _decided = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<string> _notices = [];
     private readonly List<string> _overrides = [];
+    private bool _folderRefused;
 
     /// <summary>Makes the gate of a run.</summary>
     /// <param name="shipped">The config files that ship with the tool.</param>
@@ -73,7 +80,8 @@ public sealed class ConfigTrustGate : IConfigFiles
 
     /// <summary>
     /// Gets why each override that is not used was refused, or could not be read, in the order the files were
-    /// read: each names the file, says what is used instead, and gives the reason.
+    /// read: each names the file, says what is used instead, and gives the reason. A config folder refused as a
+    /// whole is one notice, which names the folder rather than a file.
     /// </summary>
     public IReadOnlyList<string> Notices
     {
@@ -139,12 +147,25 @@ public sealed class ConfigTrustGate : IConfigFiles
             return new Decision(shipped);
         }
 
+        if (_folderRefused)
+        {
+            // Said once already, of the folder.
+            return new Decision(shipped);
+        }
+
         var path = $@"{_store.RootPath}\{DataFolderLayout.NameOf(DataFolder.Config)}\{name}";
 
         byte[]? candidate;
         try
         {
             candidate = _store.ReadFile(DataFolder.Config, name, MaxOverrideLength);
+        }
+        catch (SecureStoreException e) when (!e.IsUnavailable && e.IsFolderRefused)
+        {
+            // Nothing in the folder was opened, so whether this file has an override there is not known.
+            _folderRefused = true;
+            _notices.Add($"Ignoring the config overrides in the config folder and using the shipped config: {e.Message}");
+            return new Decision(shipped);
         }
         catch (SecureStoreException e) when (!e.IsUnavailable)
         {

@@ -253,7 +253,7 @@ public sealed class ConfigTrustGateElevatedTests : IDisposable
         var (gate, lifecycle) = ReadOnlyAsThisProcess();
 
         Assert.Equal(ShippedLastReviewed, lifecycle.LastReviewed);
-        Assert.Equal([$"Ignoring the config override {Name} and using the shipped copy: {Config} can be changed by S-1-5-32-545, not only administrators."], gate.Notices);
+        Assert.Equal([$"Ignoring the config overrides in the config folder and using the shipped config: {Config} can be changed by S-1-5-32-545, not only administrators."], gate.Notices);
         Assert.Empty(gate.Overrides);
         Assert.Equal(before, TreeSnapshot.Of(_programData));
         Assert.Empty(_events.Entries);
@@ -277,7 +277,7 @@ public sealed class ConfigTrustGateElevatedTests : IDisposable
 
         Assert.Equal(Attacker.Sid.Value, Acls.Owner(Config));
         Assert.Equal(ShippedLastReviewed, lifecycle.LastReviewed);
-        Assert.Equal([$"Ignoring the config override {Name} and using the shipped copy: {Config} is owned by {Attacker.Sid}, not SYSTEM, Administrators or TrustedInstaller."], gate.Notices);
+        Assert.Equal([$"Ignoring the config overrides in the config folder and using the shipped config: {Config} is owned by {Attacker.Sid}, not SYSTEM, Administrators or TrustedInstaller."], gate.Notices);
         Assert.Equal(before, TreeSnapshot.Of(_programData));
         Assert.Empty(_events.Entries);
     }

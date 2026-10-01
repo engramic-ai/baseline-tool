@@ -49,13 +49,19 @@ internal sealed record AuditSettings
     {
         var registry = new WindowsRegistry();
         var time = TimeProvider.System;
+
+        // Typed to give the read-only store, so SecureStore.Open cannot take its place without changing this type,
+        // which the tests check: Open would move an untrusted config folder aside, with an event, in a run that
+        // promises to change nothing.
+        ReadOnlySecureStore? OpenReadOnly() => SecureStore.OpenReadOnly(SecureStoreOptions.ForMachine(registry, time));
+
         return new AuditSettings
         {
             Account = CurrentProcess.ReadAccount(),
             Registry = registry,
             Time = time,
             ComputerName = Environment.MachineName,
-            OpenDataFolder = () => SecureStore.OpenReadOnly(SecureStoreOptions.ForMachine(registry, time)),
+            OpenDataFolder = OpenReadOnly,
         };
     }
 }

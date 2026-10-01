@@ -135,6 +135,22 @@ public sealed class ConfigTrustGateTests
     }
 
     [Fact]
+    public void A_config_folder_refused_as_a_whole_is_one_notice_that_names_the_folder_and_no_file()
+    {
+        // As the read-only store refuses an untrusted config folder: nothing in it was opened, so whether it holds an
+        // override of this file is not known, and the notice does not say it does.
+        const string Reason = @"C:\ProgramData\EngramicBaseline\config can be changed by S-1-5-32-545, not only administrators.";
+        _store.FailRead(DataFolder.Config, Name, new SecureStoreException(Reason) { IsFolderRefused = true });
+        var gate = Gate(Administrator);
+
+        Assert.Equal(Bytes(Shipped), gate.Read(Name));
+        Assert.Equal(Bytes(Shipped), gate.Read(Name));
+        Assert.Equal(["Ignoring the config overrides in the config folder and using the shipped config: " + Reason], gate.Notices);
+        Assert.Empty(gate.Overrides);
+        Assert.Single(_store.Reads);
+    }
+
+    [Fact]
     public void An_override_owned_by_SYSTEM_Administrators_or_TrustedInstaller_and_changeable_by_no_one_else_passes_those_rules()
     {
         // What SecureStore gives the gate, for the other half of the test above.

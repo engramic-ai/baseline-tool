@@ -26,7 +26,8 @@ public interface IDataFolderReader : IDisposable
     /// <returns>The content, or null when there is no such file (or no such folder).</returns>
     /// <remarks>
     /// The folder is judged before anything in it is read. SecureStore moves aside one it cannot trust, and then
-    /// reads nothing from it; ReadOnlySecureStore refuses it and changes nothing.
+    /// reads nothing from it; ReadOnlySecureStore refuses it (<see cref="SecureStoreException.IsFolderRefused"/>)
+    /// and changes nothing.
     /// </remarks>
     /// <exception cref="ArgumentException"><paramref name="name"/> is not a plain file name.</exception>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="maxLength"/> is not positive, or is too large.</exception>

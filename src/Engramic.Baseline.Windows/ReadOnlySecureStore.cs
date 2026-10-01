@@ -33,7 +33,8 @@ public sealed class ReadOnlySecureStore : IDataFolderReader
     /// The folder it is in is opened as itself, without waiting on an oplock, and judged by the trust rules
     /// through its handle, then held; a file is read as <see cref="SecureStore.ReadFile"/> reads one. A folder
     /// that fails the rules, or that this account may not open to judge, is refused with a
-    /// <see cref="SecureStoreException"/> that says why, and left as it is. One that could not be opened at the
+    /// <see cref="SecureStoreException"/> that says why, with <see cref="SecureStoreException.IsFolderRefused"/>
+    /// set since nothing in it was opened, and left as it is. One that could not be opened at the
     /// time gives one with <see cref="SecureStoreException.IsUnavailable"/> set.
     /// </remarks>
     public byte[]? ReadFile(DataFolder folder, string name, int maxLength) => _store.ReadWithoutChanging(folder, name, maxLength);

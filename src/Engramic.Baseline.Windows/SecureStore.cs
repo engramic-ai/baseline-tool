@@ -339,7 +339,9 @@ public sealed class SecureStore : ISecureStore
 
     /// <summary>
     /// Reads a whole file for a store that changes nothing (<see cref="ReadOnlySecureStore"/>): as
-    /// <see cref="ReadFile"/> does, except that the folder it is in is only judged (<see cref="JudgeKept"/>).
+    /// <see cref="ReadFile"/> does, except that the folder it is in is only judged (<see cref="JudgeKept"/>), and a
+    /// folder that is refused gives a <see cref="SecureStoreException"/> with
+    /// <see cref="SecureStoreException.IsFolderRefused"/> set.
     /// </summary>
     /// <param name="folder">The folder.</param>
     /// <param name="name">The name of the file: a plain name, never a path.</param>
@@ -354,6 +356,12 @@ public sealed class SecureStore : ISecureStore
         try
         {
             held = folder == DataFolder.Root ? Root : JudgeKept(DataFolderLayout.NameOf(folder));
+        }
+        catch (SecureStoreException e) when (!e.IsUnavailable)
+        {
+            // The folder was judged and refused, so nothing in it was opened: whether the file is there is not
+            // known, and the caller is told it was the folder.
+            throw new SecureStoreException(e.Message, e) { IsFolderRefused = true };
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException && e is not SecureStoreException)
         {

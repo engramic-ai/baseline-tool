@@ -130,17 +130,18 @@ public sealed class AuditCommandTests
     }
 
     [Fact]
-    public async Task Warns_of_a_config_folder_the_data_folder_refuses_and_judges_by_the_shipped_file()
+    public async Task Warns_of_a_config_folder_the_data_folder_refuses_as_the_folder_and_judges_by_the_shipped_file()
     {
-        // What the read-only store gives for a config folder that fails the trust rules: refused, left in place.
+        // What the read-only store gives for a config folder that fails the trust rules: refused, left in place, and
+        // nothing in it opened, so the warning names no override, which may not be there.
         const string Reason = @"C:\ProgramData\EngramicBaseline\config can be changed by S-1-5-32-545, not only administrators.";
-        _store.FailRead(DataFolder.Config, ConfigFile.OsLifecycleName, new SecureStoreException(Reason));
+        _store.FailRead(DataFolder.Config, ConfigFile.OsLifecycleName, new SecureStoreException(Reason) { IsFolderRefused = true });
 
         var code = await RunAsync(Settings(Administrator), "--id", "SU-01", "--json", "status");
 
         Assert.Equal(0, code);
         Assert.Equal(FindingStatus.Warn, SU01());
-        Assert.Equal(["Warning: Ignoring the config override os-lifecycle.json and using the shipped copy: " + Reason], Lines(_error));
+        Assert.Equal(["Warning: Ignoring the config overrides in the config folder and using the shipped config: " + Reason], Lines(_error));
     }
 
     [Fact]
@@ -223,9 +224,8 @@ public sealed class AuditCommandTests
     }
 
     [Fact]
-    public void Takes_its_settings_from_this_device()
+    public void Takes_its_settings_from_this_device_and_opens_the_data_folder_only_through_the_read_only_way_in()
     {
-        // OpenDataFolder is not called: it would open this machine's data folder.
         var settings = AuditSettings.ForThisDevice();
 
         Assert.Equal(Environment.MachineName, settings.ComputerName);
@@ -234,6 +234,11 @@ public sealed class AuditCommandTests
         Assert.IsType<WindowsRegistry>(settings.Registry);
         Assert.Equal(ToolVersion.Current, settings.ToolVersion);
         Assert.Contains(settings.Catalog.Checks, c => c.Info.Id == "SU-01");
+
+        // Not called, since it would open this machine's data folder: what it is declared to give is enough. Only
+        // SecureStore.OpenReadOnly gives a ReadOnlySecureStore, which can only read, so SecureStore.Open, which would
+        // move an untrusted config folder aside with event 1003, cannot be put in its place unseen.
+        Assert.Equal(typeof(ReadOnlySecureStore), settings.OpenDataFolder.Method.ReturnType);
     }
 
     [Fact]
@@ -273,7 +278,7 @@ public sealed class AuditCommandTests
         var code = await RunAsync(RealStore(programData, events), "--id", "SU-01", "--json", "status");
 
         Assert.Equal(0, code);
-        Assert.Equal(["Warning: Ignoring the config override os-lifecycle.json and using the shipped copy: " + config + " can be changed by S-1-5-32-545, not only administrators."], Lines(_error));
+        Assert.Equal(["Warning: Ignoring the config overrides in the config folder and using the shipped config: " + config + " can be changed by S-1-5-32-545, not only administrators."], Lines(_error));
         Assert.Equal(FindingStatus.Warn, SU01());
         Assert.Equal(before, TreeSnapshot.Of(programData));
         Assert.Empty(events.Entries);

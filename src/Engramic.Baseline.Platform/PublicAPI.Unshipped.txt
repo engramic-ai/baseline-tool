@@ -116,6 +116,8 @@ Engramic.Baseline.Platform.RegistryView
 Engramic.Baseline.Platform.RegistryView.Registry32 = 1 -> Engramic.Baseline.Platform.RegistryView
 Engramic.Baseline.Platform.RegistryView.Registry64 = 0 -> Engramic.Baseline.Platform.RegistryView
 Engramic.Baseline.Platform.SecureStoreException
+Engramic.Baseline.Platform.SecureStoreException.IsFolderRefused.get -> bool
+Engramic.Baseline.Platform.SecureStoreException.IsFolderRefused.init -> void
 Engramic.Baseline.Platform.SecureStoreException.IsUnavailable.get -> bool
 Engramic.Baseline.Platform.SecureStoreException.SecureStoreException() -> void
 Engramic.Baseline.Platform.SecureStoreException.SecureStoreException(string! message) -> void

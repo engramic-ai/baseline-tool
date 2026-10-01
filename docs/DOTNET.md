@@ -365,7 +365,8 @@ run on Linux too. The Windows tests send real requests to servers on the loopbac
 answers `CONNECT` and asks for NTLM, to see the sign-in sent only when it is allowed; and the host of PAC files, which
 the real WinHTTP service fetches. They only read the machine's own settings. Five explicit tests run as SYSTEM in the
 Tests as SYSTEM job: `network.json`'s proxy; the WinHTTP proxy set with netsh, and its bypass list; a named PAC file;
-a PAC file that WPAD finds through names added to the hosts file and a server on port 80; and plain http refused.
+a PAC file that WPAD finds through names added to the hosts file, served on port 80 through http.sys for those
+names only, since CI's runner refuses a socket of our own on port 80; and plain http refused.
 
 **Differences from the module.** These are deliberate. Once SU-08, the check that asks the firmware catalog, is
 ported, any difference they make to its findings goes in the parity ledger.

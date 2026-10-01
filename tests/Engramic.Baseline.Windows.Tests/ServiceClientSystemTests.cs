@@ -93,9 +93,10 @@ public sealed class ServiceClientSystemTests
         Assert.SkipUnless(Elevation.IsSystem, NeedsSystem);
         using var proxy = AskingForNtlm();
 
-        // WPAD asks DHCP and then DNS for wpad under this machine's DNS suffixes, and fetches /wpad.dat on port 80.
-        using var wpad = new LoopbackServer(r => r.Target == "/wpad.dat" ? LoopbackReply.Pac(Script(proxy.Port)) : LoopbackReply.Of(404, "Not Found") with { Close = true }, port: 80);
+        // WPAD asks DHCP and then DNS for wpad under this machine's DNS suffixes, and fetches /wpad.dat on port 80,
+        // which may already be in use, so it is served through http.sys for those names only.
         var names = MachineProxySettings.WpadNames();
+        using var wpad = new WpadServer(names, Script(proxy.Port));
         using var hosts = MachineProxySettings.AddHostNames(names);
         MachineProxySettings.ResetAutoProxy();
         try
@@ -104,7 +105,7 @@ public sealed class ServiceClientSystemTests
             var client = new ServiceClient(new ServiceClientOptions { Proxy = settings, IsSystem = true, AutoProxyTimeout = TimeSpan.FromSeconds(45) });
             var response = await client.GetAsync(new ServiceRequest(Remote) { Timeout = TimeSpan.FromSeconds(60) }, TestContext.Current.CancellationToken);
 
-            var seen = string.Join(", ", wpad.Requests.Select(r => $"{r.Header("Host")}{r.Target}"));
+            var seen = string.Join(", ", wpad.Requests);
             Assert.True(response.Route?.Source == ProxySource.AutoDetect, $"The route came from {Describe(response.Route)}. WPAD names in the hosts file: {string.Join(", ", names)}. Requests on port 80: {(seen.Length > 0 ? seen : "none")}.");
             Assert.Equal(proxy.Port, response.Route?.Proxy?.Port);
             Assert.False(response.Route?.UseDefaultCredentials);

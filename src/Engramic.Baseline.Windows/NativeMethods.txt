@@ -53,3 +53,11 @@ WINHTTP_ACCESS_TYPE
 RegisterEventSource
 ReportEvent
 DeregisterEventSource
+
+// Store packages registered for a user, as the package runtime answers (AppxAppModelSource): whether a package on
+// the device is registered for a given user, and its properties and folder. PACKAGE_INFO itself differs by
+// architecture, so CsWin32 will not generate it for AnyCPU; AppxAppModelSource reads only its first fields.
+OpenPackageInfoByFullNameForUser
+GetPackageInfo
+ClosePackageInfo
+PACKAGE_INFORMATION_FULL

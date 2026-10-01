@@ -22,6 +22,36 @@ Engramic.Baseline.Platform.AccessEntryType
 Engramic.Baseline.Platform.AccessEntryType.Allow = 0 -> Engramic.Baseline.Platform.AccessEntryType
 Engramic.Baseline.Platform.AccessEntryType.Deny = 1 -> Engramic.Baseline.Platform.AccessEntryType
 Engramic.Baseline.Platform.AccessEntryType.Other = 2 -> Engramic.Baseline.Platform.AccessEntryType
+Engramic.Baseline.Platform.AppxPackage
+Engramic.Baseline.Platform.AppxPackage.<Clone>$() -> Engramic.Baseline.Platform.AppxPackage!
+Engramic.Baseline.Platform.AppxPackage.Architecture.get -> string!
+Engramic.Baseline.Platform.AppxPackage.Equals(Engramic.Baseline.Platform.AppxPackage? other) -> bool
+Engramic.Baseline.Platform.AppxPackage.FamilyName.get -> string!
+Engramic.Baseline.Platform.AppxPackage.FullName.get -> string!
+Engramic.Baseline.Platform.AppxPackage.InstallLocation.get -> string!
+Engramic.Baseline.Platform.AppxPackage.InstallLocation.init -> void
+Engramic.Baseline.Platform.AppxPackage.Name.get -> string!
+Engramic.Baseline.Platform.AppxPackage.PublisherId.get -> string!
+Engramic.Baseline.Platform.AppxPackage.ResourceId.get -> string!
+Engramic.Baseline.Platform.AppxPackage.Version.get -> System.Version!
+Engramic.Baseline.Platform.AppxReadOutcome
+Engramic.Baseline.Platform.AppxReadOutcome.Denied = 2 -> Engramic.Baseline.Platform.AppxReadOutcome
+Engramic.Baseline.Platform.AppxReadOutcome.Failed = 3 -> Engramic.Baseline.Platform.AppxReadOutcome
+Engramic.Baseline.Platform.AppxReadOutcome.NotLoaded = 1 -> Engramic.Baseline.Platform.AppxReadOutcome
+Engramic.Baseline.Platform.AppxReadOutcome.Read = 0 -> Engramic.Baseline.Platform.AppxReadOutcome
+Engramic.Baseline.Platform.AppxUserPackages
+Engramic.Baseline.Platform.AppxUserPackages.<Clone>$() -> Engramic.Baseline.Platform.AppxUserPackages!
+Engramic.Baseline.Platform.AppxUserPackages.AppxUserPackages(Engramic.Baseline.Platform.Sid! User, Engramic.Baseline.Platform.AppxReadOutcome Outcome, System.Collections.Generic.IReadOnlyList<Engramic.Baseline.Platform.AppxPackage!>! Packages, string! Detail) -> void
+Engramic.Baseline.Platform.AppxUserPackages.Deconstruct(out Engramic.Baseline.Platform.Sid! User, out Engramic.Baseline.Platform.AppxReadOutcome Outcome, out System.Collections.Generic.IReadOnlyList<Engramic.Baseline.Platform.AppxPackage!>! Packages, out string! Detail) -> void
+Engramic.Baseline.Platform.AppxUserPackages.Detail.get -> string!
+Engramic.Baseline.Platform.AppxUserPackages.Detail.init -> void
+Engramic.Baseline.Platform.AppxUserPackages.Equals(Engramic.Baseline.Platform.AppxUserPackages? other) -> bool
+Engramic.Baseline.Platform.AppxUserPackages.Outcome.get -> Engramic.Baseline.Platform.AppxReadOutcome
+Engramic.Baseline.Platform.AppxUserPackages.Outcome.init -> void
+Engramic.Baseline.Platform.AppxUserPackages.Packages.get -> System.Collections.Generic.IReadOnlyList<Engramic.Baseline.Platform.AppxPackage!>!
+Engramic.Baseline.Platform.AppxUserPackages.Packages.init -> void
+Engramic.Baseline.Platform.AppxUserPackages.User.get -> Engramic.Baseline.Platform.Sid!
+Engramic.Baseline.Platform.AppxUserPackages.User.init -> void
 Engramic.Baseline.Platform.AutoProxyAnswer
 Engramic.Baseline.Platform.AutoProxyAnswer.<Clone>$() -> Engramic.Baseline.Platform.AutoProxyAnswer!
 Engramic.Baseline.Platform.AutoProxyAnswer.AutoProxyAnswer(Engramic.Baseline.Platform.AutoProxyOutcome Outcome, string! Proxy, string! Detail) -> void
@@ -76,12 +106,15 @@ Engramic.Baseline.Platform.FileFacts.Length.get -> long
 Engramic.Baseline.Platform.FileFacts.Length.init -> void
 Engramic.Baseline.Platform.FileFacts.LinkCount.get -> uint
 Engramic.Baseline.Platform.FileFacts.LinkCount.init -> void
+Engramic.Baseline.Platform.IAppxPackageSource
+Engramic.Baseline.Platform.IAppxPackageSource.ReadInstalled() -> System.Collections.Generic.IReadOnlyList<Engramic.Baseline.Platform.AppxUserPackages!>!
 Engramic.Baseline.Platform.IDataFolderReader
 Engramic.Baseline.Platform.IDataFolderReader.ReadFile(Engramic.Baseline.Platform.DataFolder folder, string! name, int maxLength) -> byte[]?
 Engramic.Baseline.Platform.IDataFolderReader.RootPath.get -> string!
 Engramic.Baseline.Platform.IEventLog
 Engramic.Baseline.Platform.IEventLog.Write(int eventId, Engramic.Baseline.Platform.EventLogLevel level, string! message) -> bool
 Engramic.Baseline.Platform.IRegistry
+Engramic.Baseline.Platform.IRegistry.GetSubKeyNames(Engramic.Baseline.Platform.RegistryHive hive, Engramic.Baseline.Platform.RegistryView view, string! keyPath) -> System.Collections.Generic.IReadOnlyList<string!>?
 Engramic.Baseline.Platform.IRegistry.GetValue(Engramic.Baseline.Platform.RegistryHive hive, Engramic.Baseline.Platform.RegistryView view, string! keyPath, string! valueName) -> Engramic.Baseline.Platform.RegistryValue?
 Engramic.Baseline.Platform.IScratchFolder
 Engramic.Baseline.Platform.IScratchFolder.Path.get -> string!
@@ -170,6 +203,7 @@ Engramic.Baseline.Platform.ProxySource.None = 0 -> Engramic.Baseline.Platform.Pr
 Engramic.Baseline.Platform.ProxySource.WinHttp = 3 -> Engramic.Baseline.Platform.ProxySource
 Engramic.Baseline.Platform.RegistryHive
 Engramic.Baseline.Platform.RegistryHive.LocalMachine = 0 -> Engramic.Baseline.Platform.RegistryHive
+Engramic.Baseline.Platform.RegistryHive.Users = 1 -> Engramic.Baseline.Platform.RegistryHive
 Engramic.Baseline.Platform.RegistryValue
 Engramic.Baseline.Platform.RegistryValue.Bytes.get -> System.ReadOnlyMemory<byte>
 Engramic.Baseline.Platform.RegistryValue.Equals(Engramic.Baseline.Platform.RegistryValue? other) -> bool
@@ -230,6 +264,12 @@ Engramic.Baseline.Platform.Sid.Value.get -> string!
 override Engramic.Baseline.Platform.AccessEntry.Equals(object? obj) -> bool
 override Engramic.Baseline.Platform.AccessEntry.GetHashCode() -> int
 override Engramic.Baseline.Platform.AccessEntry.ToString() -> string!
+override Engramic.Baseline.Platform.AppxPackage.Equals(object? obj) -> bool
+override Engramic.Baseline.Platform.AppxPackage.GetHashCode() -> int
+override Engramic.Baseline.Platform.AppxPackage.ToString() -> string!
+override Engramic.Baseline.Platform.AppxUserPackages.Equals(object? obj) -> bool
+override Engramic.Baseline.Platform.AppxUserPackages.GetHashCode() -> int
+override Engramic.Baseline.Platform.AppxUserPackages.ToString() -> string!
 override Engramic.Baseline.Platform.AutoProxyAnswer.Equals(object? obj) -> bool
 override Engramic.Baseline.Platform.AutoProxyAnswer.GetHashCode() -> int
 override Engramic.Baseline.Platform.AutoProxyAnswer.ToString() -> string!
@@ -265,6 +305,13 @@ override Engramic.Baseline.Platform.Sid.GetHashCode() -> int
 override Engramic.Baseline.Platform.Sid.ToString() -> string!
 static Engramic.Baseline.Platform.AccessEntry.operator !=(Engramic.Baseline.Platform.AccessEntry? left, Engramic.Baseline.Platform.AccessEntry? right) -> bool
 static Engramic.Baseline.Platform.AccessEntry.operator ==(Engramic.Baseline.Platform.AccessEntry? left, Engramic.Baseline.Platform.AccessEntry? right) -> bool
+static Engramic.Baseline.Platform.AppxPackage.FullNameComparer.get -> System.StringComparer!
+static Engramic.Baseline.Platform.AppxPackage.Parse(string! fullName) -> Engramic.Baseline.Platform.AppxPackage!
+static Engramic.Baseline.Platform.AppxPackage.TryParse(string? fullName, out Engramic.Baseline.Platform.AppxPackage? package) -> bool
+static Engramic.Baseline.Platform.AppxPackage.operator !=(Engramic.Baseline.Platform.AppxPackage? left, Engramic.Baseline.Platform.AppxPackage? right) -> bool
+static Engramic.Baseline.Platform.AppxPackage.operator ==(Engramic.Baseline.Platform.AppxPackage? left, Engramic.Baseline.Platform.AppxPackage? right) -> bool
+static Engramic.Baseline.Platform.AppxUserPackages.operator !=(Engramic.Baseline.Platform.AppxUserPackages? left, Engramic.Baseline.Platform.AppxUserPackages? right) -> bool
+static Engramic.Baseline.Platform.AppxUserPackages.operator ==(Engramic.Baseline.Platform.AppxUserPackages? left, Engramic.Baseline.Platform.AppxUserPackages? right) -> bool
 static Engramic.Baseline.Platform.AutoProxyAnswer.Failed(string! detail) -> Engramic.Baseline.Platform.AutoProxyAnswer!
 static Engramic.Baseline.Platform.AutoProxyAnswer.GoDirect() -> Engramic.Baseline.Platform.AutoProxyAnswer!
 static Engramic.Baseline.Platform.AutoProxyAnswer.NotFound(string! detail) -> Engramic.Baseline.Platform.AutoProxyAnswer!

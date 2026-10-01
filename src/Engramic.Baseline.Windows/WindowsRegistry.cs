@@ -5,7 +5,7 @@ using Win32 = Microsoft.Win32;
 namespace Engramic.Baseline.Windows;
 
 /// <summary>
-/// The registry primitive on Windows: reads a value in the hive and view the caller names.
+/// The registry primitive on Windows: reads a value, or lists a key's subkeys, in the hive and view the caller names.
 /// </summary>
 /// <remarks>
 /// The one file that may use Microsoft.Win32.RegistryKey (src/BannedApiExemptions.txt). Every key is opened
@@ -19,17 +19,7 @@ public sealed class WindowsRegistry : IRegistry
     {
         ArgumentException.ThrowIfNullOrEmpty(keyPath);
         ArgumentNullException.ThrowIfNull(valueName);
-        var baseHive = hive switch
-        {
-            RegistryHive.LocalMachine => Win32.RegistryHive.LocalMachine,
-            _ => throw new ArgumentOutOfRangeException(nameof(hive), hive, "Not a hive the registry primitive reads."),
-        };
-        var baseView = view switch
-        {
-            RegistryView.Registry64 => Win32.RegistryView.Registry64,
-            RegistryView.Registry32 => Win32.RegistryView.Registry32,
-            _ => throw new ArgumentOutOfRangeException(nameof(view), view, "Not a registry view."),
-        };
+        var (baseHive, baseView) = (ToWin32(hive), ToWin32(view));
 
         object? data;
         Win32.RegistryValueKind kind;
@@ -60,6 +50,30 @@ public sealed class WindowsRegistry : IRegistry
         return ToRegistryValue(kind, data);
     }
 
+    /// <inheritdoc/>
+    public IReadOnlyList<string>? GetSubKeyNames(RegistryHive hive, RegistryView view, string keyPath)
+    {
+        ArgumentNullException.ThrowIfNull(keyPath);
+        var (baseHive, baseView) = (ToWin32(hive), ToWin32(view));
+        try
+        {
+#pragma warning disable RS0030 // The registry primitive: opens the named view read-only and lists one key's subkeys
+            using var root = Win32.RegistryKey.OpenBaseKey(baseHive, baseView);
+            if (keyPath.Length == 0)
+            {
+                return root.GetSubKeyNames();
+            }
+
+            using var key = root.OpenSubKey(keyPath, writable: false);
+            return key?.GetSubKeyNames();
+#pragma warning restore RS0030
+        }
+        catch (SecurityException e)
+        {
+            throw new UnauthorizedAccessException($"The registry key {keyPath} cannot be listed by this account.", e);
+        }
+    }
+
     /// <summary>
     /// A value from its registry type and the object RegistryKey.GetValue returned for it.
     /// </summary>
@@ -86,4 +100,18 @@ public sealed class WindowsRegistry : IRegistry
             _ => RegistryValue.FromOther([]),
         };
     }
+
+    private static Win32.RegistryHive ToWin32(RegistryHive hive) => hive switch
+    {
+        RegistryHive.LocalMachine => Win32.RegistryHive.LocalMachine,
+        RegistryHive.Users => Win32.RegistryHive.Users,
+        _ => throw new ArgumentOutOfRangeException(nameof(hive), hive, "Not a hive the registry primitive reads."),
+    };
+
+    private static Win32.RegistryView ToWin32(RegistryView view) => view switch
+    {
+        RegistryView.Registry64 => Win32.RegistryView.Registry64,
+        RegistryView.Registry32 => Win32.RegistryView.Registry32,
+        _ => throw new ArgumentOutOfRangeException(nameof(view), view, "Not a registry view."),
+    };
 }

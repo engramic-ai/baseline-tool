@@ -56,6 +56,46 @@ public sealed class FakeRegistry : IRegistry
         return _keys.TryGetValue((hive, view, keyPath), out var values) && values.TryGetValue(valueName, out var value) ? value : null;
     }
 
+    /// <inheritdoc/>
+    /// <remarks>A key exists when it was created or has values, or a key below it does; its subkeys are the next names down.</remarks>
+    public IReadOnlyList<string>? GetSubKeyNames(RegistryHive hive, RegistryView view, string keyPath)
+    {
+        ArgumentNullException.ThrowIfNull(keyPath);
+        var key = keyPath.TrimEnd('\\');
+        if (_denied.Contains((hive, view, key)))
+        {
+            throw new UnauthorizedAccessException($"Access to the registry key {keyPath} is denied.");
+        }
+
+        var prefix = key.Length == 0 ? string.Empty : key + "\\";
+        var exists = key.Length == 0;
+        var names = new List<string>();
+        foreach (var (h, v, path) in _keys.Keys)
+        {
+            var trimmed = path.TrimEnd('\\');
+            if (h != hive || v != view)
+            {
+                continue;
+            }
+
+            if (string.Equals(trimmed, key, StringComparison.OrdinalIgnoreCase))
+            {
+                exists = true;
+            }
+            else if (trimmed.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                exists = true;
+                var child = trimmed[prefix.Length..].Split('\\')[0];
+                if (!names.Contains(child, StringComparer.OrdinalIgnoreCase))
+                {
+                    names.Add(child);
+                }
+            }
+        }
+
+        return exists ? names : null;
+    }
+
     private sealed class KeyComparer : IEqualityComparer<(RegistryHive Hive, RegistryView View, string Key)>
     {
         public bool Equals((RegistryHive Hive, RegistryView View, string Key) x, (RegistryHive Hive, RegistryView View, string Key) y)

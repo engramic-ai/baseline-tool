@@ -1,4 +1,5 @@
 using Engramic.Baseline.Platform;
+using Engramic.Baseline.Testing.Windows;
 
 namespace Engramic.Baseline.Windows.Tests;
 
@@ -94,6 +95,24 @@ public sealed class WindowsRegistryTests
         Assert.Equal(RegistryValue.FromOther([]), WindowsRegistry.ToRegistryValue(Microsoft.Win32.RegistryValueKind.DWord, "7"));
         Assert.Equal(RegistryValue.FromOther([]), WindowsRegistry.ToRegistryValue(Microsoft.Win32.RegistryValueKind.String, new[] { "a" }));
         Assert.Equal(RegistryValue.FromOther([]), WindowsRegistry.ToRegistryValue(Microsoft.Win32.RegistryValueKind.MultiString, "a"));
+    }
+
+    [Fact]
+    public void Lists_a_key_s_subkeys_and_the_hives_loaded_under_HKEY_USERS()
+    {
+        var current = _registry.GetSubKeyNames(RegistryHive.LocalMachine, RegistryView.Registry64, CurrentVersion);
+        var hives = _registry.GetSubKeyNames(RegistryHive.Users, RegistryView.Registry64, string.Empty);
+
+        Assert.Contains("ProfileList", current!, StringComparer.OrdinalIgnoreCase);
+        Assert.Contains("S-1-5-18", hives!, StringComparer.OrdinalIgnoreCase);
+        Assert.Contains(Elevation.CurrentUser.Value, hives!, StringComparer.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Listing_a_missing_key_is_null_and_one_this_account_cannot_read_throws_access_denied()
+    {
+        Assert.Null(_registry.GetSubKeyNames(RegistryHive.LocalMachine, RegistryView.Registry64, @"SOFTWARE\Engramic Baseline Test\No Such Key"));
+        Assert.Throws<UnauthorizedAccessException>(() => _registry.GetSubKeyNames(RegistryHive.LocalMachine, RegistryView.Registry64, @"SAM\SAM"));
     }
 
     [Fact]

@@ -5,6 +5,12 @@ const Engramic.Baseline.Windows.SecureStore.MaxReadLength = 67108864 -> int
 const Engramic.Baseline.Windows.SecureStoreOptions.MachineSealKeyPath = "SOFTWARE\\EngramicBaseline.DataRoot" -> string!
 const Engramic.Baseline.Windows.SecureStoreOptions.MachineSealValueName = "DataRootSealed" -> string!
 const Engramic.Baseline.Windows.WindowsEventLog.ProductSource = "EngramicBaseline" -> string!
+Engramic.Baseline.Windows.AppxAppModelSource
+Engramic.Baseline.Windows.AppxAppModelSource.AppxAppModelSource(Engramic.Baseline.Platform.IRegistry! registry) -> void
+Engramic.Baseline.Windows.AppxAppModelSource.ReadInstalled() -> System.Collections.Generic.IReadOnlyList<Engramic.Baseline.Platform.AppxUserPackages!>!
+Engramic.Baseline.Windows.AppxRegistrySource
+Engramic.Baseline.Windows.AppxRegistrySource.AppxRegistrySource(Engramic.Baseline.Platform.IRegistry! registry) -> void
+Engramic.Baseline.Windows.AppxRegistrySource.ReadInstalled() -> System.Collections.Generic.IReadOnlyList<Engramic.Baseline.Platform.AppxUserPackages!>!
 Engramic.Baseline.Windows.AuditMutex
 Engramic.Baseline.Windows.AuditMutex.Dispose() -> void
 Engramic.Baseline.Windows.ConsoleSession
@@ -62,6 +68,7 @@ Engramic.Baseline.Windows.WindowsEventLog.Source.get -> string!
 Engramic.Baseline.Windows.WindowsEventLog.WindowsEventLog(string! source) -> void
 Engramic.Baseline.Windows.WindowsEventLog.Write(int eventId, Engramic.Baseline.Platform.EventLogLevel level, string! message) -> bool
 Engramic.Baseline.Windows.WindowsRegistry
+Engramic.Baseline.Windows.WindowsRegistry.GetSubKeyNames(Engramic.Baseline.Platform.RegistryHive hive, Engramic.Baseline.Platform.RegistryView view, string! keyPath) -> System.Collections.Generic.IReadOnlyList<string!>?
 Engramic.Baseline.Windows.WindowsRegistry.GetValue(Engramic.Baseline.Platform.RegistryHive hive, Engramic.Baseline.Platform.RegistryView view, string! keyPath, string! valueName) -> Engramic.Baseline.Platform.RegistryValue?
 Engramic.Baseline.Windows.WindowsRegistry.WindowsRegistry() -> void
 Engramic.Baseline.Windows.WinHttpProxy

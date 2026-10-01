@@ -21,6 +21,7 @@ Expect("Windows: audit mutex", AuditMutexTurns());
 Expect("Platform: service addresses and proxy rules", await ProxyRules());
 Expect("Windows: WinHTTP proxy", WinHttpReads());
 Expect("Windows: service client", await ServiceClientSends());
+Expect("Windows: Appx packages", AppxReads());
 
 Console.WriteLine(failures == 0 ? "AOT canary: all libraries ran." : $"AOT canary: {failures} failed.");
 return failures == 0 ? 0 : 1;
@@ -215,6 +216,63 @@ static async Task<bool> ServiceClientSends()
     return refused is { StatusCode: 0, Route: null }
         && response is { StatusCode: 200, ETag: "\"canary\"", Route.Source: ProxySource.Local }
         && response.Body.Span.SequenceEqual("ok"u8);
+}
+
+static bool AppxReads()
+{
+    // Both Appx sources, compiled ahead of time: the package repositories in the registry, and the package runtime
+    // (appmodel.h) asked about each package for each user. Each user's outcome and count is printed, with what one
+    // source listed and the other did not, so that CI's log shows what each found for the account the canary runs as.
+    var registry = new WindowsRegistry();
+    var timer = System.Diagnostics.Stopwatch.StartNew();
+    var fromRegistry = new AppxRegistrySource(registry).ReadInstalled();
+    var registryTook = timer.Elapsed;
+    timer.Restart();
+    var fromAppModel = new AppxAppModelSource(registry).ReadInstalled();
+    var appModelTook = timer.Elapsed;
+    using var identity = System.Security.Principal.WindowsIdentity.GetCurrent();
+    var me = identity.User!.Value;
+    Console.WriteLine($"Appx: as {identity.Name} ({me}); registry {registryTook.TotalMilliseconds:0} ms, appmodel {appModelTook.TotalMilliseconds:0} ms.");
+    var passed = true;
+    foreach (var user in fromRegistry)
+    {
+        var other = fromAppModel.FirstOrDefault(u => u.User == user.User);
+        var line = $"Appx {user.User}: registry {user.Outcome} {user.Packages.Count}, appmodel {other?.Outcome} {other?.Packages.Count}";
+        if (user.Outcome == AppxReadOutcome.Read && other?.Outcome == AppxReadOutcome.Read)
+        {
+            var a = user.Packages.Select(p => p.FullName).ToHashSet(AppxPackage.FullNameComparer);
+            var b = other.Packages.Select(p => p.FullName).ToHashSet(AppxPackage.FullNameComparer);
+            var onlyRegistry = a.Where(n => !b.Contains(n)).Order(StringComparer.OrdinalIgnoreCase).ToList();
+            var onlyAppModel = b.Where(n => !a.Contains(n)).Order(StringComparer.OrdinalIgnoreCase).ToList();
+            line += $"; only registry {onlyRegistry.Count}, only appmodel {onlyAppModel.Count}";
+            Console.WriteLine(line);
+            foreach (var name in onlyRegistry)
+            {
+                Console.WriteLine($"  only registry: {name}");
+            }
+
+            foreach (var name in onlyAppModel)
+            {
+                Console.WriteLine($"  only appmodel: {name}");
+            }
+
+            // Whatever the registry finds for the canary's own account, Windows' package runtime must find too.
+            passed &= user.User.Value != me || onlyRegistry.Count == 0;
+        }
+        else
+        {
+            Console.WriteLine(line + (user.Detail.Length > 0 ? $" ({user.Detail})" : string.Empty));
+        }
+    }
+
+    foreach (var user in fromAppModel.Where(u => fromRegistry.All(r => r.User != u.User)))
+    {
+        Console.WriteLine($"Appx {user.User}: registry does not list the user, appmodel {user.Outcome} {user.Packages.Count}");
+    }
+
+    return passed
+        && fromRegistry.Any(u => u.User.Value == me && u.Outcome == AppxReadOutcome.Read)
+        && fromAppModel.Any(u => u.User.Value == me && u.Outcome == AppxReadOutcome.Read);
 }
 
 /// <summary>A check that passes, to run the engine end to end.</summary>

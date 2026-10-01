@@ -615,22 +615,43 @@ CA1420. One thing to know: with marshalling off, a `bool` passes as one byte, no
 `Main` to its end (all its steps), its peak working set and the size of the files it ships. Compiled with Native
 AOT on the runner, it runs itself and the JIT build that the build step left in `artifacts/bin` five times each,
 one after another, and prints the medians. That JIT build is framework-dependent and carries the feature
-switches `PublishAot` sets in its `runtimeconfig.json`. On the runner (`windows-latest`, Windows Server 2025,
-build 26100), from the "Run the AOT canary" step of two runs:
+switches `PublishAot` sets in its `runtimeconfig.json`. Both use invariant globalization, as `AotCanary.csproj`
+sets, so neither loads ICU, which `baseline.exe` does: they compare like for like, but their run times and
+working sets leave out what ICU costs (the laptop's figures below show it). On the runner (`windows-latest`,
+Windows Server 2025, build 26100), from the "Run the AOT canary" step of two runs:
 
 | Build | Files | Size | Start-up | Run | Wall | Peak working set |
 |---|---|---|---|---|---|---|
 | Native AOT | 1 | 8.99 MB | 21 to 24 ms | 149 to 166 ms | 183 to 201 ms | 31.9 MB |
 | JIT, framework-dependent | 6, and the shared runtime | 0.81 MB | 42 to 44 ms | 377 to 398 ms | 453 to 476 ms | 46.6 MB |
 
-On the maintainer's laptop (build 26200), JIT builds only, since it has no C++ linker; each the median of 7 runs,
-in two passes, while other work ran, so the ranges are wide:
+On the maintainer's laptop (build 26200), JIT builds only, since it has no C++ linker. Each figure is the median
+of 7 runs, each build run in turn with the others after one warm-up run of each, in two passes; a range spans the
+two passes. The self-contained builds were published from a copy of the worktree, since their restore differs
+from the locked one. The ReadyToRun build with ICU is published as `baseline.exe` is, with:
+
+```
+dotnet publish tests/AotCanary/AotCanary.csproj -c Release -r win-x64 --self-contained -p:PublishAot=false
+  -p:PublishReadyToRun=true -p:InvariantGlobalization=false -p:StartupHookSupport=false
+  -p:JsonSerializerIsReflectionEnabledByDefault=false -o <folder>
+```
+
+Its `runtimeconfig.json` holds the switches of `baseline.exe`'s, as `tools/New-SignedRelease.ps1 -DotNet`
+publishes it, and none of `PublishAot`'s. The self-contained JIT build sets `-p:PublishReadyToRun=false` instead,
+and the invariant ReadyToRun build leaves out the last three properties, keeping the canary's invariant
+globalization.
 
 | Build | Files | Size | Start-up | Run | Wall | Peak working set |
 |---|---|---|---|---|---|---|
-| JIT, framework-dependent | 6, and the shared runtime | 0.81 MB | 33 to 49 ms | 212 to 312 ms | 271 to 396 ms | 45.0 MB |
-| JIT, self-contained | 193 | 77.4 MB | 53 ms | 211 to 216 ms | 296 to 304 ms | 46.8 MB |
-| ReadyToRun, self-contained, as `baseline.exe` is published | 193 | 78.1 MB | 50 to 82 ms | 171 to 273 ms | 252 to 405 ms | 45.5 MB |
+| JIT, framework-dependent, invariant (the build the runner times) | 6, and the shared runtime | 0.81 MB | 39 ms | 213 to 214 ms | 276 to 283 ms | 45.0 MB |
+| JIT, self-contained, with ICU | 193 | 77.4 MB | 57 to 58 ms | 217 to 220 ms | 308 to 311 ms | 49.1 to 49.2 MB |
+| ReadyToRun, self-contained, invariant | 193 | 78.1 MB | 53 ms | 164 to 165 ms | 248 ms | 45.6 to 45.7 MB |
+| ReadyToRun, self-contained, with ICU, as `baseline.exe` is published | 193 | 78.1 MB | 54 to 57 ms | 174 to 177 ms | 265 to 268 ms | 47.8 to 47.9 MB |
+
+ICU added 10 to 12 ms to the run, 17 to 20 ms to the wall time and about 2.2 MB to the peak working set, and
+nothing to start-up, since .NET loads it at the first use of a culture, after `Main`. The runtime uses the ICU that
+Windows 10 1903 and later carry (NLS before that), so the folder is no bigger. ReadyToRun took about 43 ms off
+the run of the self-contained build with ICU.
 
 Publishing the canary with Native AOT took 36 seconds on the runner, about 20 of them in the AOT compiler.
 

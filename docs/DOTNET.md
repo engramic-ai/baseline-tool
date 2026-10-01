@@ -570,7 +570,9 @@ running the tests, for every user as the elevated administrator in the build job
 SYSTEM job (explicit, with the trait `Context=System`). They fail on any difference of the registry source for a
 user it read, and report the package runtime's differences without failing. A package Get-AppxPackage lists as
 installed that the package runtime, asked about it alone, says is not registered for the user is reported and not
-counted (below). `AppxSourceTests` hold each source's rules on a registry in memory, and the AOT canary runs both.
+counted (below). The comparisons run alone, not beside other tests, since asking about every user's packages can
+set Windows' own components sending requests while the service client's SYSTEM tests have the machine's WinHTTP
+proxy set. `AppxSourceTests` hold each source's rules on a registry in memory, and the AOT canary runs both.
 
 ### Spike 8: Store packages without WinRT
 
@@ -609,8 +611,8 @@ any-account answers. If both fail on a build, the checks report Error for Store 
 device (9 keys in its repository) but removed by this user, and both sources leave it out. The device's repository
 alone would not.
 
-**Evidence, on CI's runner**, build 26100 (Windows Server 2025), from the logs of four runs of PR 44 (builds and
-tests only, no workflow change). Its users are runneradmin (the built-in Administrator, `-500`) and the three
+**Evidence, on CI's runner**, build 26100 (Windows Server 2025), from the logs of PR 44's runs (builds and tests
+only, no workflow change). Its users are runneradmin (the built-in Administrator, `-500`) and the three
 service accounts, all with hives loaded, so no user whose hive is not loaded could be compared there.
 
 | Account | Get-AppxPackage -AllUsers, installed | Registry | Package runtime |
@@ -621,9 +623,9 @@ service accounts, all with hives loaded, so no user whose hive is not loaded cou
 
 | Time on the runner | Elevated | As SYSTEM |
 |---|---|---|
-| Get-AppxPackage -AllUsers, with Windows PowerShell's start | 0.7 to 1.1 s | 2.1 to 5.5 s |
-| Registry, 4 accounts | 1 to 15 ms | 13 to 17 ms |
-| Package runtime, 4 accounts, every package on the device for each | 16 to 41 ms warm, 0.7 to 2.2 s cold | 0.2 to 2.6 s |
+| Get-AppxPackage -AllUsers, with Windows PowerShell's start | 0.7 to 1.1 s | 2.1 to 7.2 s |
+| Registry, 4 accounts | 1 to 15 ms | 13 to 23 ms |
+| Package runtime, 4 accounts, every package on the device for each | 16 to 41 ms warm, 0.7 to 2.2 s cold | 0.2 to 6.4 s |
 
 The packages Get-AppxPackage lists for runneradmin that neither source does were `Microsoft.SecHealthUI`,
 `Microsoft.Windows.NarratorQuickStart`, `Microsoft.WindowsFeedbackHub` and

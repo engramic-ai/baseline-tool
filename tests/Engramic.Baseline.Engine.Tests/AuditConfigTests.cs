@@ -33,14 +33,46 @@ public sealed class AuditConfigTests
         Assert.StartsWith("config/os-lifecycle.json is not valid: ", error.Message, StringComparison.Ordinal);
     }
 
-    private sealed class CountingFiles(string lifecycle) : IConfigFiles
+    [Fact]
+    public void Reads_the_proxy_settings_once_and_keeps_them()
+    {
+        var files = new CountingFiles(network: """{ "proxyUrl": "http://proxy.contoso.com:8080" }""");
+        var config = new AuditConfig(files);
+
+        Assert.Same(config.Network, config.Network);
+        Assert.Equal("http://proxy.contoso.com:8080", config.Network.ProxyUrl);
+        Assert.Equal(1, files.Reads);
+    }
+
+    [Fact]
+    public void Proxy_settings_that_could_not_be_read_throw_for_every_check_that_reads_them()
+    {
+        var config = new AuditConfig(new UnreadableFiles());
+
+        Assert.Equal("Held open.", Assert.Throws<IOException>(() => config.Network).Message);
+        Assert.Equal("Held open.", Assert.Throws<IOException>(() => config.Network).Message);
+    }
+
+    private sealed class CountingFiles(string? lifecycle = null, string? network = null) : IConfigFiles
     {
         public int Reads { get; private set; }
 
         public byte[]? Read(string name)
         {
             Reads++;
-            return name == "os-lifecycle.json" ? System.Text.Encoding.UTF8.GetBytes(lifecycle) : null;
+            var text = name switch
+            {
+                "os-lifecycle.json" => lifecycle,
+                "network.json" => network,
+                _ => null,
+            };
+            return text is null ? null : System.Text.Encoding.UTF8.GetBytes(text);
         }
+    }
+
+    /// <summary>As the config trust gate gives an override it could not read.</summary>
+    private sealed class UnreadableFiles : IConfigFiles
+    {
+        public byte[]? Read(string name) => throw new IOException("Held open.");
     }
 }

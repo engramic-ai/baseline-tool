@@ -555,8 +555,11 @@ shipped copy.
 
 **A file joins with its schema.** A config file that joins the shipped config joins `ConfigFile`'s schemas in the
 same change: `ShippedConfigTests` fails while a shipped file has no schema, and the gate refuses every override of
-such a file. When `network.json` joins for the service client, its reader becomes its schema, and the proxy
-settings come through the gate once the gate is the `IConfigFiles` they are read from.
+such a file. `network.json`, the service client's proxy settings (below), has its reader as its schema,
+`ConfigFile.ReadNetwork`. Every member of it is optional and a value of another type takes its default, as the
+service client reads it, so what refuses an override of it is almost always a rule every file meets, such as a
+member named twice or text that is not UTF-8. The checks read the settings through `AuditConfig.Network`, from the
+run's config, so an override reaches the first check that sends a request through the gate.
 
 **Differences from the module**, each deliberate:
 
@@ -582,7 +585,8 @@ settings come through the gate once the gate is the `IConfigFiles` they are read
   `baseline.exe audit` warns on standard error alone. An override that cannot be read fails the checks that need
   it, where in the module it stops the config load and with it the audit.
 
-**Tests.** `ConfigSchemaTests` (Model) hold each rule of the schema. `ConfigTrustGateTests` (Engine) hold the gate's
+**Tests.** `ConfigSchemaTests` (Model) hold each rule of the schema, and `network.json`'s: a copy like the shipped
+one passes, as does a value of another type, and a malformed one is refused. `ConfigTrustGateTests` (Engine) hold the gate's
 rules with a data folder in memory, including each of SecureStore's refusals as `DataFolderTrust` words it, and
 each kind of read failure, which is not a refusal. In the attack suite, `ConfigTrustGateTests` (Windows) plant an
 override that breaks each rule in a data folder of the tests' own and read it through the real SecureStore, without
@@ -657,10 +661,22 @@ passed over and why:
 `proxyUseDefaultCredentials` is true, and never to one that WPAD found, since whoever answers WPAD on the local network
 could collect it. Such a proxy can be named in `proxyUrl`, or its PAC file in `proxyAutoConfigUrl`.
 
-**Settings.** `NetworkSettings`, in Engine, reads `network.json` through `IConfigFiles`. The config trust gate
-(above) reads an administrator's override only of a file with a schema in `ConfigFile`, which `network.json` does
-not have yet, so the settings are the shipped copy's. A file that is missing or not valid gives the defaults, with
-the problem noted on every route.
+**Settings.** `NetworkSettings`, in Engine, reads `network.json` through `IConfigFiles`, and a check reads it through
+`AuditConfig.Network`, from the run's config: the config trust gate (above) in the scheduled audit and an elevated
+`baseline.exe audit`, so an administrator's override that passes every rule, `network.json`'s schema included,
+replaces the shipped copy whole; and the shipped copy alone in an audit that is not elevated or is given
+`--shipped-config`. Nothing in the product makes a `ServiceClient` yet: SU-08, the first check that will, takes its
+settings from there. What each case gives:
+
+- No override: the shipped copy.
+- An override the gate refuses, by SecureStore's rules or the schema: the shipped copy, and the gate's warning, which
+  the scheduled audit also writes as event 1003. The routes carry no note of it, since the override never reached
+  the settings.
+- An override that could not be read, as a standard user can bring about by locking it: `AuditConfig.Network`
+  throws, so the check that needs it reports an Error, as for any config file. The defaults are not used in its
+  place, or whoever held the override up could turn WPAD back on, or a named proxy off, unseen.
+- A `network.json` that is missing or not valid, which through the gate can only be a broken shipped copy, and the
+  tests keep that from shipping: the defaults, with the problem noted on every route.
 
 **Tests.** `ProxyChooser` is covered branch by branch with a fake of what Windows says, in the Platform tests, which
 run on Linux too. The Windows tests send real requests to servers on the loopback address: a site; a proxy that
@@ -668,7 +684,11 @@ answers `CONNECT` and asks for NTLM, to see the sign-in sent only when it is all
 the real WinHTTP service fetches. They only read the machine's own settings. Five explicit tests run as SYSTEM in the
 Tests as SYSTEM job: `network.json`'s proxy; the WinHTTP proxy set with netsh, and its bypass list; a named PAC file;
 a PAC file that WPAD finds through names added to the hosts file, served on port 80 through http.sys for those
-names only, since CI's runner refuses a socket of our own on port 80; and plain http refused.
+names only, since CI's runner refuses a socket of our own on port 80; and plain http refused. The settings are
+read through the gate in `NetworkSettingsTests` (Engine: an override that passes, one the schema refuses, and one
+that could not be read) and `ShippedConfigTests` (Controls: an override in place of the real shipped copy), and
+`ScheduledAuditTests` and `AuditCommandTests` (Cli) hold that a check is given an override only where the run reads
+overrides; `ScheduledAuditTests` also that the check reports an Error when the override could not be read.
 
 **Differences from the module.** These are deliberate. Once SU-08, the check that asks the firmware catalog, is
 ported, any difference they make to its findings goes in the parity ledger.
@@ -684,7 +704,7 @@ ported, any difference they make to its findings goes in the parity ledger.
 | Reads `[` and `]` in a bypass entry as a set of characters (`-like`) | Takes them as written | WinHTTP's bypass list has no sets |
 | Treats names in the computer's own DNS domain, and its own addresses, as local (.NET's `BypassProxyOnLocal`) | Treats only this device's names, loopback addresses and names without a dot as local | Put the domain on the WinHTTP bypass list, or in a PAC file |
 | Reads `network.json` as PowerShell converts values: `1` and `"true"` are true, and `0` and `""` false | Reads a switch only from JSON `true` or `false`, and an address only from a string; any other value takes the default | A value of the wrong type costs only itself, and nothing reads as true that was not written so |
-| Uses the defaults silently when `network.json` cannot be read | Uses the defaults, with the problem noted on every route | Says why no proxy was used |
+| Uses the defaults silently when `network.json` cannot be read | Uses the shipped copy, with the gate's warning, for an override the gate refuses; reports an Error for the check that needs an override it could not read; and uses the defaults, with the problem noted on every route, only for a shipped copy that is missing or not valid | Says why no proxy was used, and an override held up by a standard user is never swapped for the defaults unseen |
 | Words a timeout as .NET words the cancellation | Says the request timed out, and after how long | .NET's words for it name no timeout |
 | Returns the body as text | Returns it as bytes | Its callers parse JSON from UTF-8 |
 

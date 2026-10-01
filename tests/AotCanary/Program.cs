@@ -86,15 +86,26 @@ static async Task<bool> EngineRun()
 
 static bool ConfigTrustGateDecides()
 {
-    // An override that meets its schema replaces the shipped file; one that names a member twice does not.
-    var shipped = new CanaryConfigFiles("""{ "lastReviewed": "2026-09-16", "reviewWarningDays": 90, "upcomingEndWarningDays": 60 }""");
+    // An override that meets its schema replaces the shipped file, the proxy settings' included; one that names a
+    // member twice does not.
+    var shipped = new CanaryConfigFiles(
+        """{ "lastReviewed": "2026-09-16", "reviewWarningDays": 90, "upcomingEndWarningDays": 60 }""",
+        """{ "proxyUrl": "", "proxyAutoDetect": true }""");
     var system = new ProcessAccount(@"NT AUTHORITY\SYSTEM", IsAdministrator: true, IsLocalSystem: true);
-    using var valid = new CanaryStore("""{ "lastReviewed": "2026-01-01", "reviewWarningDays": 30, "upcomingEndWarningDays": 60 }""");
-    using var twice = new CanaryStore("""{ "lastReviewed": "2026-01-01", "reviewWarningDays": 30, "upcomingEndWarningDays": 60, "lastReviewed": "2020-01-01" }""");
+    using var valid = new CanaryStore(
+        """{ "lastReviewed": "2026-01-01", "reviewWarningDays": 30, "upcomingEndWarningDays": 60 }""",
+        """{ "proxyUrl": "http://proxy.contoso.com:8080", "proxyAutoDetect": false }""");
+    using var twice = new CanaryStore(
+        """{ "lastReviewed": "2026-01-01", "reviewWarningDays": 30, "upcomingEndWarningDays": 60, "lastReviewed": "2020-01-01" }""",
+        """{ "proxyUrl": "http://proxy.contoso.com:8080", "ProxyUrl": "http://other.contoso.com:8080" }""");
     var loaded = new ConfigTrustGate(shipped, valid, system);
     var refused = new ConfigTrustGate(shipped, twice, system);
-    return new AuditConfig(loaded).OsLifecycle.LastReviewed == "2026-01-01" && loaded.Overrides.Count == 1
-        && new AuditConfig(refused).OsLifecycle.LastReviewed == "2026-09-16" && refused.Notices.Count == 1;
+    var loadedConfig = new AuditConfig(loaded);
+    var refusedConfig = new AuditConfig(refused);
+    return loadedConfig.OsLifecycle.LastReviewed == "2026-01-01" && loadedConfig.Network is { ProxyUrl: "http://proxy.contoso.com:8080", ProxyAutoDetect: false, Problems: [] }
+        && loaded.Overrides.Count == 2
+        && refusedConfig.OsLifecycle.LastReviewed == "2026-09-16" && refusedConfig.Network is { ProxyUrl: "", ProxyAutoDetect: true, Problems: [] }
+        && refused.Notices.Count == 2;
 }
 
 static bool WindowsReads()
@@ -237,14 +248,14 @@ internal sealed class CanaryProxy : ISystemProxy
     public Task<AutoProxyAnswer> FindAutoProxyAsync(Uri target, Uri? scriptUrl, TimeSpan timeout) => Task.FromResult(AutoProxyAnswer.NotFound("None."));
 }
 
-/// <summary>The shipped os-lifecycle.json, and no other file.</summary>
-internal sealed class CanaryConfigFiles(string lifecycle) : IConfigFiles
+/// <summary>The shipped os-lifecycle.json and network.json, and no other file.</summary>
+internal sealed class CanaryConfigFiles(string lifecycle, string network) : IConfigFiles
 {
-    public byte[]? Read(string name) => name == ConfigFile.OsLifecycleName ? System.Text.Encoding.UTF8.GetBytes(lifecycle) : null;
+    public byte[]? Read(string name) => CanaryFiles.Read(name, lifecycle, network);
 }
 
-/// <summary>A data folder in memory whose config folder holds one os-lifecycle.json.</summary>
-internal sealed class CanaryStore(string lifecycle) : ISecureStore
+/// <summary>A data folder in memory whose config folder holds an os-lifecycle.json and a network.json.</summary>
+internal sealed class CanaryStore(string lifecycle, string network) : ISecureStore
 {
     public string RootPath => @"C:\ProgramData\EngramicBaseline";
 
@@ -252,7 +263,7 @@ internal sealed class CanaryStore(string lifecycle) : ISecureStore
 
     public byte[]? ReadFile(DataFolder folder, string name, int maxLength)
     {
-        return folder == DataFolder.Config && name == ConfigFile.OsLifecycleName ? System.Text.Encoding.UTF8.GetBytes(lifecycle) : null;
+        return folder == DataFolder.Config ? CanaryFiles.Read(name, lifecycle, network) : null;
     }
 
     public void WriteFile(string name, ReadOnlySpan<byte> content) => throw new NotSupportedException();
@@ -266,4 +277,15 @@ internal sealed class CanaryStore(string lifecycle) : ISecureStore
     public void Dispose()
     {
     }
+}
+
+/// <summary>The canary's config files, by name.</summary>
+internal static class CanaryFiles
+{
+    public static byte[]? Read(string name, string lifecycle, string network) => name switch
+    {
+        ConfigFile.OsLifecycleName => System.Text.Encoding.UTF8.GetBytes(lifecycle),
+        ConfigFile.NetworkName => System.Text.Encoding.UTF8.GetBytes(network),
+        _ => null,
+    };
 }

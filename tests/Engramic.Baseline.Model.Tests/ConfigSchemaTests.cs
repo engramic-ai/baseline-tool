@@ -9,12 +9,13 @@ namespace Engramic.Baseline.Model.Tests;
 public sealed class ConfigSchemaTests
 {
     private const string OverridePath = @"C:\ProgramData\EngramicBaseline\config\os-lifecycle.json";
+    private const string NetworkPath = @"C:\ProgramData\EngramicBaseline\config\network.json";
     private const string Valid = """{ "lastReviewed": "2026-09-16", "reviewWarningDays": 90, "upcomingEndWarningDays": 60 }""";
 
     [Fact]
     public void Every_config_file_the_tool_reads_has_a_schema()
     {
-        Assert.Equal(["os-lifecycle.json"], ConfigFile.Names);
+        Assert.Equal(["network.json", "os-lifecycle.json"], ConfigFile.Names);
     }
 
     [Fact]
@@ -201,6 +202,56 @@ public sealed class ConfigSchemaTests
         var problem = ConfigFile.FindProblem("os-lifecycle.json", OverridePath, Encoding.UTF8.GetBytes(copy));
 
         Assert.StartsWith($"{OverridePath} is not a valid os-lifecycle.json: ", problem, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_network_json_like_the_shipped_one_passes_with_or_without_a_byte_order_mark()
+    {
+        // The shipped file's members and notes; ShippedConfigTests holds the shipped file itself to the schema.
+        const string Copy = """
+            {
+              "notes": "Proxy for the tool's own HTTPS requests.",
+              "proxyUrl": "http://proxy.contoso.com:8080",
+              "proxyUseDefaultCredentials": true,
+              "useWinHttpProxyWhenSystem": false,
+              "proxyAutoConfigUrl": "https://pac.contoso.com/proxy.pac",
+              "proxyAutoDetect": false
+            }
+            """;
+
+        Assert.Null(ConfigFile.FindProblem("network.json", NetworkPath, Encoding.UTF8.GetBytes(Copy)));
+        Assert.Null(ConfigFile.FindProblem("network.json", NetworkPath, Utf8Bom.GetBytes(Copy)));
+        Assert.Null(ConfigFile.FindProblem("network.json", NetworkPath, "{}"u8));
+    }
+
+    [Fact]
+    public void A_network_json_value_of_another_type_passes_as_its_reader_takes_the_default_for_it()
+    {
+        // As the service client reads the file: one odd value costs only itself (NetworkConfig).
+        var copy = """{ "proxyUrl": 8080, "proxyUseDefaultCredentials": "yes", "proxyAutoDetect": null, "proxyAutoConfigUrl": [ "a" ] }""";
+
+        Assert.Null(ConfigFile.FindProblem("network.json", NetworkPath, Encoding.UTF8.GetBytes(copy)));
+    }
+
+    [Theory]
+    [InlineData("""[ { "proxyUrl": "http://proxy.contoso.com:8080" } ]""", "is not a JSON object.")]
+    [InlineData("""{ "proxyUrl": "http://proxy.contoso.com:8080", }""", "is not valid JSON: ")]
+    [InlineData("""{ "proxyUrl": "http://proxy.contoso.com:8080" } { "proxyUrl": "" }""", "is not valid JSON: ")]
+    [InlineData("""{ "proxyUrl": "http://proxy.contoso.com:8080", "ProxyUrl": "http://other.contoso.com:8080" }""", "names ProxyUrl more than once in one object (line 1), so which value counts is not clear.")]
+    [InlineData("""{ "proxyUrl": "\ud800" }""", "is not a valid network.json: ")]
+    public void A_malformed_network_json_is_refused(string copy, string problem)
+    {
+        Assert.StartsWith($"{NetworkPath} {problem}", ConfigFile.FindProblem("network.json", NetworkPath, Encoding.UTF8.GetBytes(copy)), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_network_json_saved_as_UTF16_is_refused_and_the_problem_says_so()
+    {
+        byte[] copy = [.. Encoding.Unicode.GetPreamble(), .. Encoding.Unicode.GetBytes("""{ "proxyUrl": "http://proxy.contoso.com:8080" }""")];
+
+        Assert.Equal(
+            $"{NetworkPath} is saved as UTF-16, as Windows PowerShell 5.1's > and Out-File save text, not as UTF-8; save it as UTF-8, for example with Set-Content -Encoding utf8.",
+            ConfigFile.FindProblem("network.json", NetworkPath, copy));
     }
 
     [Theory]

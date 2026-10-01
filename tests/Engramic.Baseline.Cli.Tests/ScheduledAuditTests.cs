@@ -120,6 +120,40 @@ public sealed class ScheduledAuditTests
     }
 
     [Fact]
+    public void Gives_the_checks_an_administrator_s_proxy_settings_through_the_trust_gate_and_names_the_override()
+    {
+        // As the first check that sends a request will read them: from the run's config, never the shipped files alone.
+        _store.WriteFile(DataFolder.Config, ConfigFile.NetworkName, Encoding.UTF8.GetBytes("""{ "proxyUrl": "http://proxy.contoso.com:8080", "proxyAutoDetect": false }"""));
+        var probe = new ProxyProbe();
+
+        var code = ScheduledAudit.Run(Settings() with { Catalog = probe.Catalog() }, _output, _error);
+
+        Assert.Equal(ScheduledAudit.Succeeded, code);
+        Assert.Equal(string.Empty, _error.ToString());
+        Assert.Equal("http://proxy.contoso.com:8080", probe.Seen?.ProxyUrl);
+        Assert.False(probe.Seen?.ProxyAutoDetect);
+        Assert.Contains(@"Config override used: C:\ProgramData\EngramicBaseline\config\network.json", Lines(_output));
+    }
+
+    [Fact]
+    public void Reports_a_check_that_needs_proxy_settings_whose_override_it_could_not_read_as_an_error_rather_than_use_the_defaults()
+    {
+        const string NetworkOverride = @"C:\ProgramData\EngramicBaseline\config\network.json";
+        const string Reason = NetworkOverride + " could not be read: The process cannot access the file because another process has locked a portion of the file (Win32 error 33).";
+        _store.FailRead(DataFolder.Config, ConfigFile.NetworkName, new SecureStoreException(Reason, isUnavailable: true, null));
+        var probe = new ProxyProbe();
+
+        var code = ScheduledAudit.Run(Settings() with { Catalog = probe.Catalog() }, _output, _error);
+
+        Assert.Equal(ScheduledAudit.Succeeded, code);
+        Assert.Null(probe.Seen);
+        Assert.Equal(FindingStatus.Error, StatusFile.Parse(_store.Files[StatusFile.FileName]).Checks["SU-08"].Status);
+        const string Notice = "Could not read the config override network.json, so the checks that read it report an error and the shipped copy is not used in its place: " + Reason;
+        Assert.Equal("Warning: " + Notice, _error.ToString().TrimEnd());
+        Assert.Equal([(1003, EventLogLevel.Warning, "Engramic Baseline - data folder: " + Notice)], _events.Entries);
+    }
+
+    [Fact]
     public void Says_so_when_a_warning_cannot_be_written_to_the_event_log()
     {
         _store.FailRead(DataFolder.Config, ConfigFile.OsLifecycleName, new SecureStoreException(OverridePath + " has 2 names (hard links), not one, so it may also be a file somewhere else."));

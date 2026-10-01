@@ -23,6 +23,7 @@ Engramic.Baseline.Engine.Applicability.IsApplicable.get -> bool
 Engramic.Baseline.Engine.Applicability.Reason.get -> string!
 Engramic.Baseline.Engine.AuditConfig
 Engramic.Baseline.Engine.AuditConfig.AuditConfig(Engramic.Baseline.Engine.IConfigFiles! files) -> void
+Engramic.Baseline.Engine.AuditConfig.Network.get -> Engramic.Baseline.Platform.ProxySettings!
 Engramic.Baseline.Engine.AuditConfig.OsLifecycle.get -> Engramic.Baseline.Model.OsLifecycle!
 Engramic.Baseline.Engine.AuditRunner
 Engramic.Baseline.Engine.AuditRunner.AuditRunner(Engramic.Baseline.Engine.CheckCatalog! catalog, Engramic.Baseline.Engine.AuditRunnerOptions? options = null) -> void

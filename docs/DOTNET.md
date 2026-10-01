@@ -934,7 +934,7 @@ second gate before signing. `tools/spikes/Measure-RuntimeSpike.ps1` measures eac
 the working tree, publishing as `New-SignedRelease.ps1 -DotNet` does; its header says how to run it. The numbers
 are from commit 45a29f4 (the product code of `feat/dotnet-port` at 26b43ec), SDK 10.0.401 with runtime 10.0.12, on
 Windows 11 25H2 (build 26200), an Intel Core Ultra 7 265H on mains power with Defender's real-time protection on,
-not elevated. An MB is 1,048,576 bytes.
+not elevated; the comparison with CI's builds is from a later commit, below. An MB is 1,048,576 bytes.
 
 **Proposed decision**, for the maintainer to take:
 
@@ -948,7 +948,8 @@ not elevated. An MB is 1,048,576 bytes.
 - **Make the release publish reproducible, and add the gate.** `New-SignedRelease.ps1 -DotNet` publishes with
   `-p:ContinuousIntegrationBuild=true`, from a clone of the tagged commit whose origin is the GitHub repository; CI
   records the SHA-256 of every file it publishes (a workflow step, for the maintainer to add); and the release
-  refuses to sign unless the two lists match.
+  refuses to sign unless the two lists match. A workstation published this way matched three CI runners' builds of
+  the same commit in all 203 files (below).
 
 **Fallbacks.** For the folder: three self-contained folders side by side, each published exactly as `baseline.exe`
 is today, 157 MB more and nothing shared. For ReadyToRun: `PublishReadyToRun=false`, which costs start-up and
@@ -1044,6 +1045,7 @@ path, every file compared by SHA-256:
 | A workstation's, with `-p:ContinuousIntegrationBuild=true` | 203 | 0, and the same as CI's way |
 | CI's way, the second clone checked out with LF line endings | 203 | 0, and the same as the first (see below) |
 | CI's way, the second build with an empty NuGet package folder of its own | 203 | 0, and the same as the first |
+| A workstation's, with `-p:ContinuousIntegrationBuild=true`, against three CI runners' builds of the same commit | 203 | 0 |
 
 The twelve are our six assemblies and their PDBs. Without `ContinuousIntegrationBuild` the compiler writes the
 build's paths: each assembly's debug directory names its PDB by its full path, and the PDB names every source file.
@@ -1056,6 +1058,20 @@ The PDBs then carry source link to the commit on GitHub, so the files depend on 
 rebuild must be of the same commit (a pull request's CI run builds its merge commit, not the branch's head), from a
 clone whose origin is the GitHub repository, as the script's clones are.
 
+**Against CI.** The last row compares two machines, which is what the gate needs. A temporary commit (b12d617,
+reverted in 5cc6567) made `Test-ReleaseSignatures.ps1`, `tools/contracts/Test-StatusContract.ps1` and
+`Compare-Parity.ps1` print the SHA-256 of every file in the folder they were given, so that one pull request run put
+CI's hashes in its log without a workflow change. That run built the pull request's merge commit, 328b35c, in three
+jobs on three runners: "Build and test (.NET)", which builds the whole solution before it publishes, Contracts,
+which builds its tests first, and Parity, which publishes straight after the restore. They ran Windows Server 2025
+(build 26100, image 20260901.588) with the SDK in `D:\a\_temp\dotnet` and the packages in the runner's profile, and
+published the same 203 files, byte for byte. The script then cloned 328b35c on the workstation above (build 26200,
+the SDK in `C:\Program Files\dotnet`) and published it twice with `-Mode Local -Property
+ContinuousIntegrationBuild=true -ReferenceManifest`: both builds matched CI's in all 203 files, `baseline.exe`
+included. So the machine, its Windows build, the SDK's folder, the package folder, the clone's path and what was
+built before the publish change nothing. This is one commit on one runner image; the gate itself, comparing every
+release with its tag's run, is what keeps checking it.
+
 The LF row could not have come out otherwise, so it shows less than it seems. `.gitattributes` pins CRLF for
 every file that reaches the output today: the C# sources, the project and build files, and `*.json`, among them the
 two config files Controls embeds. The files it leaves to git's settings, which a clone made by git on Linux or WSL
@@ -1067,9 +1083,10 @@ app has them.
 
 **Still to prove:**
 
-- That CI's files match a workstation's: another machine, Windows build (the runners are on 26100), processor and
-  SDK folder. A workflow step that records the hashes of what CI publishes, and the script's Determinism phase with
-  `-ReferenceManifest` on them for the same commit, would show it.
+- A record of CI's hashes that a release can use: a workflow step after "Publish baseline.exe" that writes the
+  SHA-256 of every published file to the log and an artifact, run for the tag. Until it exists, the gate has
+  nothing to compare with.
+- The LF row and the comparison with CI again once the desktop app brings XAML and a manifest.
 - Start-up on the lab builds 14393, 17763 and 19045, and on slower machines.
 - The real desktop app and service, which will bring packages of their own; the service running as a service; and
   a shared folder signed and checked in the sign-test sandbox.

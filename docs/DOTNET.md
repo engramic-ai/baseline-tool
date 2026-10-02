@@ -635,6 +635,10 @@ checked Authenticode (above):
 | Native AOT | 1 | 8.99 MB | 21 to 24 ms | 149 to 166 ms | 183 to 202 ms | 31.9 MB |
 | JIT, framework-dependent | 6, and the shared runtime | 0.81 MB | 42 to 44 ms | 377 to 398 ms | 453 to 476 ms | 46.5 to 46.6 MB |
 
+The Authenticode step took much of those run times. In one run after it was taken out (2809ecd), Native AOT
+started in 15.7 ms, ran in 28 ms, took 51 ms wall and peaked at 18.8 MB, from 8.91 MB; the JIT build took 31.2,
+226 and 280 ms and peaked at 40.9 MB, from 0.78 MB.
+
 On the maintainer's laptop (build 26200), JIT builds only, since it has no C++ linker. Each figure is the median
 of 7 runs, each build run in turn with the others after one warm-up run of each, in two passes; a range spans the
 two passes, and the canary still checked Authenticode. The self-contained builds were published from a copy of

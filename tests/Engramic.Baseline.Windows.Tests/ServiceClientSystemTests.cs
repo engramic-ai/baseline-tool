@@ -69,8 +69,12 @@ public sealed class ServiceClientSystemTests
         Assert.True(bypassed.Route?.IsDirect);
         Assert.Equal(ProxySource.None, skipped.Route?.Source);
         Assert.True(skipped.Route?.IsDirect);
-        Assert.All(proxy.Requests, r => Assert.Equal("service.test:443", r.Target));
-        Assert.StartsWith("NTLM ", Assert.Single(SignIns(proxy.Requests)), StringComparison.Ordinal);
+
+        // The WinHTTP proxy is the whole machine's, so while it is set other programs, such as Windows' own as SYSTEM,
+        // send their requests through it too. Only this test's own, to the .test addresses, are this client's.
+        var ours = proxy.Requests.Where(r => r.Target.EndsWith(".test:443", StringComparison.OrdinalIgnoreCase)).ToList();
+        Assert.All(ours, r => Assert.Equal("service.test:443", r.Target));
+        Assert.StartsWith("NTLM ", Assert.Single(SignIns(ours)), StringComparison.Ordinal);
     }
 
     [Fact(Explicit = true)]

@@ -329,7 +329,11 @@ Add-Note @('### Across a fleet', '',
     "Use ``$(if ($intuneName) { $intuneName } else { 'the .intunewin package' })`` with Intune as a Win32 app.",
     '`INTUNE-SETTINGS.md` lists the exact values to enter, including the detection rules. Upload the',
     'scripts in `intune-upload-files.zip` separately for compliance and remediation.', '',
-    'Because everything is signed, you can set **Enforce script signature check** to Yes.', '')
+    # docs/INTUNE.md and INTUNE-SETTINGS.md say No for the same reason; keep the three in step.
+    'Leave **Enforce script signature check** at No, even though everything is signed. Yes runs the',
+    'scripts under AllSigned, which trusts only the exact certificate in a device''s Trusted Publishers',
+    'store, and Artifact Signing issues a new certificate every day. Keep it at No until Yes has been',
+    'tested with certificates that change daily.', '')
 Add-Note @('### From PowerShell', '',
     'Extract the zip and import the module directly:', '',
     '```powershell',

@@ -684,8 +684,12 @@ answers `CONNECT` and asks for NTLM, to see the sign-in sent only when it is all
 the real WinHTTP service fetches. They only read the machine's own settings. Five explicit tests run as SYSTEM in the
 Tests as SYSTEM job: `network.json`'s proxy; the WinHTTP proxy set with netsh, and its bypass list; a named PAC file;
 a PAC file that WPAD finds through names added to the hosts file, served on port 80 through http.sys for those
-names only, since CI's runner refuses a socket of our own on port 80; and plain http refused. The settings are
-read through the gate in `NetworkSettingsTests` (Engine: an override that passes, one the schema refuses, and one
+names only, since CI's runner refuses a socket of our own on port 80; and plain http refused. The
+WPAD test waits until the names resolve, and asks up to four times, each after a reset of what WinHTTP's
+auto-proxy service keeps, while WPAD gives nothing: on CI a lookup straight after the reset has answered that WPAD
+found nothing (WinHTTP error 12180) although wpad.dat was requested in the same test. Each attempt and each request
+for wpad.dat, timed, is in the test's output, which the job prints. The settings are read through
+the gate in `NetworkSettingsTests` (Engine: an override that passes, one the schema refuses, and one
 that could not be read) and `ShippedConfigTests` (Controls: an override in place of the real shipped copy), and
 `ScheduledAuditTests` and `AuditCommandTests` (Cli) hold that a check is given an override only where the run reads
 overrides; `ScheduledAuditTests` also that the check reports an Error when the override could not be read.

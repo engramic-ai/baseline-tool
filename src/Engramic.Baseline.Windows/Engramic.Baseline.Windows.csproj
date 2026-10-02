@@ -13,6 +13,15 @@
     <PackageReference Include="Microsoft.Windows.CsWin32" PrivateAssets="all" />
   </ItemGroup>
 
+  <!--
+    No runtime marshalling: every native call passes only blittable values, as CsWin32 generates them with
+    "allowMarshaling": false, so a call compiles to a direct one under Native AOT, and a signature that would need
+    marshalling fails the build (CA1420) rather than adding a stub at run time.
+  -->
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.DisableRuntimeMarshallingAttribute" />
+  </ItemGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\Engramic.Baseline.Platform\Engramic.Baseline.Platform.csproj" />
   </ItemGroup>

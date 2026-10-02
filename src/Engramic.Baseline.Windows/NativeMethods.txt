@@ -53,3 +53,17 @@ WINHTTP_ACCESS_TYPE
 RegisterEventSource
 ReportEvent
 DeregisterEventSource
+
+// Running processes (WindowsProcessList): the process table from a snapshot, then each process's image path, command
+// line, session and access token, read with query-only access. Nothing is started and nothing is changed.
+CreateToolhelp32Snapshot
+Process32FirstW
+Process32NextW
+OpenProcess
+QueryFullProcessImageName
+ProcessIdToSessionId
+NtQueryInformationProcess
+OpenProcessToken
+GetTokenInformation
+TOKEN_USER
+TOKEN_ELEVATION

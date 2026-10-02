@@ -18,4 +18,16 @@ public interface IRegistry
     /// <exception cref="UnauthorizedAccessException">The key exists, but this account may not read it.</exception>
     /// <exception cref="IOException">The value could not be read for another reason.</exception>
     RegistryValue? GetValue(RegistryHive hive, RegistryView view, string keyPath, string valueName);
+
+    /// <summary>Lists the names of a key's subkeys.</summary>
+    /// <param name="hive">The hive, such as HKEY_LOCAL_MACHINE.</param>
+    /// <param name="view">The view: the 64-bit view for the operating system's settings.</param>
+    /// <param name="keyPath">
+    /// The key below the hive, such as SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall; empty for the hive
+    /// itself, as when listing the loaded user hives.
+    /// </param>
+    /// <returns>The names, in the order the registry gives them, or null when the key does not exist.</returns>
+    /// <exception cref="UnauthorizedAccessException">The key exists, but this account may not list it.</exception>
+    /// <exception cref="IOException">The key could not be listed for another reason.</exception>
+    IReadOnlyList<string>? GetSubKeyNames(RegistryHive hive, RegistryView view, string keyPath);
 }

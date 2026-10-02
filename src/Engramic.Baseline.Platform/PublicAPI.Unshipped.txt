@@ -81,7 +81,10 @@ Engramic.Baseline.Platform.IDataFolderReader.ReadFile(Engramic.Baseline.Platform
 Engramic.Baseline.Platform.IDataFolderReader.RootPath.get -> string!
 Engramic.Baseline.Platform.IEventLog
 Engramic.Baseline.Platform.IEventLog.Write(int eventId, Engramic.Baseline.Platform.EventLogLevel level, string! message) -> bool
+Engramic.Baseline.Platform.IProcessList
+Engramic.Baseline.Platform.IProcessList.Read() -> System.Collections.Generic.IReadOnlyList<Engramic.Baseline.Platform.RunningProcess!>!
 Engramic.Baseline.Platform.IRegistry
+Engramic.Baseline.Platform.IRegistry.GetSubKeyNames(Engramic.Baseline.Platform.RegistryHive hive, Engramic.Baseline.Platform.RegistryView view, string! keyPath) -> System.Collections.Generic.IReadOnlyList<string!>?
 Engramic.Baseline.Platform.IRegistry.GetValue(Engramic.Baseline.Platform.RegistryHive hive, Engramic.Baseline.Platform.RegistryView view, string! keyPath, string! valueName) -> Engramic.Baseline.Platform.RegistryValue?
 Engramic.Baseline.Platform.IScratchFolder
 Engramic.Baseline.Platform.IScratchFolder.Path.get -> string!
@@ -170,6 +173,7 @@ Engramic.Baseline.Platform.ProxySource.None = 0 -> Engramic.Baseline.Platform.Pr
 Engramic.Baseline.Platform.ProxySource.WinHttp = 3 -> Engramic.Baseline.Platform.ProxySource
 Engramic.Baseline.Platform.RegistryHive
 Engramic.Baseline.Platform.RegistryHive.LocalMachine = 0 -> Engramic.Baseline.Platform.RegistryHive
+Engramic.Baseline.Platform.RegistryHive.Users = 1 -> Engramic.Baseline.Platform.RegistryHive
 Engramic.Baseline.Platform.RegistryValue
 Engramic.Baseline.Platform.RegistryValue.Bytes.get -> System.ReadOnlyMemory<byte>
 Engramic.Baseline.Platform.RegistryValue.Equals(Engramic.Baseline.Platform.RegistryValue? other) -> bool
@@ -188,6 +192,26 @@ Engramic.Baseline.Platform.RegistryValueKind.Text = 0 -> Engramic.Baseline.Platf
 Engramic.Baseline.Platform.RegistryView
 Engramic.Baseline.Platform.RegistryView.Registry32 = 1 -> Engramic.Baseline.Platform.RegistryView
 Engramic.Baseline.Platform.RegistryView.Registry64 = 0 -> Engramic.Baseline.Platform.RegistryView
+Engramic.Baseline.Platform.RunningProcess
+Engramic.Baseline.Platform.RunningProcess.<Clone>$() -> Engramic.Baseline.Platform.RunningProcess!
+Engramic.Baseline.Platform.RunningProcess.CommandLine.get -> string?
+Engramic.Baseline.Platform.RunningProcess.CommandLine.init -> void
+Engramic.Baseline.Platform.RunningProcess.Equals(Engramic.Baseline.Platform.RunningProcess? other) -> bool
+Engramic.Baseline.Platform.RunningProcess.Id.get -> uint
+Engramic.Baseline.Platform.RunningProcess.Id.init -> void
+Engramic.Baseline.Platform.RunningProcess.ImageName.get -> string!
+Engramic.Baseline.Platform.RunningProcess.ImageName.init -> void
+Engramic.Baseline.Platform.RunningProcess.ImagePath.get -> string?
+Engramic.Baseline.Platform.RunningProcess.ImagePath.init -> void
+Engramic.Baseline.Platform.RunningProcess.IsElevated.get -> bool?
+Engramic.Baseline.Platform.RunningProcess.IsElevated.init -> void
+Engramic.Baseline.Platform.RunningProcess.Owner.get -> Engramic.Baseline.Platform.Sid?
+Engramic.Baseline.Platform.RunningProcess.Owner.init -> void
+Engramic.Baseline.Platform.RunningProcess.ParentId.get -> uint
+Engramic.Baseline.Platform.RunningProcess.ParentId.init -> void
+Engramic.Baseline.Platform.RunningProcess.RunningProcess() -> void
+Engramic.Baseline.Platform.RunningProcess.SessionId.get -> uint?
+Engramic.Baseline.Platform.RunningProcess.SessionId.init -> void
 Engramic.Baseline.Platform.SecureStoreException
 Engramic.Baseline.Platform.SecureStoreException.IsFolderRefused.get -> bool
 Engramic.Baseline.Platform.SecureStoreException.IsFolderRefused.init -> void
@@ -254,6 +278,9 @@ override Engramic.Baseline.Platform.ProxySettings.ToString() -> string!
 override Engramic.Baseline.Platform.RegistryValue.Equals(object? obj) -> bool
 override Engramic.Baseline.Platform.RegistryValue.GetHashCode() -> int
 override Engramic.Baseline.Platform.RegistryValue.ToString() -> string!
+override Engramic.Baseline.Platform.RunningProcess.Equals(object? obj) -> bool
+override Engramic.Baseline.Platform.RunningProcess.GetHashCode() -> int
+override Engramic.Baseline.Platform.RunningProcess.ToString() -> string!
 override Engramic.Baseline.Platform.ServiceRequest.Equals(object? obj) -> bool
 override Engramic.Baseline.Platform.ServiceRequest.GetHashCode() -> int
 override Engramic.Baseline.Platform.ServiceRequest.ToString() -> string!
@@ -300,6 +327,8 @@ static Engramic.Baseline.Platform.RegistryValue.FromMultiText(System.Collections
 static Engramic.Baseline.Platform.RegistryValue.FromOther(System.ReadOnlySpan<byte> bytes) -> Engramic.Baseline.Platform.RegistryValue!
 static Engramic.Baseline.Platform.RegistryValue.FromQWord(ulong number) -> Engramic.Baseline.Platform.RegistryValue!
 static Engramic.Baseline.Platform.RegistryValue.FromText(string! text) -> Engramic.Baseline.Platform.RegistryValue!
+static Engramic.Baseline.Platform.RunningProcess.operator !=(Engramic.Baseline.Platform.RunningProcess? left, Engramic.Baseline.Platform.RunningProcess? right) -> bool
+static Engramic.Baseline.Platform.RunningProcess.operator ==(Engramic.Baseline.Platform.RunningProcess? left, Engramic.Baseline.Platform.RunningProcess? right) -> bool
 static Engramic.Baseline.Platform.ServiceRequest.DefaultTimeout.get -> System.TimeSpan
 static Engramic.Baseline.Platform.ServiceRequest.LongestTimeout.get -> System.TimeSpan
 static Engramic.Baseline.Platform.ServiceRequest.operator !=(Engramic.Baseline.Platform.ServiceRequest? left, Engramic.Baseline.Platform.ServiceRequest? right) -> bool

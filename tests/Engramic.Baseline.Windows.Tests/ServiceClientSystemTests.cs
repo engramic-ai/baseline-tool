@@ -106,8 +106,10 @@ public sealed class ServiceClientSystemTests
         var names = MachineProxySettings.WpadNames();
         using var wpad = new WpadServer(names, Script(proxy.Port));
         using var hosts = MachineProxySettings.AddHostNames(names);
+        var edited = wpad.Elapsed;
         var cancellationToken = TestContext.Current.CancellationToken;
         var unresolved = await MachineProxySettings.WaitForHostNamesAsync(names, TimeSpan.FromSeconds(15), cancellationToken);
+        var setup = string.Create(CultureInfo.InvariantCulture, $"WPAD names in the hosts file: {string.Join(", ", names)}, added and the DNS cache flushed by {edited.TotalSeconds:0.000} s; {(unresolved.Count > 0 ? "these did not resolve to 127.0.0.1: " + string.Join(", ", unresolved) : "all resolved to 127.0.0.1")} by {wpad.Elapsed.TotalSeconds:0.000} s");
         var attempts = new List<string>();
         try
         {
@@ -120,6 +122,7 @@ public sealed class ServiceClientSystemTests
             ServiceResponse response;
             for (var attempt = 1; ; attempt++)
             {
+                var reset = wpad.Elapsed;
                 MachineProxySettings.ResetAutoProxy();
                 if (attempt > 1)
                 {
@@ -130,7 +133,7 @@ public sealed class ServiceClientSystemTests
                 var settings = new ProxySettings { UseWinHttpProxyWhenSystem = false, ProxyUseDefaultCredentials = true };
                 var client = new ServiceClient(new ServiceClientOptions { Proxy = settings, IsSystem = true, AutoProxyTimeout = TimeSpan.FromSeconds(45) });
                 response = await client.GetAsync(new ServiceRequest(Remote) { Timeout = TimeSpan.FromSeconds(60) }, cancellationToken);
-                attempts.Add(string.Create(CultureInfo.InvariantCulture, $"attempt {attempt}, {started.TotalSeconds:0.000} s to {wpad.Elapsed.TotalSeconds:0.000} s: {Describe(response.Route)}"));
+                attempts.Add(string.Create(CultureInfo.InvariantCulture, $"attempt {attempt}, reset at {reset.TotalSeconds:0.000} s, asked from {started.TotalSeconds:0.000} s to {wpad.Elapsed.TotalSeconds:0.000} s: {Describe(response.Route)}"));
                 if (response.Route?.Source != ProxySource.None || attempt == WpadAttempts)
                 {
                     break;
@@ -140,8 +143,8 @@ public sealed class ServiceClientSystemTests
             var seen = string.Join(", ", wpad.Requests);
             Assert.True(
                 response.Route?.Source == ProxySource.AutoDetect,
-                $"The route came from {Describe(response.Route)}. Attempts: {string.Join("; ", attempts)}. WPAD names in the hosts file: {string.Join(", ", names)}, of which these did not resolve to 127.0.0.1: {(unresolved.Count > 0 ? string.Join(", ", unresolved) : "none")}. Requests on port 80, timed from when it started: {(seen.Length > 0 ? seen : "none")}. The WinHTTP Web Proxy Auto-Discovery service: {MachineProxySettings.AutoProxyServiceState()}.");
-            TestContext.Current.TestOutputHelper?.WriteLine($"WPAD's proxy was used. Attempts: {string.Join("; ", attempts)}. Requests on port 80: {seen}.");
+                $"The route came from {Describe(response.Route)}. Times are from when port 80 was served. {setup}. Attempts: {string.Join("; ", attempts)}. Requests on port 80: {(seen.Length > 0 ? seen : "none")}. The WinHTTP Web Proxy Auto-Discovery service: {MachineProxySettings.AutoProxyServiceState()}.");
+            TestContext.Current.TestOutputHelper?.WriteLine($"WPAD's proxy was used. Times are from when port 80 was served. {setup}. Attempts: {string.Join("; ", attempts)}. Requests on port 80: {seen}.");
             Assert.Equal(proxy.Port, response.Route?.Proxy?.Port);
             Assert.False(response.Route?.UseDefaultCredentials);
             Assert.StartsWith("proxyUseDefaultCredentials does not apply to a proxy that WPAD found", Assert.Single(response.Route!.Notes), StringComparison.Ordinal);

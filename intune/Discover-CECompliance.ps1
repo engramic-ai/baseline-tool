@@ -2,7 +2,7 @@
 #
 # Upload in Intune: Devices > Compliance > Scripts > Add > Windows 10 and later.
 #   Run this script using the logged on credentials: No
-#   Enforce script signature check: No (or sign it and set Yes)
+#   Enforce script signature check: No, even when signed (docs/INTUNE.md says why)
 #   Run script in 64 bit PowerShell Host: Yes (works either way)
 # Then reference it from a compliance policy with compliance-rules.json
 # (or compliance-rules-autofail-only.json for a softer first rollout).

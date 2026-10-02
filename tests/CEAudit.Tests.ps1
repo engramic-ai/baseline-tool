@@ -1563,6 +1563,19 @@ Describe 'Intune: status, discovery and compliance rules' {
         (Get-Content (Join-Path $script:intune 'Detect-CEChecker.ps1') -Raw) | Should -Match ([regex]::Escape("[version]'$v'"))
     }
 
+    It 'nothing tells an administrator to set Intune''s script signature check to Yes' {
+        # Yes runs a script under AllSigned, which trusts only the exact certificate, and Artifact Signing
+        # issues a new certificate every day. It stays No until that has been tested; change this then.
+        $roots = @('docs', 'intune', 'tools') | ForEach-Object { Join-Path $script:RepoRoot $_ }
+        $files = @(Get-ChildItem -LiteralPath $roots -Recurse -File | Where-Object { $_.Extension -in '.md', '.ps1' }) + @(Get-Item -LiteralPath (Join-Path $script:RepoRoot 'README.md'))
+        $says = @(foreach ($f in $files) {
+                Select-String -LiteralPath $f.FullName -Pattern 'signature check[^.|]*\bYes\b', 'signature check\W*\|\W*Yes' | ForEach-Object { '{0}:{1}' -f $f.Name, $_.LineNumber }
+            })
+        $says | Should -BeNullOrEmpty
+        $release = Get-Content -LiteralPath (Join-Path (Join-Path $script:RepoRoot 'tools') 'New-SignedRelease.ps1') -Raw
+        $release | Should -Match 'Leave \*\*Enforce script signature check\*\* at No' -Because 'the release notes say what to set'
+    }
+
     It 'the install makes the data folder and its subfolders locked at birth, before logging or copying, and never takes an existing one back in place' {
         # %ProgramData% lets standard users create folders, and the SYSTEM audit and Intune trust a
         # status.json and config overrides there, so every folder the tool keeps must be born locked.

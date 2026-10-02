@@ -12,8 +12,9 @@
 
     This runs them: dotnet runs the xUnit test assembly as SYSTEM through tools\ci\Invoke-AsSystem.ps1, a
     temporary scheduled task, with the tests of -Trait selected, explicit ones included, and a skipped test
-    counted as a failure. It prints what the run printed and each test's result, then exits 1 unless the run
-    succeeded, at least -MinimumTests tests ran, and every one passed. The results file stays in -WorkPath.
+    counted as a failure. It prints what the run printed and each test's result, with what the test wrote to
+    its output, then exits 1 unless the run succeeded, at least -MinimumTests tests ran, and every one passed.
+    The results file stays in -WorkPath.
 
     It needs an elevated administrator, registers a scheduled task, and runs tests that change the machine: run
     it only where that is meant.
@@ -76,6 +77,9 @@ else {
     foreach ($test in @($document.SelectNodes('//test'))) {
         $line = '{0,-5} {1}' -f $test.GetAttribute('result'), $test.GetAttribute('name')
         Write-Host $line
+        foreach ($output in @($test.SelectNodes('output'))) {
+            $output.InnerText.Trim() -split "`r?`n" | ForEach-Object { Write-Host "      $_" }
+        }
         if ($test.GetAttribute('result') -ne 'Pass') {
             $why = @($test.SelectNodes('failure/message | reason') | ForEach-Object { $_.InnerText.Trim() }) -join ' '
             [void]$problems.Add("$line $why".Trim())

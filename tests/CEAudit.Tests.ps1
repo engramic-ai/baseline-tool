@@ -544,6 +544,40 @@ Describe 'Static invariants' {
         @($problems) -join "`n" | Should -BeNullOrEmpty
     }
 
+    It 'no script or function assigns to its own parameter under a differently cased name' {
+        # Variable names ignore case, so a $summary in a script with a [string]$Summary parameter is that
+        # parameter, and its type joins any array assigned to it into one string. A different case says
+        # the author meant a variable of their own.
+        $roots = @('src', 'app', 'intune', 'tools') | ForEach-Object { Join-Path $script:RepoRoot $_ }
+        $files = @(Get-ChildItem -LiteralPath $roots -Recurse -File | Where-Object { $_.Extension -in '.ps1', '.psm1' })
+        $problems = foreach ($file in $files) {
+            $ast = [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$null, [ref]$null)
+            $scopes = @($ast) + @($ast.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) | ForEach-Object { $_.Body })
+            foreach ($scope in $scopes) {
+                $params = @()
+                if ($scope.ParamBlock) { $params += @($scope.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath }) }
+                if ($scope.Parent -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $scope.Parent.Parameters) {
+                    $params += @($scope.Parent.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
+                }
+                if (-not $params.Count) { continue }
+                $vars = $scope.FindAll({ $args[0] -is [System.Management.Automation.Language.VariableExpressionAst] }, $true)
+                foreach ($v in $vars) {
+                    $name = $v.VariablePath.UserPath
+                    if (-not @($params | Where-Object { $_ -ieq $name -and $_ -cne $name }).Count) { continue }
+                    # A nested function is a scope of its own, checked against its own parameters.
+                    $owner = $v.Parent
+                    while ($owner -ne $scope -and $owner -isnot [System.Management.Automation.Language.FunctionDefinitionAst]) { $owner = $owner.Parent }
+                    if ($owner -ne $scope) { continue }
+                    $target = if ($v.Parent -is [System.Management.Automation.Language.ConvertExpressionAst]) { $v.Parent } else { $v }
+                    $set = ($target.Parent -is [System.Management.Automation.Language.AssignmentStatementAst] -and $target.Parent.Left -eq $target) -or
+                    ($v.Parent -is [System.Management.Automation.Language.ForEachStatementAst] -and $v.Parent.Variable -eq $v)
+                    if ($set) { '{0}:{1} assigns ${2}' -f $file.Name, $v.Extent.StartLineNumber, $name }
+                }
+            }
+        }
+        @($problems) -join "`n" | Should -BeNullOrEmpty
+    }
+
     It 'the installer and the module lock a data folder with the identical descriptor (no drift)' {
         # The installer can't import the module, so it carries its own copy of the locked-descriptor
         # builder, like Get-CEStatusTrustProblem. This keeps the two copies from drifting apart.
@@ -1556,6 +1590,36 @@ Describe 'Intune: status, discovery and compliance rules' {
                 @($r.RemediationStrings | Where-Object Language -eq 'en_US').Count | Should -Be 1
             }
         }
+    }
+
+    It 'the release notes open with the summary as written, and warn when there is none' {
+        $release = Join-Path (Join-Path $script:RepoRoot 'tools') 'New-SignedRelease.ps1'
+        . (Get-TestInstallerCode -Path $release -Name @('Get-ReleaseSummary'))
+        (Get-Content -LiteralPath $release -Raw) | Should -Match '\$intro = Get-ReleaseSummary -Path \$summaryPath' -Because 'the notes use it'
+        $dir = Join-Path $TestDrive 'release-summary'
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        $none = [ordered]@{
+            missing = $null
+            empty   = ''
+            blank   = "  `r`n`r`n`t`r`n"
+            comment = "`r`n<!-- Say what this release means.`r`n     A second line. -->`r`n`r`n"
+        }
+        foreach ($case in $none.Keys) {
+            $file = Join-Path $dir "$case.md"
+            if ($null -ne $none[$case]) { [IO.File]::WriteAllText($file, $none[$case]) }
+            $warned = $null
+            $intro = Get-ReleaseSummary -Path $file -WarningVariable warned -WarningAction SilentlyContinue
+            $intro.Count | Should -Be 0 -Because "a $case summary is no summary"
+            @($warned).Count | Should -Be 1 -Because "a $case summary warns"
+        }
+        # Paragraphs and lists keep their lines. Only the comment and the blank lines around the text go.
+        $file = Join-Path $dir 'written.md'
+        [IO.File]::WriteAllText($file, "<!-- What this release means. -->`r`n`r`n**Para one.** First line`r`nsecond line.`r`n`r`n- bullet a`n- bullet b`r`n`r`n")
+        $warned = $null
+        $intro = Get-ReleaseSummary -Path $file -WarningVariable warned
+        @($warned).Count | Should -Be 0
+        $intro.Count | Should -Be 5
+        $intro -join '|' | Should -BeExactly '**Para one.** First line|second line.||- bullet a|- bullet b'
     }
 
     It 'the Win32 detection script requires the current module version' {

@@ -183,6 +183,27 @@ if ($prevTag) { $changes = @(& git log "$prevTag..HEAD" --no-merges --format=%s 
 $notes = New-Object System.Collections.ArrayList
 function Add-Note { param([string[]]$Lines) foreach ($l in $Lines) { [void]$notes.Add($l) } }
 
+function Get-ReleaseSummary {
+    <# The summary's lines as written, without comments or the blank lines around it. None, with a
+       warning, when the file is missing or holds nothing else. #>
+    [CmdletBinding()]
+    param([string]$Path)
+    $intro = @()
+    if ($Path -and (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        $lines = @(((Get-Content -LiteralPath $Path -Raw) -replace '(?s)<!--.*?-->', '') -split "`r?`n")
+        $first = 0
+        while ($first -lt $lines.Count -and -not $lines[$first].Trim()) { $first++ }
+        $last = $lines.Count - 1
+        while ($last -ge $first -and -not $lines[$last].Trim()) { $last-- }
+        if ($first -le $last) { $intro = @($lines[$first..$last]) }
+    }
+    if (-not $intro.Count) {
+        Write-Warning ("No summary in $Path, so these notes say nothing about the release beyond the commit " +
+            'subjects. Write a few sentences saying what this release means for someone downloading it.')
+    }
+    return ,$intro
+}
+
 # An installer is only described when one was actually built, so the notes never promise a file
 # that is not attached.
 $msi = @($artefacts | Where-Object { $_.Extension -eq '.msi' }) | Select-Object -First 1
@@ -191,24 +212,12 @@ $intuneName = [string](@($artefacts | Where-Object { $_.Extension -eq '.intunewi
 Add-Note @("# Engramic Baseline $version", '')
 # Commit subjects are written for the next developer, not for someone deciding whether to download
 # this. A release says what it means for them, in a few sentences somebody wrote on purpose.
-# Blank lines around it are dropped by index: slicing an array down to nothing never empties it, so
-# a summary that is only a comment would otherwise loop for ever.
-$summary = @()
-if (Test-Path -LiteralPath $summaryPath) {
-    $lines = @(((Get-Content -LiteralPath $summaryPath -Raw) -replace '(?s)<!--.*?-->', '') -split "`r?`n")
-    $first = 0
-    while ($first -lt $lines.Count -and -not $lines[$first].Trim()) { $first++ }
-    $last = $lines.Count - 1
-    while ($last -ge $first -and -not $lines[$last].Trim()) { $last-- }
-    if ($first -le $last) { $summary = @($lines[$first..$last]) }
-}
-if ($summary.Count) {
-    Add-Note $summary
+# Not $summary: variable names ignore case, so that would be the [string]$Summary parameter, which
+# joins whatever it is given into one line and is never empty.
+$intro = Get-ReleaseSummary -Path $summaryPath
+if ($intro.Count) {
+    Add-Note $intro
     Add-Note @('')
-}
-else {
-    Write-Warning ("No summary in $summaryPath, so these notes say nothing about the release beyond the commit " +
-        'subjects. Write a few sentences saying what this release means for someone downloading it.')
 }
 Add-Note @('## What to download', '', '| File | Use |', '|---|---|')
 if ($msi) {

@@ -936,26 +936,44 @@ are from commit 45a29f4 (the product code of `feat/dotnet-port` at 26b43ec), SDK
 Windows 11 25H2 (build 26200), an Intel Core Ultra 7 265H on mains power with Defender's real-time protection on,
 not elevated; the comparison with CI's builds is from a later commit, below. An MB is 1,048,576 bytes.
 
-**Proposed decision**, for the maintainer to take:
+**Decided 2026-10-02:**
 
-- **One runtime folder.** Ship the three executables in one self-contained folder: 135 MB and 294 files, against
-  292 MB and 690 files as three folders, and 2 MB more than the desktop app alone. Build it by publishing each app
-  to its own folder and merging them, never by publishing into one folder, and fail the merge on any file two apps
-  publish with different content, except the two below, where the desktop runtime pack's copy is kept. Sign once,
-  after the merge.
+- **One runtime folder.** The three executables, `baseline.exe`, the desktop app and the service, ship in one
+  self-contained folder: 135 MB and 294 files, against 292 MB and 690 files as three folders, and 2 MB more than the
+  desktop app alone. It is built by publishing each app to its own folder and merging them, never by publishing
+  into one folder. The merge fails on any file two apps publish with different content, except `WindowsBase.dll`
+  and `System.Diagnostics.EventLog.dll`, where the desktop runtime pack's copy wins (below). The folder is signed
+  once, after the merge.
 - **Keep ReadyToRun**, as now: 0.65 MB more of our own files (0.28 MB zipped) for an audit 14% faster warm and
   first runs 100 to 200 ms faster.
-- **Make the release publish reproducible, and add the gate.** `New-SignedRelease.ps1 -DotNet` publishes with
-  `-p:ContinuousIntegrationBuild=true`, from a clone of the tagged commit whose origin is the GitHub repository; CI
-  records the SHA-256 of every file it publishes (a workflow step, for the maintainer to add); and the release
-  refuses to sign unless the two lists match. A workstation published this way matched three CI runners' builds of
-  the same commit in all 203 files (below).
+- **Rebuild and compare before signing.** CI records the SHA-256 of every file it publishes from a release tag.
+  The release publishes the tagged commit with `-p:ContinuousIntegrationBuild=true`, from a clone whose origin is
+  the GitHub repository, and refuses to sign unless every file's hash matches CI's. A workstation published this
+  way matched three CI runners' builds of the same commit in all 203 files (below).
 
 **Fallbacks.** For the folder: three self-contained folders side by side, each published exactly as `baseline.exe`
 is today, 157 MB more and nothing shared. For ReadyToRun: `PublishReadyToRun=false`, which costs start-up and
 changes nothing else measured here. For the gate: if CI's files do not match a workstation's, sign the local build
 as today, judged by `Test-ReleaseSignatures.ps1` alone, until CI publishes and attests the unsigned folder (above),
 which needs no reproducibility.
+
+**Still to build:**
+
+- The CI step that records a tag's hashes. In the "Build and test (.NET)" job, after "Publish baseline.exe", a
+  step writes the SHA-256 of every published file to the log and to an artifact, in the format
+  `Measure-RuntimeSpike.ps1 -ReferenceManifest` reads (`<SHA-256>  <path>` per line), and the workflow also runs
+  on `v*` tags, so that the list is of the tagged commit itself and not of a pull request's merge commit. It is a
+  workflow change, which the maintainer pushes. Until it exists, the gate has nothing to compare with.
+- The release's side of the gate: `New-SignedRelease.ps1 -DotNet` publishing the tagged commit as above, fetching
+  the list from the tag's run and refusing to sign on any difference, any file only one side has, or no list.
+  `Measure-RuntimeSpike.ps1 -Phase Determinism -ReferenceManifest` already makes the comparison.
+- The merge script: each app published to its own folder, then merged into one, failing on any file two apps
+  publish with different content but the two exceptions above.
+- A fix for the catalog-signature defect in `tools/Release.psm1` (below): `Get-ReleaseSignature` takes what
+  `Get-AuthenticodeSignature` reports, which is a catalog's signature whenever the file's hash is also in a catalog
+  on the machine, so `Test-ReleaseSignatures.ps1 -Unsigned` fails the desktop pack's `D3DCompiler_47_cor3.dll` and
+  `vcruntime140_cor3.dll`, though both carry Microsoft's timestamped signature in the file. It is tracked as a
+  follow-up, and blocks only a release with the desktop app.
 
 **Size.** `baseline.exe` published as the release publishes it:
 
@@ -1033,7 +1051,7 @@ What it showed:
   Microsoft's timestamped signature in the file, but their hashes are also in this machine's catalogs (Windows ships
   the same D3DCompiler build), and `Get-AuthenticodeSignature` then reports the catalog's signature. Any release
   with the WPF app would meet this, shared folder or not, so the check must read the signature in the file before
-  the desktop app ships.
+  the desktop app ships (still to build, above).
 
 **ReadyToRun determinism.** Two clean publishes of the ReadyToRun build, each from its own clone at a different
 path, every file compared by SHA-256:
@@ -1083,14 +1101,10 @@ app has them.
 
 **Still to prove:**
 
-- A record of CI's hashes that a release can use: a workflow step after "Publish baseline.exe" that writes the
-  SHA-256 of every published file to the log and an artifact, run for the tag. Until it exists, the gate has
-  nothing to compare with.
 - The LF row and the comparison with CI again once the desktop app brings XAML and a manifest.
 - Start-up on the lab builds 14393, 17763 and 19045, and on slower machines.
 - The real desktop app and service, which will bring packages of their own; the service running as a service; and
   a shared folder signed and checked in the sign-test sandbox.
-- The merge, which is not written yet.
 
 ## CI
 

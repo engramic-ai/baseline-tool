@@ -9,7 +9,6 @@ Engramic.Baseline.Windows.AuditMutex
 Engramic.Baseline.Windows.AuditMutex.Dispose() -> void
 Engramic.Baseline.Windows.ConsoleSession
 Engramic.Baseline.Windows.CurrentProcess
-Engramic.Baseline.Windows.FileSignatures
 Engramic.Baseline.Windows.ReadOnlySecureStore
 Engramic.Baseline.Windows.ReadOnlySecureStore.Dispose() -> void
 Engramic.Baseline.Windows.ReadOnlySecureStore.ReadFile(Engramic.Baseline.Platform.DataFolder folder, string! name, int maxLength) -> byte[]?
@@ -82,7 +81,6 @@ override Engramic.Baseline.Windows.ServiceClientOptions.ToString() -> string!
 static Engramic.Baseline.Windows.AuditMutex.TryAcquire(string! name, System.TimeSpan timeout) -> Engramic.Baseline.Windows.AuditMutex?
 static Engramic.Baseline.Windows.ConsoleSession.GetActiveSessionId() -> uint?
 static Engramic.Baseline.Windows.CurrentProcess.ReadAccount() -> Engramic.Baseline.Platform.ProcessAccount!
-static Engramic.Baseline.Windows.FileSignatures.Verify(Microsoft.Win32.SafeHandles.SafeFileHandle! file, string! path) -> Engramic.Baseline.Platform.FileSignature!
 static Engramic.Baseline.Windows.SecureStore.Initialize(Engramic.Baseline.Windows.SecureStoreOptions! options) -> Engramic.Baseline.Windows.SecureStore!
 static Engramic.Baseline.Windows.SecureStore.Open(Engramic.Baseline.Windows.SecureStoreOptions! options) -> Engramic.Baseline.Windows.SecureStore!
 static Engramic.Baseline.Windows.SecureStore.OpenReadOnly(Engramic.Baseline.Windows.SecureStoreOptions! options) -> Engramic.Baseline.Windows.ReadOnlySecureStore?

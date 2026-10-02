@@ -76,19 +76,6 @@ Engramic.Baseline.Platform.FileFacts.Length.get -> long
 Engramic.Baseline.Platform.FileFacts.Length.init -> void
 Engramic.Baseline.Platform.FileFacts.LinkCount.get -> uint
 Engramic.Baseline.Platform.FileFacts.LinkCount.init -> void
-Engramic.Baseline.Platform.FileSignature
-Engramic.Baseline.Platform.FileSignature.<Clone>$() -> Engramic.Baseline.Platform.FileSignature!
-Engramic.Baseline.Platform.FileSignature.Deconstruct(out Engramic.Baseline.Platform.SignatureState State, out string? Signer, out bool InCatalog, out int Status) -> void
-Engramic.Baseline.Platform.FileSignature.Equals(Engramic.Baseline.Platform.FileSignature? other) -> bool
-Engramic.Baseline.Platform.FileSignature.FileSignature(Engramic.Baseline.Platform.SignatureState State, string? Signer, bool InCatalog, int Status) -> void
-Engramic.Baseline.Platform.FileSignature.InCatalog.get -> bool
-Engramic.Baseline.Platform.FileSignature.InCatalog.init -> void
-Engramic.Baseline.Platform.FileSignature.Signer.get -> string?
-Engramic.Baseline.Platform.FileSignature.Signer.init -> void
-Engramic.Baseline.Platform.FileSignature.State.get -> Engramic.Baseline.Platform.SignatureState
-Engramic.Baseline.Platform.FileSignature.State.init -> void
-Engramic.Baseline.Platform.FileSignature.Status.get -> int
-Engramic.Baseline.Platform.FileSignature.Status.init -> void
 Engramic.Baseline.Platform.IDataFolderReader
 Engramic.Baseline.Platform.IDataFolderReader.ReadFile(Engramic.Baseline.Platform.DataFolder folder, string! name, int maxLength) -> byte[]?
 Engramic.Baseline.Platform.IDataFolderReader.RootPath.get -> string!
@@ -264,10 +251,6 @@ Engramic.Baseline.Platform.Sid
 Engramic.Baseline.Platform.Sid.<Clone>$() -> Engramic.Baseline.Platform.Sid!
 Engramic.Baseline.Platform.Sid.Equals(Engramic.Baseline.Platform.Sid? other) -> bool
 Engramic.Baseline.Platform.Sid.Value.get -> string!
-Engramic.Baseline.Platform.SignatureState
-Engramic.Baseline.Platform.SignatureState.NotSigned = 1 -> Engramic.Baseline.Platform.SignatureState
-Engramic.Baseline.Platform.SignatureState.NotValid = 2 -> Engramic.Baseline.Platform.SignatureState
-Engramic.Baseline.Platform.SignatureState.Valid = 0 -> Engramic.Baseline.Platform.SignatureState
 override Engramic.Baseline.Platform.AccessEntry.Equals(object? obj) -> bool
 override Engramic.Baseline.Platform.AccessEntry.GetHashCode() -> int
 override Engramic.Baseline.Platform.AccessEntry.ToString() -> string!
@@ -277,9 +260,6 @@ override Engramic.Baseline.Platform.AutoProxyAnswer.ToString() -> string!
 override Engramic.Baseline.Platform.FileFacts.Equals(object? obj) -> bool
 override Engramic.Baseline.Platform.FileFacts.GetHashCode() -> int
 override Engramic.Baseline.Platform.FileFacts.ToString() -> string!
-override Engramic.Baseline.Platform.FileSignature.Equals(object? obj) -> bool
-override Engramic.Baseline.Platform.FileSignature.GetHashCode() -> int
-override Engramic.Baseline.Platform.FileSignature.ToString() -> string!
 override Engramic.Baseline.Platform.ItemSecurity.Equals(object? obj) -> bool
 override Engramic.Baseline.Platform.ItemSecurity.GetHashCode() -> int
 override Engramic.Baseline.Platform.ItemSecurity.ToString() -> string!
@@ -330,8 +310,6 @@ static Engramic.Baseline.Platform.DataFolderTrust.FindReplaceProblem(string! pat
 static Engramic.Baseline.Platform.DataFolderTrust.Machine.get -> Engramic.Baseline.Platform.DataFolderTrust!
 static Engramic.Baseline.Platform.FileFacts.operator !=(Engramic.Baseline.Platform.FileFacts? left, Engramic.Baseline.Platform.FileFacts? right) -> bool
 static Engramic.Baseline.Platform.FileFacts.operator ==(Engramic.Baseline.Platform.FileFacts? left, Engramic.Baseline.Platform.FileFacts? right) -> bool
-static Engramic.Baseline.Platform.FileSignature.operator !=(Engramic.Baseline.Platform.FileSignature? left, Engramic.Baseline.Platform.FileSignature? right) -> bool
-static Engramic.Baseline.Platform.FileSignature.operator ==(Engramic.Baseline.Platform.FileSignature? left, Engramic.Baseline.Platform.FileSignature? right) -> bool
 static Engramic.Baseline.Platform.ItemSecurity.operator !=(Engramic.Baseline.Platform.ItemSecurity? left, Engramic.Baseline.Platform.ItemSecurity? right) -> bool
 static Engramic.Baseline.Platform.ItemSecurity.operator ==(Engramic.Baseline.Platform.ItemSecurity? left, Engramic.Baseline.Platform.ItemSecurity? right) -> bool
 static Engramic.Baseline.Platform.MachineProxy.operator !=(Engramic.Baseline.Platform.MachineProxy? left, Engramic.Baseline.Platform.MachineProxy? right) -> bool

@@ -16,7 +16,7 @@ This note covers the layout, the rules the build enforces, and how to build and 
 | `src/Engramic.Baseline.Platform` | The interfaces and records of the primitives (registry, files, the event log, processes, tokens, HTTP and so on), the layout and trust rules of the data folder, and the rules that choose a service request's proxy. |
 | `src/Engramic.Baseline.Engine` | The check and fix contracts, the runner, the framework rollups, changesets and undo. |
 | `src/Engramic.Baseline.Controls` | The checks, the fixes, the readers that interpret what the primitives return, and the shipped config. |
-| `src/Engramic.Baseline.Windows` | The Windows primitives, calling Win32 through code that CsWin32 generates from `NativeMethods.txt`, including SecureStore, the audit mutex, the service client, the process list and file signatures. |
+| `src/Engramic.Baseline.Windows` | The Windows primitives, calling Win32 through code that CsWin32 generates from `NativeMethods.txt`, including SecureStore, the audit mutex, the service client and the process list. |
 | `src/Engramic.Baseline.Cli` | `baseline.exe`, the command line. |
 | `tests/Engramic.Baseline.*.Tests` | xUnit v3 tests: one project for each library, and one for the command line. |
 | `tests/Engramic.Baseline.Contracts.Tests` | The status.json contract: golden files of its bytes, and the Intune scripts run on it (below). |
@@ -87,8 +87,8 @@ RS0030 and says what to use instead.
 | Reflection-based `JsonSerializer` overloads | Not AOT-safe | A `JsonTypeInfo` from a source-generated `JsonSerializerContext` |
 
 **Exemptions.** A few audited classes, added as the port goes on, do these things safely: SecureStore,
-ProfileReader, the registry primitive, the trusted process runner, the service client and the signature check.
-Only the files they live in may use a banned API, and only like this:
+ProfileReader, the registry primitive, the trusted process runner and the service client. Only the files they
+live in may use a banned API, and only like this:
 
 1. The file is listed in `src/BannedApiExemptions.txt`, with the reason.
 2. Each use sits between `#pragma warning disable RS0030 // <reason>` and `#pragma warning restore RS0030`,
@@ -123,7 +123,8 @@ checked by `Engramic.Baseline.Invariants.Tests`:
   reads or sets the environment or answers from it (the known-folder API builds ProgramData from
   `%SystemDrive%`), loads a library or creates a COM object is sensitive (the list is in
   `NativeCodeTests`). So is `WinVerifyTrust`, which opens the file by its path when it is given no handle, and
-  a catalog always by its path. It may be named only in a file on `src/BannedApiExemptions.txt`, only between the same
+  a catalog always by its path; Authenticode checks will name it only in ProfileReader, passing the handle
+  ProfileReader opened (spike 7). It may be named only in a file on `src/BannedApiExemptions.txt`, only between the same
   `#pragma warning disable RS0030 // <reason>` and restore as a banned API, and it comes off
   `NativeMethods.txt` when no exempt file uses it.
 
@@ -525,9 +526,7 @@ and writes which to the test output. The GitHub runners cover Windows Server 202
 ## Detection
 
 What the AI tool checks will read about the device, from primitives in the Windows library that compile with
-Native AOT. None of them uses WMI or WinRT, and none opens a file by a path it is given: the signature check has
-Windows read the file through a handle, and Windows opens a catalog itself, by the path its catalog database
-holds.
+Native AOT. None of them uses WMI or WinRT, and none opens a file.
 
 - **Processes** (`WindowsProcessList`, behind `IProcessList`): the process table from a Toolhelp snapshot, then
   for each process its image path (`QueryFullProcessImageName`), its command line (`NtQueryInformationProcess`
@@ -552,16 +551,12 @@ holds.
   that `tests/parity/divergences.json` would have to record. Neither reads `HKEY_USERS\S-1-5-18`, SYSTEM's own
   hive, where a per-user installer run as SYSTEM (by Intune, for example) registers, nor the hive of anyone not
   signed in. Another person's hive throws `UnauthorizedAccessException` unless the reader is elevated or SYSTEM.
-- **Signatures** (`FileSignatures.Verify`): Authenticode, read through a handle the caller opened, as
-  `Get-AuthenticodeSignature` checks it: a signature embedded in the file, or else a catalog of Windows that holds
-  the file's hash (SHA-256, then SHA-1), which is how most files of Windows are signed. It gives the state, the
-  signer's common name, whether the signature came from a catalog, and WinVerifyTrust's result. It checks no
-  revocation and fetches nothing from the network, so it never waits on one. A catalog signs a hash, not a
-  place: a copy of `cmd.exe` in a temp folder is valid, so the trusted process runner must also check where a tool
-  is. `WinVerifyTrust` is sensitive (above), so `FileSignatures.cs` is on `src/BannedApiExemptions.txt` and
-  names it only in pragma regions. Every call passes the caller's handle; for a catalog signature Windows opens
-  the catalog by the path its catalog database gives, in `System32\CatRoot`, which only Windows and
-  administrators may change.
+- **Signatures**: none in the libraries yet. Authenticode checks will open the file through ProfileReader and
+  pass `WinVerifyTrust` that handle (`WINTRUST_FILE_INFO.hFile`), so no new class joins
+  `src/BannedApiExemptions.txt` (spike 7, below). `Get-AuthenticodeSignature`, which the module uses, takes a
+  signature embedded in the file, or else a catalog of Windows that holds the file's hash, which is how most files
+  of Windows are signed. A catalog signs a hash, not a place: a copy of `cmd.exe` in a temp folder is valid, so the
+  trusted process runner must also check where a tool is.
 - **File versions**: no primitive. `FileVersionInfo.GetVersionInfo` reads by path, which product code may not, and
   the module reads no file versions. A check that needs one would read the version resource through a handle.
   Windows also gives a process whose manifest does not declare Windows 10, as `baseline.exe`'s does not, the
@@ -574,17 +569,31 @@ The question was whether Model, Platform, Engine and Windows can run detection c
 an app built on them could be published Native AOT while `baseline.exe` stays JIT with ReadyToRun; and what
 Native AOT costs and buys.
 
-**Proposed decision: keep the four libraries AOT-clean with detection in them, held there by the canary on every
-change, and keep `baseline.exe` and the desktop app JIT with ReadyToRun.** Detection runs under Native AOT with no
-warning and no change to how the libraries are written. An app built on them that wants a small, quick-starting
-exe may publish Native AOT: on the runner the canary started in about half the time, ran in 40 to 44 percent of
-it, peaked at 68 to 69 percent of the memory and shipped one 9 MB file instead of a 78 MB folder. The cost is a C++
-linker wherever it is published, and a rebuild for each .NET patch, as for `baseline.exe` today.
+**Decided 2026-10-02: keep Model, Platform, Engine and Windows AOT-clean with detection in them, held there by
+the canary on every change. `baseline.exe` and the desktop app stay JIT with ReadyToRun. An app built on the
+libraries may publish Native AOT.** Detection runs under Native AOT with no warning and no change to how the
+libraries are written. Such an app gets a small, quick-starting exe: on the runner the canary started in about
+half the time, ran in 40 to 44 percent of it, peaked at 68 to 69 percent of the memory and shipped one 9 MB file
+instead of a 78 MB folder. The cost is a C++ linker wherever it is published, and a rebuild for each .NET patch,
+as for `baseline.exe` today.
 
 **Fallback.** Such an app publishes self-contained JIT with ReadyToRun, as `baseline.exe` does; the libraries need
 no change, and the canary's JIT run shows they work that way. A primitive that cannot be AOT-clean
 (System.Management, WinRT, COM through the runtime's marshalling) goes in a project the four libraries never
 reference, and an app published Native AOT goes without it.
+
+**Authenticode is out of the libraries for now.** The spike added a signature check to the Windows library,
+`FileSignatures`, which ran under Native AOT on the runner (below). `WinVerifyTrust` is sensitive, so the check
+needed a line of its own in `src/BannedApiExemptions.txt`, and that was not approved: only SecureStore and
+ProfileReader open files. So the check was taken out. Authenticode checks will open the file through ProfileReader,
+in the next phase of the port, and pass `WinVerifyTrust` that handle (`WINTRUST_FILE_INFO.hFile`), so no new class
+joins the list; the canary will prove Authenticode under Native AOT again then, through ProfileReader.
+`NativeCodeTests` still holds `WinVerifyTrust` to the sensitive-function rule. The spike's version is in commit
+`db41df4` (`src/Engramic.Baseline.Windows/FileSignatures.cs` and `FileSignaturesTests.cs`): an embedded signature
+first, then the catalogs of Windows by the file's SHA-256 and then SHA-1 hash, through
+`CryptCATAdminCalcHashFromFileHandle2` and `WINTRUST_CATALOG_INFO.hMemberFile`, naming the signer from the
+verified chain, with no revocation check and nothing fetched from the network. For a catalog signature Windows
+opens the catalog itself, by the path its catalog database gives, in `System32\CatRoot`.
 
 **What the canary proved before this spike**, compiled with Native AOT on the runner: the status files and config
 read and written with source-generated JSON; SIDs and registry values; the check runner, the framework rollups
@@ -599,7 +608,7 @@ machine's WinHTTP proxy, and the service client's `HttpClient` sending to a loop
 |---|---|---|
 | Processes, with owner and elevation from tokens | `WindowsProcessList` | 151 processes; 150 owners, 134 elevated, 148 paths and 147 command lines read; this canary found as itself; 9 to 10 ms |
 | Installed programs | `WindowsRegistry.GetSubKeyNames` and `GetValue` | 40 in the 64-bit view and 19 in the 32-bit view of HKLM; none in the canary's own hive, HKCU; 20 ms |
-| Authenticode | `FileSignatures.Verify` | `cmd.exe` valid in a catalog, signed by Microsoft Windows; `vcruntime140.dll` valid, embedded; the canary itself not signed; 133 to 246 ms, most of it the first catalog lookup |
+| Authenticode, since taken out (above) | `FileSignatures.Verify` | `cmd.exe` valid in a catalog, signed by Microsoft Windows; `vcruntime140.dll` valid, embedded; the canary itself not signed; 133 to 246 ms, most of it the first catalog lookup |
 | File version | `FileVersionInfo`, in the canary | `cmd.exe` read; product code has no version reader (above) |
 
 **CsWin32 and `LibraryImport`.** CsWin32 0.3.335 with `"allowMarshaling": false` generates `DllImport`s that pass
@@ -618,7 +627,8 @@ one after another, and prints the medians. That JIT build is framework-dependent
 switches `PublishAot` sets in its `runtimeconfig.json`. Both use invariant globalization, as `AotCanary.csproj`
 sets, so neither loads ICU, which `baseline.exe` does: they compare like for like, but their run times and
 working sets leave out what ICU costs (the laptop's figures below show it). On the runner (`windows-latest`,
-Windows Server 2025, build 26100), from the "Run the AOT canary" step of three runs:
+Windows Server 2025, build 26100), from the "Run the AOT canary" step of three runs made while the canary still
+checked Authenticode (above):
 
 | Build | Files | Size | Start-up | Run | Wall | Peak working set |
 |---|---|---|---|---|---|---|
@@ -627,8 +637,9 @@ Windows Server 2025, build 26100), from the "Run the AOT canary" step of three r
 
 On the maintainer's laptop (build 26200), JIT builds only, since it has no C++ linker. Each figure is the median
 of 7 runs, each build run in turn with the others after one warm-up run of each, in two passes; a range spans the
-two passes. The self-contained builds were published from a copy of the worktree, since their restore differs
-from the locked one. The ReadyToRun build with ICU is published as `baseline.exe` is, with:
+two passes, and the canary still checked Authenticode. The self-contained builds were published from a copy of
+the worktree, since their restore differs from the locked one. The ReadyToRun build with ICU is published as
+`baseline.exe` is, with:
 
 ```
 dotnet publish tests/AotCanary/AotCanary.csproj -c Release -r win-x64 --self-contained -p:PublishAot=false
@@ -672,14 +683,15 @@ and the desktop app's WPF. These belong in a separate Windows project for CIM, W
 libraries never reference.
 
 **Still to run:** the canary and the new tests on builds 14393, 17763 and 19045, for `ProcessCommandLineInformation`
-(8.1 and later), `CryptCATAdminAcquireContext2` and `CryptCATAdminCalcHashFromFileHandle2` (8 and later) and the
-SHA-1 catalog fallback, which no file on the runner needs; detection as SYSTEM with a person signed in, since the
-runner's canary runs as its elevated administrator, whose hive holds no programs; Native AOT for Arm64; and a
-signed Native AOT exe under Smart App Control and App Control. The ReadyToRun figures come from the laptop only,
-since the runner publishes no ReadyToRun build of the canary. `ProcessCommandLineInformation` is not among the
-classes `NtQueryInformationProcess`'s documentation lists, though Windows has had it since 8.1. Matching the AI
-tool catalog, Store packages, the profile reads, and the console user's SID that a reader running as SYSTEM
-needs to find that person's hive, are not in this spike.
+(8.1 and later); detection as SYSTEM with a person signed in, since the runner's canary runs as its elevated
+administrator, whose hive holds no programs; Native AOT for Arm64; and a signed Native AOT exe under Smart App
+Control and App Control. The ReadyToRun figures come from the laptop only, since the runner publishes no ReadyToRun
+build of the canary. `ProcessCommandLineInformation` is not among the classes `NtQueryInformationProcess`'s
+documentation lists, though Windows has had it since 8.1. The Authenticode check built on ProfileReader will need
+those builds too, for `CryptCATAdminAcquireContext2` and `CryptCATAdminCalcHashFromFileHandle2` (8 and later) and
+the SHA-1 catalog fallback, which no file on the runner needs. Matching the AI tool catalog, Store packages, the
+profile reads, and the console user's SID that a reader running as SYSTEM needs to find that person's hive, are
+not in this spike.
 
 ## Config: the config trust gate
 

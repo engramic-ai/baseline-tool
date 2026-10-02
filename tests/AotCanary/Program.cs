@@ -31,7 +31,6 @@ Expect("Windows: service client", await ServiceClientSends());
 // Detection, as the AI tool checks will need it, from AOT-clean code alone.
 Detect("Windows: processes, owner and elevation from tokens", ReadProcesses);
 Detect("Windows: installed programs, both views and this account's hive", ReadInstalledPrograms);
-Detect("Windows: Authenticode, embedded and catalog", CheckSignatures);
 Detect("Runtime: file version (FileVersionInfo, by path)", ReadFileVersion);
 
 Console.WriteLine(failures == 0 ? "AOT canary: all libraries ran." : $"AOT canary: {failures} failed.");
@@ -294,28 +293,6 @@ static (bool, string) ReadInstalledPrograms()
     var passed = registry.GetSubKeyNames(RegistryHive.LocalMachine, RegistryView.Registry64, Uninstall) is not null
         && own.Length > 0 && loaded.Contains(own, StringComparer.OrdinalIgnoreCase);
     return (passed, $"{native} 64-bit and {wow} 32-bit for the machine, {perUser} in this account's hive");
-}
-
-static (bool, string) CheckSignatures()
-{
-    // A file of Windows through its catalog, this unsigned canary, and the first file found with its signature
-    // embedded (the Visual C++ runtime, or the malicious software removal tool).
-    var system = Environment.SystemDirectory;
-    var catalog = Verify(Path.Combine(system, "cmd.exe"));
-    var self = Verify(Environment.ProcessPath!);
-    var embedded = new[] { "vcruntime140.dll", "msvcp140.dll", "MRT.exe" }.Select(name => Path.Combine(system, name)).FirstOrDefault(File.Exists);
-    var embeddedSignature = embedded is null ? null : Verify(embedded);
-    var passed = catalog is { State: SignatureState.Valid, InCatalog: true, Signer: "Microsoft Windows" }
-        && self is { State: SignatureState.NotSigned, InCatalog: false }
-        && embeddedSignature is null or { State: SignatureState.Valid, InCatalog: false, Signer.Length: > 0 };
-    var embeddedFact = embeddedSignature is null ? "no file with an embedded signature found" : $"{Path.GetFileName(embedded)} embedded by {embeddedSignature.Signer ?? embeddedSignature.State.ToString()}";
-    return (passed, $"cmd.exe in a catalog by {catalog.Signer ?? catalog.State.ToString()}; {embeddedFact}; this canary {self.State}");
-
-    static FileSignature Verify(string path)
-    {
-        using var file = File.OpenHandle(path);
-        return FileSignatures.Verify(file, path);
-    }
 }
 
 static (bool, string) ReadFileVersion()

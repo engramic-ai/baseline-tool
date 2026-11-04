@@ -9,7 +9,7 @@ This note covers the layout, the rules the build enforces, and how to build and 
 | Path | What it holds |
 |---|---|
 | `Baseline.slnx` | The solution. `Baseline.Portable.slnf` lists the projects that build and test on Linux. |
-| `global.json` | The .NET SDK (10.0.401, which CI installs exactly and the lock files follow) and the test runner. |
+| `global.json` | The .NET SDK (10.0.403, which CI installs exactly and the lock files follow) and the test runner. |
 | `Directory.Build.props` | Settings for every project, including the one version of the product. |
 | `Directory.Packages.props` | The version of every package, set once. |
 | `src/Engramic.Baseline.Model` | Contracts: the status files, findings, changesets and config, and how they are written. |

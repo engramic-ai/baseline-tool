@@ -1,5 +1,7 @@
 using System.Diagnostics;
+using System.Net;
 using System.Net.NetworkInformation;
+using System.Net.Sockets;
 using Microsoft.Win32;
 
 namespace Engramic.Baseline.Windows.Tests;
@@ -116,8 +118,52 @@ internal static class MachineProxySettings
         return [.. names];
     }
 
-    /// <summary>Clears WinHTTP's record of what WPAD found, so that a lookup looks again.</summary>
+    /// <summary>
+    /// Waits until each name resolves to 127.0.0.1 through the DNS client, which picks up the hosts file in its own
+    /// time, and gives back those that still did not when the time ran out.
+    /// </summary>
+    public static async Task<IReadOnlyList<string>> WaitForHostNamesAsync(IReadOnlyCollection<string> names, TimeSpan limit, CancellationToken cancellationToken)
+    {
+        var started = Stopwatch.StartNew();
+        while (true)
+        {
+            var unresolved = new List<string>();
+            foreach (var name in names)
+            {
+                if (!await ResolvesToLoopbackAsync(name, cancellationToken))
+                {
+                    unresolved.Add(name);
+                }
+            }
+
+            if (unresolved.Count == 0 || started.Elapsed >= limit)
+            {
+                return unresolved;
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// Clears what the WinHTTP Web Proxy Auto-Discovery service keeps of what WPAD found, or that it found nothing,
+    /// so that the next lookup looks again.
+    /// </summary>
     public static void ResetAutoProxy() => Run("netsh.exe", "winhttp", "reset", "autoproxy");
+
+    /// <summary>The state of the WinHTTP Web Proxy Auto-Discovery service, as sc.exe prints it, for a failure's message.</summary>
+    public static string AutoProxyServiceState()
+    {
+        try
+        {
+            var state = Run("sc.exe", "query", "WinHttpAutoProxySvc").Split('\n').Select(l => l.Trim()).FirstOrDefault(l => l.StartsWith("STATE", StringComparison.Ordinal));
+            return state ?? "not given";
+        }
+        catch (Exception e) when (e is InvalidOperationException or TimeoutException)
+        {
+            return e.Message;
+        }
+    }
 
     /// <summary>Runs a tool from System32, hidden, and returns what it printed; throws if it fails.</summary>
     public static string Run(string tool, params string[] arguments)
@@ -161,6 +207,19 @@ internal static class MachineProxySettings
             {
                 Thread.Sleep(200 * attempt);
             }
+        }
+    }
+
+    private static async Task<bool> ResolvesToLoopbackAsync(string name, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var addresses = await Dns.GetHostAddressesAsync(name, AddressFamily.InterNetwork, cancellationToken);
+            return addresses.Contains(IPAddress.Loopback);
+        }
+        catch (SocketException)
+        {
+            return false;
         }
     }
 

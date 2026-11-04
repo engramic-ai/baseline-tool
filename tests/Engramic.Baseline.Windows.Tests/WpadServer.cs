@@ -1,4 +1,6 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
+using System.Globalization;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Text;
@@ -7,7 +9,7 @@ namespace Engramic.Baseline.Windows.Tests;
 
 /// <summary>
 /// Serves a PAC file at /wpad.dat on port 80 for the WPAD host names given, through http.sys, and records each
-/// request as host and path.
+/// request: its host and path, when it came, who asked, and whether it was answered.
 /// </summary>
 /// <remarks>
 /// WPAD always fetches over port 80, and a machine may already use it: on CI's runner a socket of our own on it
@@ -21,6 +23,7 @@ internal sealed class WpadServer : IDisposable
     private readonly HttpListener _listener = new();
     private readonly ConcurrentQueue<string> _requests = new();
     private readonly byte[] _script;
+    private readonly Stopwatch _clock = Stopwatch.StartNew();
     private readonly Task _serving;
 
     /// <summary>Starts serving.</summary>
@@ -47,8 +50,14 @@ internal sealed class WpadServer : IDisposable
         _serving = Task.Run(ServeAsync);
     }
 
-    /// <summary>Gets the requests received so far, as host and path, in order.</summary>
+    /// <summary>
+    /// Gets the requests received so far, in order, each as its host and path, the seconds since this server
+    /// started that it came at, its User-Agent, and how it was answered.
+    /// </summary>
     public IReadOnlyList<string> Requests => [.. _requests];
+
+    /// <summary>Gets how long this server has been serving, the clock <see cref="Requests"/> are timed by.</summary>
+    public TimeSpan Elapsed => _clock.Elapsed;
 
     /// <summary>Stops serving.</summary>
     public void Dispose()
@@ -78,28 +87,34 @@ internal sealed class WpadServer : IDisposable
                 return;
             }
 
-            _requests.Enqueue($"{context.Request.UserHostName}{context.Request.RawUrl}");
+            var request = context.Request;
+            var came = string.Create(CultureInfo.InvariantCulture, $"{request.UserHostName}{request.RawUrl} at {_clock.Elapsed.TotalSeconds:0.000} s by {request.UserAgent ?? "no User-Agent"}");
             var response = context.Response;
+            var answer = "404";
             try
             {
-                if (context.Request.Url?.AbsolutePath == "/wpad.dat")
+                if (request.Url?.AbsolutePath == "/wpad.dat")
                 {
+                    answer = "the PAC file not sent";
                     response.ContentType = "application/x-ns-proxy-autoconfig";
                     response.ContentLength64 = _script.Length;
                     await response.OutputStream.WriteAsync(_script);
+                    answer = "the PAC file";
                 }
                 else
                 {
                     response.StatusCode = 404;
                 }
             }
-            catch (HttpListenerException)
+            catch (HttpListenerException e)
             {
                 // The client went away; WPAD asks again if it needs to.
+                answer += $" ({e.Message.TrimEnd('.')})";
             }
             finally
             {
                 response.Close();
+                _requests.Enqueue($"{came}: {answer}");
             }
         }
     }

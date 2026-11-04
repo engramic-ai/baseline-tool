@@ -59,6 +59,24 @@ function Test-CERegistryValueExists {
     }
 }
 
+function Get-CERegistrySubKeyName {
+    <#
+        Names of the subkeys of a registry key, or an empty array when the key does not exist or
+        can't be read. Wrapped so tests can mock it. Assign the result before use: an empty array
+        comes back as $null.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Path)
+    try {
+        if (-not (Test-Path -LiteralPath $Path)) { return , @() }
+        $key = Get-Item -LiteralPath $Path -ErrorAction Stop
+        return , @($key.GetSubKeyNames())
+    }
+    catch {
+        return , @()
+    }
+}
+
 function Invoke-CENative {
     <#
         Runs a native executable and returns its stdout as a string array.

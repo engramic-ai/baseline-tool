@@ -129,9 +129,38 @@ Register-CECheck -Id 'UA-04' -Category 'UserAccessControl' -Severity 'High' `
         if ($len -ge $min) {
             return New-CEResult -Status 'Pass' -Expected "Minimum length >= $min" -Actual "Local minimum password length: $len" -Recommendation $note
         }
+
+        # The local policy only governs local accounts. When every enabled local account is one
+        # Windows LAPS manages with a strong generated password, nobody chooses a local password.
+        $evidence = @("Local minimum password length: $len")
+        # Intune's DeviceLock password settings (often sent by a compliance policy) don't change the
+        # local policy above, so show them separately.
+        $mdmLen = Get-CERegistryValue -Path 'HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\DeviceLock' -Name 'MinDevicePasswordLength'
+        if ($null -ne $mdmLen) { $evidence += "Intune DeviceLock MinDevicePasswordLength: $mdmLen (does not change the local policy)" }
+        $unmanaged = $null
+        try {
+            $enabled = @(Get-LocalUser -ErrorAction Stop | Where-Object { $_.Enabled })
+            $laps = Get-CELapsManagedAccount
+            $lapsAccount = $null
+            if ($laps.Managed -and $laps.Strong) {
+                $lapsAccount = @($enabled | Where-Object { ("$($_.SID)" -split '-')[-1] -eq "$($laps.Rid)" })[0]
+            }
+            elseif ($laps.Managed) { $evidence += "Windows LAPS password is shorter than 12 characters ($($laps.Summary))" }
+            elseif ($laps.Reason -ne 'No Windows LAPS policy') { $evidence += $laps.Reason }
+            $unmanaged = @($enabled | Where-Object { -not $lapsAccount -or "$($_.SID)" -ne "$($lapsAccount.SID)" })
+            if ($lapsAccount) { $evidence += "Windows LAPS manages $($lapsAccount.Name): $($laps.Summary)" }
+            if ($lapsAccount -and $unmanaged.Count -eq 0) {
+                return New-CEResult -Status 'Pass' -Expected "Minimum length >= $min, or no local account with a chosen password" `
+                    -Actual "The only enabled local account, $($lapsAccount.Name), is managed by Windows LAPS ($($laps.Summary))." `
+                    -Evidence $evidence -Recommendation "If you add a local account that LAPS doesn't manage, set the local minimum password length to $min. $note"
+            }
+        }
+        catch { $evidence += "Local accounts could not be listed: $($_.Exception.Message)" }
+
         $status = if ($len -ge 8) { 'Warn' } else { 'Fail' }
         $extra = if ($len -ge 8) { ' 8-11 characters is only acceptable if common passwords are automatically blocked, which local Windows policy does not do.' } else { '' }
-        return New-CEResult -Status $status -Expected "Minimum length >= $min" -Actual "Local minimum password length: $len.$extra" `
+        $applies = if ($unmanaged -and $unmanaged.Count -gt 0) { " It applies to: $((@($unmanaged | ForEach-Object { $_.Name })) -join ', ')." } else { '' }
+        return New-CEResult -Status $status -Expected "Minimum length >= $min" -Actual "Local minimum password length: $len.$extra$applies" -Evidence $evidence `
             -Recommendation "Set the local minimum password length to $min. Existing passwords are not re-checked until they are next changed. $note" `
             -Remediation (New-CERemediationRef -Id 'PasswordPolicy-Set' -Parameters @{ MinLength = $min })
     }

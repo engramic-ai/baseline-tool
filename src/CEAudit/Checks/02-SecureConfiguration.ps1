@@ -165,12 +165,30 @@ Register-CECheck -Id 'SC-08' -Category 'SecureConfiguration' -Severity 'High' `
     -Test {
         param($ctx)
         $min = [int](Get-CEConfig).thresholds.minDeviceUnlockPinLength
-        $value = Get-CERegistryValue -Path 'HKLM:\SOFTWARE\Policies\Microsoft\PassportForWork\PINComplexity' -Name 'MinimumPINLength'
-        if ($null -ne $value -and [int]$value -ge $min) {
-            return New-CEResult -Status 'Pass' -Expected "Windows Hello PIN minimum length >= $min" -Actual "Minimum PIN length policy: $value"
+        $policies = Get-CEHelloPinPolicy
+        $policies = @($policies)
+        $evidence = @($policies | ForEach-Object { "$($_.Source): MinimumPINLength=$($_.Value)" })
+        $expected = "Windows Hello PIN minimum length >= $min"
+        if ($policies.Count -eq 0) {
+            return New-CEResult -Status 'Fail' -Expected $expected -Actual 'Not configured (Windows default allows a 4-digit PIN)' `
+                -Recommendation "Set the Windows Hello PIN minimum length to $min, then have users change any shorter PIN (Settings > Accounts > Sign-in options)." `
+                -Remediation (New-CERemediationRef -Id 'HelloPin-MinLength' -Parameters @{ Length = $min })
         }
-        $actual = if ($null -eq $value) { 'Not configured (Windows default allows a 4-digit PIN)' } else { "Minimum PIN length policy: $value" }
-        return New-CEResult -Status 'Fail' -Expected "Windows Hello PIN minimum length >= $min" -Actual $actual `
+        # Every policy that sets a length must reach the minimum: Group Policy, Intune device-wide,
+        # and Intune per user (one key per Entra user the policy targets).
+        $short = @($policies | Where-Object { [int]$_.Value -lt $min })
+        if ($short.Count -eq 0) {
+            $lengths = @($policies | ForEach-Object { [int]$_.Value } | Sort-Object -Unique)
+            return New-CEResult -Status 'Pass' -Expected $expected -Evidence $evidence `
+                -Actual "Minimum PIN length policy: $($lengths -join ', ') ($((@($policies | ForEach-Object { $_.Source } | Select-Object -Unique)) -join '; '))"
+        }
+        $managed = @($short | Where-Object { $_.Source -like 'Intune*' })
+        $actual = "Minimum PIN length policy below ${min}: $((@($short | ForEach-Object { "$($_.Value) ($($_.Source))" })) -join '; ')"
+        if ($managed.Count -gt 0) {
+            return New-CEResult -Status 'Fail' -Expected $expected -Actual $actual -Evidence $evidence `
+                -Recommendation "In Intune, set the Windows Hello for Business minimum PIN length to $min or more (Account protection or Identity protection policy), then have users change any shorter PIN."
+        }
+        return New-CEResult -Status 'Fail' -Expected $expected -Actual $actual -Evidence $evidence `
             -Recommendation "Set the Windows Hello PIN minimum length to $min, then have users change any shorter PIN (Settings > Accounts > Sign-in options)." `
             -Remediation (New-CERemediationRef -Id 'HelloPin-MinLength' -Parameters @{ Length = $min })
     }

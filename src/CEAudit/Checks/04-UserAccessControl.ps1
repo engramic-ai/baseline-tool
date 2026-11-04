@@ -171,7 +171,7 @@ Register-CECheck -Id 'UA-04' -Category 'UserAccessControl' -Severity 'High' `
         $extra = if ($len -ge 8) { ' 8-11 characters is only acceptable if common passwords are automatically blocked. Windows does not do that for local accounts: blocking simple passwords only stops repeats and sequences.' } else { '' }
         $applies = if ($unmanaged -and $unmanaged.Count -gt 0) { " It applies to: $((@($unmanaged | ForEach-Object { $_.Name })) -join ', ')." } else { '' }
         return New-CEResult -Status $status -Expected "Minimum length >= $min" -Actual "${source}: $len.$extra$applies" -Evidence $evidence `
-            -Recommendation "Set the local minimum password length to $min$(if ($source -ne 'Local minimum password length') { ', in the local policy or the Intune DeviceLock or compliance policy' }). Existing passwords are not re-checked until they are next changed. $note" `
+            -Recommendation "Set the local minimum password length to $min$(if ($source -ne 'Local minimum password length') { ' in the Intune policy that sets it, usually a compliance policy. If a configuration policy sets it too, keep the two the same, or Intune reports a conflict' }). Existing passwords are not re-checked until they are next changed. $note" `
             -Remediation (New-CERemediationRef -Id 'PasswordPolicy-Set' -Parameters @{ MinLength = $min })
     }
 

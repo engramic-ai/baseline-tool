@@ -8978,7 +8978,7 @@ Describe 'Policies delivered by Intune (SC-08, SU-02, UA-04, MP-09)' {
             $f.Status | Should -Be 'Warn'
             $f.Actual | Should -Match 'set by Intune DeviceLock\): 8'
             $f.Actual | Should -Match 'repeats and sequences'
-            $f.Recommendation | Should -Match 'Intune DeviceLock or compliance policy'
+            $f.Recommendation | Should -Match 'usually a compliance policy'
         }
 
         It 'passes when Intune DeviceLock enforces 12 or more' {

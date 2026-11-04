@@ -20,7 +20,7 @@
 .PARAMETER Version
     Product version, normally the module version.
 .EXAMPLE
-    .\installer\Build-Msi.ps1 -PayloadPath .\build\release\payload -Version 0.3.2
+    .\installer\Build-Msi.ps1 -PayloadPath .\build\release\payload -Version 0.3.3
 #>
 [CmdletBinding()]
 param(

@@ -9131,6 +9131,7 @@ Describe 'Per-user settings when elevated with a separate admin account' {
         $f = @(Invoke-CEAuditCore -Id 'MP-08')
         $f.Count | Should -Be 3
         @($f | Where-Object Status -ne 'Pass') | Should -BeNullOrEmpty
+        $f[0].Evidence | Should -Contain "Read from the signed-in user's settings (AzureAD\SamUser), not TESTPC\itadmin's"
     }
 
     It 'reports MP-08 as needing a manual check when the signed-in user''s hive is not found' {
@@ -9138,6 +9139,8 @@ Describe 'Per-user settings when elevated with a separate admin account' {
         $f = @(Invoke-CEAuditCore -Id 'MP-08')[0]
         $f.Status | Should -Be 'Manual'
         $f.Actual | Should -Match 'registry hive was not found'
+        $f.Recommendation | Should -Match 'for users, not the device'
+        $f.Recommendation | Should -Match 'without elevation, as AzureAD\\SamUser'
     }
 }
 

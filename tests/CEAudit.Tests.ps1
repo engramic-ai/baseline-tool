@@ -9162,3 +9162,96 @@ Describe 'Resolving the signed-in user (Get-CEOtherConsoleUserSid)' {
         $r[2] | Should -BeNullOrEmpty
     }
 }
+
+Describe 'Unique finding IDs (FW-03 rules that share a name)' {
+    BeforeEach {
+        Set-TestDevice -Kind Insecure
+        $script:rules = @(
+            [pscustomobject]@{ Name = '{AAAA-1111}'; DisplayName = 'Agent_monitor'; DisplayGroup = $null; Profile = 'Any' },
+            [pscustomobject]@{ Name = '{BBBB-2222}'; DisplayName = 'Agent_monitor'; DisplayGroup = $null; Profile = 'Any' },
+            [pscustomobject]@{ Name = '{CCCC-3333}'; DisplayName = 'Backup client'; DisplayGroup = $null; Profile = 'Public' })
+        Mock -ModuleName CEAudit Get-NetFirewallRule { $script:rules }
+    }
+
+    It 'numbers rules with the same display name and names each one' {
+        $warn = @(Invoke-CEAuditCore -Id 'FW-03' | Where-Object Status -eq 'Warn')
+        ($warn | ForEach-Object FindingId) | Should -Be @('FW-03:Agent-monitor-1', 'FW-03:Agent-monitor-2', 'FW-03:Backup-client')
+        $warn[0].Actual | Should -Match 'rule 1 of 2, name \{AAAA-1111\}'
+        $warn[1].Actual | Should -Match 'rule 2 of 2, name \{BBBB-2222\}'
+        $warn[2].Actual | Should -Not -Match 'rule \d of'
+        ($warn | ForEach-Object { $_.Remediation.Parameters.RuleName }) | Should -Be @('{AAAA-1111}', '{BBBB-2222}', '{CCCC-3333}')
+    }
+
+    It 'keeps IDs unique when long subjects only differ after the 40 characters a slug keeps' {
+        $long = 'Contoso Remote Management Service Endpoint Listener'
+        $script:rules = @(
+            [pscustomobject]@{ Name = '{A}'; DisplayName = "$long TCP"; DisplayGroup = $null; Profile = 'Any' },
+            [pscustomobject]@{ Name = '{B}'; DisplayName = "$long UDP"; DisplayGroup = $null; Profile = 'Any' })
+        $ids = @(Invoke-CEAuditCore -Id 'FW-03' | ForEach-Object FindingId)
+        @($ids | Sort-Object -Unique).Count | Should -Be $ids.Count
+        $ids | Should -Contain "$($ids[1] -replace '-2$', '')"
+        $ids[-1] | Should -Match '-2$'
+    }
+
+    It 'gives every finding of a whole audit a unique ID' {
+        $ids = @(Invoke-CEAuditCore | ForEach-Object FindingId)
+        @($ids | Group-Object | Where-Object Count -gt 1 | ForEach-Object Name) | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'Password expiry with Windows LAPS and Intune (UA-05)' {
+    BeforeEach {
+        # Insecure device: net accounts says passwords expire every 42 days.
+        Set-TestDevice -Kind Insecure -ContextOverride @{ EntraJoined = $true; MdmEnrolled = $true }
+        $global:CETestUsers = @(
+            [pscustomobject]@{ Name = 'Administrator'; SID = 'S-1-5-21-1-2-3-500'; Enabled = $false; PasswordRequired = $true; LastLogon = $null },
+            [pscustomobject]@{ Name = 'itadmin'; SID = 'S-1-5-21-1-2-3-1002'; Enabled = $true; PasswordRequired = $true; LastLogon = (Get-Date).AddDays(-1) })
+        $laps = 'HKLM:\SOFTWARE\Microsoft\Policies\LAPS'
+        $state = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\LAPS\State'
+        $global:CETestReg["$laps|BackupDirectory"] = 1
+        $global:CETestReg["$laps|PasswordComplexity"] = 7
+        $global:CETestReg["$laps|PassphraseLength"] = 6
+        $global:CETestReg["$state|LastManagedAccountRid"] = 1002
+        $global:CETestReg["$state|LastPasswordUpdateTime"] = [int64](Get-Date).AddDays(-3).ToFileTimeUtc()
+        $script:lock = 'HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\DeviceLock'
+    }
+
+    It 'passes when the only local account is LAPS-managed, even with local and Intune expiry' {
+        $global:CETestReg["$script:lock|DevicePasswordEnabled"] = 0
+        $global:CETestReg["$script:lock|DevicePasswordExpiration"] = 182
+        $f = @(Invoke-CEAuditCore -Id 'UA-05')[0]
+        $f.Status | Should -Be 'Pass'
+        $f.Actual | Should -Match 'every 42 days and Intune DeviceLock'
+        $f.Actual | Should -Match 'itadmin, is managed by Windows LAPS'
+        $f.Evidence | Should -Contain 'Intune DeviceLock DevicePasswordExpiration: 182 days'
+    }
+
+    It 'warns about an Intune expiry for other local accounts, pointing at Intune with no local fix' {
+        Set-TestDevice -Kind Secure -ContextOverride @{ EntraJoined = $true; MdmEnrolled = $true }
+        $global:CETestReg["$script:lock|DevicePasswordEnabled"] = 0
+        $global:CETestReg["$script:lock|DevicePasswordExpiration"] = 182
+        $f = @(Invoke-CEAuditCore -Id 'UA-05')[0]
+        $f.Status | Should -Be 'Warn'
+        $f.Actual | Should -Be 'Passwords expire under Intune DeviceLock (usually a compliance policy), every 182 days. It applies to: paul.'
+        $f.Recommendation | Should -Match 'password expiration to 0'
+        $f.Remediation | Should -BeNullOrEmpty
+    }
+
+    It 'warns about the local expiry with the local fix, naming the accounts' {
+        $global:CETestUsers += [pscustomobject]@{ Name = 'kiosk'; SID = 'S-1-5-21-1-2-3-1003'; Enabled = $true; PasswordRequired = $true; LastLogon = $null }
+        $f = @(Invoke-CEAuditCore -Id 'UA-05')[0]
+        $f.Status | Should -Be 'Warn'
+        $f.Actual | Should -Match 'the local policy, every 42 days\. It applies to: kiosk\.'
+        $f.Remediation.Id | Should -Be 'PasswordPolicy-Set'
+    }
+
+    It 'ignores the Intune expiry when it is 0 or the DeviceLock policy is off' {
+        Set-TestDevice -Kind Secure
+        $global:CETestReg["$script:lock|DevicePasswordEnabled"] = 0
+        $global:CETestReg["$script:lock|DevicePasswordExpiration"] = 0
+        (@(Invoke-CEAuditCore -Id 'UA-05')[0]).Status | Should -Be 'Pass'
+        $global:CETestReg["$script:lock|DevicePasswordEnabled"] = 1
+        $global:CETestReg["$script:lock|DevicePasswordExpiration"] = 90
+        (@(Invoke-CEAuditCore -Id 'UA-05')[0]).Status | Should -Be 'Pass'
+    }
+}

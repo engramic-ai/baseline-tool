@@ -84,10 +84,23 @@ Register-CECheck -Id 'FW-03' -Category 'Firewalls' -Severity 'Medium' `
             -Actual "$($rules.Count) custom inbound allow rule(s) enabled" `
             -Recommendation 'Review each rule. Record the business justification and approver for the ones you keep; disable the rest.' `
             -Evidence $evidence
-        foreach ($r in ($risky | Select-Object -First 25)) {
-            $results += New-CEResult -Status 'Warn' -Subject $r.DisplayName `
+        # Display names need not be unique (an app often gets one rule for TCP and one for UDP), so
+        # number the repeats and name each rule by its unique name, which is what the fix disables.
+        $shown = @($risky | Select-Object -First 25)
+        $nameCount = @{}
+        foreach ($r in $shown) { $nameCount["$($r.DisplayName)"] = 1 + [int]$nameCount["$($r.DisplayName)"] }
+        $nameSeen = @{}
+        foreach ($r in $shown) {
+            $subject = "$($r.DisplayName)"
+            $which = ''
+            if ($nameCount[$subject] -gt 1) {
+                $nameSeen[$subject] = 1 + [int]$nameSeen[$subject]
+                $which = " (rule $($nameSeen[$subject]) of $($nameCount[$subject]), name $($r.Name))"
+                $subject = "$subject $($nameSeen[$subject])"
+            }
+            $results += New-CEResult -Status 'Warn' -Subject $subject `
                 -Expected 'No inbound allow rules open to any address on public networks' `
-                -Actual "Rule '$($r.DisplayName)' allows inbound from any address on Public networks" `
+                -Actual "Rule '$($r.DisplayName)'$which allows inbound from any address on Public networks" `
                 -Recommendation 'Disable the rule, or restrict it to the Private/Domain profile and specific remote addresses.' `
                 -Remediation (New-CERemediationRef -Id 'FW-DisableRule' -Parameters @{ RuleName = [string]$r.Name; DisplayName = [string]$r.DisplayName })
         }

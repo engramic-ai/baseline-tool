@@ -140,8 +140,10 @@ Upgrades keep the data folder in place, so your config overrides, installed pack
 | Install behaviour | System |
 | Return codes | `0` success, `1` failed |
 | Requirements | x64, Windows 10 22H2 or later (the floor Intune offers; it admits Windows 11 and Server, and Windows 10 itself reports as out of support) |
-| Detection | Custom script: `upload\Detect-CEChecker.ps1`. Run as 32-bit on 64-bit clients: **No** |
+| Detection | Custom script: `upload\Detect-CEChecker.ps1`. Run as 32-bit on 64-bit clients: **No**. Enforce signature check: **No** (below) |
 | Assignment | **Required** for your device group |
+
+**Enforce signature check is No** for this detection script and every script below, even in a signed release. Yes runs the script under AllSigned, which trusts only the exact certificate in a device's Trusted Publishers store, and Artifact Signing, which signs releases, issues a new certificate every day. Keep it at No until Yes has been tested with certificates that change daily.
 
 The installer:
 
@@ -162,7 +164,7 @@ To upgrade, bump `ModuleVersion` in `src/CEAudit/CEAudit.psd1` and `$required` i
 
 - Script: `upload\Discover-CECompliance.ps1`
 - Run this script using the logged on credentials: **No**
-- Enforce script signature check: **No** (or sign the script and choose Yes)
+- Enforce script signature check: **No**, even in a signed release ([why](#3-create-the-win32-app))
 - Run script in 64 bit PowerShell Host: **Yes**
 
 **Devices > Compliance > Create policy > Windows 10 and later > Custom Compliance: Require**, then select the script and upload a rules file:
@@ -228,13 +230,14 @@ To change the thresholds, edit the operands in your copy of the rules file, as f
 | Detection script | `upload\Detect-CECompliance.ps1` |
 | Remediation script | `upload\Remediate-CECompliance.ps1` |
 | Run using logged-on credentials | No |
+| Enforce script signature check | No |
 | Run in 64-bit PowerShell | Yes |
 | Schedule | Daily |
 
 The **Pre-remediation detection output** column then gives you one line per device across the tenant:
 
 ```
-FAIL | autofail=2 fail=7 review=4 | age=5h | TC2=Likely fail TC3=Likely pass TC4=Check TC5=Likely fail | v0.3.2 | SU-03:Overdue,SU-05:7zip-7zip,UA-01
+FAIL | autofail=2 fail=7 review=4 | age=5h | TC2=Likely fail TC3=Likely pass TC4=Check TC5=Likely fail | v0.3.3 | SU-03:Overdue,SU-05:7zip-7zip,UA-01
 ```
 
 A device also counts as not ready, with `LAST_RUN_ERROR` at the start of its line, when an audit failed after the last `status.json` was written, so the remediation script runs a fresh audit.

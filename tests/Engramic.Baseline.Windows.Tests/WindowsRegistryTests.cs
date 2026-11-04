@@ -7,6 +7,7 @@ public sealed class WindowsRegistryTests
 {
     private const string CurrentVersion = @"SOFTWARE\Microsoft\Windows NT\CurrentVersion";
     private const string WindowsCurrentVersion = @"SOFTWARE\Microsoft\Windows\CurrentVersion";
+    private const string Uninstall = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall";
 
     private readonly WindowsRegistry _registry = new();
 
@@ -100,5 +101,61 @@ public sealed class WindowsRegistryTests
     public void Refuses_an_empty_key_path()
     {
         Assert.Throws<ArgumentException>(() => _registry.GetValue(RegistryHive.LocalMachine, RegistryView.Registry64, string.Empty, "Value"));
+    }
+
+    [Fact]
+    public void Lists_the_subkeys_of_a_key()
+    {
+        var names = _registry.GetSubKeyNames(RegistryHive.LocalMachine, RegistryView.Registry64, @"SOFTWARE\Microsoft\Windows NT");
+
+        Assert.Contains("CurrentVersion", names!, StringComparer.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Lists_the_installed_programs_of_each_view()
+    {
+        // Every Windows has the key in both views; a program for the other bitness is listed only in its own.
+        var native = _registry.GetSubKeyNames(RegistryHive.LocalMachine, RegistryView.Registry64, Uninstall);
+        var wow = _registry.GetSubKeyNames(RegistryHive.LocalMachine, RegistryView.Registry32, Uninstall);
+
+        Assert.NotNull(native);
+        Assert.NotNull(wow);
+    }
+
+    [Fact]
+    public void Lists_the_loaded_user_hives_including_this_account()
+    {
+        using var identity = System.Security.Principal.WindowsIdentity.GetCurrent();
+
+        var hives = _registry.GetSubKeyNames(RegistryHive.Users, RegistryView.Registry64, string.Empty);
+
+        Assert.Contains(".DEFAULT", hives!, StringComparer.OrdinalIgnoreCase);
+        Assert.Contains(identity.User!.Value, hives!, StringComparer.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Lists_and_reads_a_key_in_this_accounts_hive()
+    {
+        using var identity = System.Security.Principal.WindowsIdentity.GetCurrent();
+        var key = identity.User!.Value + @"\Control Panel\International";
+
+        // Every loaded hive has its regional settings, SYSTEM's included.
+        var names = _registry.GetSubKeyNames(RegistryHive.Users, RegistryView.Registry64, identity.User!.Value + @"\Control Panel");
+        var locale = _registry.GetValue(RegistryHive.Users, RegistryView.Registry64, key, "LocaleName");
+
+        Assert.Contains("International", names!, StringComparer.OrdinalIgnoreCase);
+        Assert.Equal(RegistryValueKind.Text, locale!.Kind);
+    }
+
+    [Fact]
+    public void A_missing_key_lists_nothing()
+    {
+        Assert.Null(_registry.GetSubKeyNames(RegistryHive.LocalMachine, RegistryView.Registry64, @"SOFTWARE\Engramic Baseline Test\No Such Key"));
+    }
+
+    [Fact]
+    public void A_key_this_account_cannot_list_throws_access_denied()
+    {
+        Assert.Throws<UnauthorizedAccessException>(() => _registry.GetSubKeyNames(RegistryHive.LocalMachine, RegistryView.Registry64, @"SAM\SAM"));
     }
 }

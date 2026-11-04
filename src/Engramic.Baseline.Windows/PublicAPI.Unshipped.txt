@@ -61,7 +61,11 @@ Engramic.Baseline.Windows.WindowsEventLog
 Engramic.Baseline.Windows.WindowsEventLog.Source.get -> string!
 Engramic.Baseline.Windows.WindowsEventLog.WindowsEventLog(string! source) -> void
 Engramic.Baseline.Windows.WindowsEventLog.Write(int eventId, Engramic.Baseline.Platform.EventLogLevel level, string! message) -> bool
+Engramic.Baseline.Windows.WindowsProcessList
+Engramic.Baseline.Windows.WindowsProcessList.Read() -> System.Collections.Generic.IReadOnlyList<Engramic.Baseline.Platform.RunningProcess!>!
+Engramic.Baseline.Windows.WindowsProcessList.WindowsProcessList() -> void
 Engramic.Baseline.Windows.WindowsRegistry
+Engramic.Baseline.Windows.WindowsRegistry.GetSubKeyNames(Engramic.Baseline.Platform.RegistryHive hive, Engramic.Baseline.Platform.RegistryView view, string! keyPath) -> System.Collections.Generic.IReadOnlyList<string!>?
 Engramic.Baseline.Windows.WindowsRegistry.GetValue(Engramic.Baseline.Platform.RegistryHive hive, Engramic.Baseline.Platform.RegistryView view, string! keyPath, string! valueName) -> Engramic.Baseline.Platform.RegistryValue?
 Engramic.Baseline.Windows.WindowsRegistry.WindowsRegistry() -> void
 Engramic.Baseline.Windows.WinHttpProxy

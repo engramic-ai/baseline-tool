@@ -157,6 +157,13 @@ BeforeAll {
             return $Default
         }
         Mock -ModuleName CEAudit Test-CEPendingReboot { -not $global:CETestSecure }
+        $global:CETestSubKeys = @{}
+        $global:CETestMdmAppLocker = @()
+        Mock -ModuleName CEAudit Get-CEMdmAppLockerPolicy { , @($global:CETestMdmAppLocker) }
+        Mock -ModuleName CEAudit Get-CERegistrySubKeyName {
+            if ($global:CETestSubKeys.ContainsKey($Path)) { return , @($global:CETestSubKeys[$Path]) }
+            return , @()
+        }
         $global:CETestSecure = $secure
 
         $fwEnabled = if ($secure) { 'True' } else { 'False' }
@@ -8788,5 +8795,291 @@ namespace CETest {
         }
         $text | Should -Not -Match 'a standard user''s links could otherwise steer'
         $text | Should -Not -Match 'must be a plain folder, not a junction or symbolic link'
+    }
+}
+
+Describe 'Policies delivered by Intune (SC-08, SU-02, UA-04, MP-09)' {
+    Context 'SU-02 automatic updates' {
+        BeforeEach {
+            Set-TestDevice -Kind Secure -ContextOverride @{ EntraJoined = $true; MdmEnrolled = $true; CentrallyManaged = $true }
+            $script:mdmUpdate = 'HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\Update'
+        }
+
+        It 'names the conflict when Intune asks for automatic updates and NoAutoUpdate=1 turns them off' {
+            $global:CETestReg["$script:mdmUpdate|AllowAutoUpdate"] = 1
+            $global:CETestReg['HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU|NoAutoUpdate'] = 1
+            $f = @(Invoke-CEAuditCore -Id 'SU-02') | Where-Object Subject -eq 'Automatic updates'
+            $f.Status | Should -Be 'Fail'
+            $f.Actual | Should -Match 'Conflicting policies'
+            $f.Actual | Should -Match 'AllowAutoUpdate=1'
+            $f.Recommendation | Should -Match 'not domain-joined'
+            $f.Evidence | Should -Contain 'Intune AllowAutoUpdate=1'
+        }
+
+        It 'passes when only Intune sets automatic updates' {
+            $global:CETestReg["$script:mdmUpdate|AllowAutoUpdate"] = 1
+            $f = @(Invoke-CEAuditCore -Id 'SU-02') | Where-Object Subject -eq 'Automatic updates'
+            $f.Status | Should -Be 'Pass'
+        }
+
+        It 'fails when Intune turns automatic updates off or to notify only' {
+            foreach ($v in 0, 5) {
+                $global:CETestReg["$script:mdmUpdate|AllowAutoUpdate"] = $v
+                $f = @(Invoke-CEAuditCore -Id 'SU-02') | Where-Object Subject -eq 'Automatic updates'
+                $f.Status | Should -Be 'Fail' -Because "AllowAutoUpdate=$v"
+                $f.Actual | Should -Match "AllowAutoUpdate=$v"
+            }
+        }
+
+        It 'warns when deferral, deadline and grace period reach the 14-day window' {
+            $global:CETestReg["$script:mdmUpdate|AllowAutoUpdate"] = 1
+            $global:CETestReg["$script:mdmUpdate|DeferQualityUpdatesPeriodInDays"] = 0
+            $global:CETestReg["$script:mdmUpdate|ConfigureDeadlineForQualityUpdates"] = 7
+            $global:CETestReg["$script:mdmUpdate|ConfigureDeadlineGracePeriod"] = 7
+            $f = @(Invoke-CEAuditCore -Id 'SU-02') | Where-Object Subject -eq 'Deadline'
+            $f.Status | Should -Be 'Warn'
+            $f.Actual | Should -Match 'wait 14 days'
+        }
+
+        It 'stays quiet when the deadline leaves room inside the window' {
+            $global:CETestReg["$script:mdmUpdate|ConfigureDeadlineForQualityUpdates"] = 7
+            $global:CETestReg["$script:mdmUpdate|ConfigureDeadlineGracePeriod"] = 2
+            @(Invoke-CEAuditCore -Id 'SU-02') | Where-Object Subject -eq 'Deadline' | Should -BeNullOrEmpty
+        }
+
+        It 'counts an Intune quality deferral in the deferral and deadline findings' {
+            $global:CETestReg["$script:mdmUpdate|DeferQualityUpdatesPeriodInDays"] = 5
+            $global:CETestReg["$script:mdmUpdate|ConfigureDeadlineForQualityUpdates"] = 7
+            $global:CETestReg["$script:mdmUpdate|ConfigureDeadlineGracePeriod"] = 2
+            $all = @(Invoke-CEAuditCore -Id 'SU-02')
+            ($all | Where-Object Subject -eq 'Deferral').Status | Should -Be 'Warn'
+            ($all | Where-Object Subject -eq 'Deadline').Actual | Should -Match 'wait 14 days'
+        }
+    }
+
+    Context 'SC-08 Windows Hello PIN length' {
+        BeforeEach {
+            Set-TestDevice -Kind Insecure -ContextOverride @{ EntraJoined = $true; MdmEnrolled = $true }
+            $script:pfw = 'HKLM:\SOFTWARE\Microsoft\Policies\PassportForWork'
+            $script:tenant = '11111111-2222-3333-4444-555555555555'
+            $script:sid = 'S-1-12-1-1000000001-2000000002-3000000003-400000004'
+            $global:CETestSubKeys[$script:pfw] = @('Biometrics', $script:tenant)
+            $global:CETestSubKeys["$script:pfw\$script:tenant"] = @($script:sid)
+        }
+
+        It 'passes on an Intune Windows Hello for Business policy that targets users' {
+            $global:CETestReg["$script:pfw\$script:tenant\$script:sid\Policies\PINComplexity|MinimumPINLength"] = 8
+            $f = @(Invoke-CEAuditCore -Id 'SC-08')[0]
+            $f.Status | Should -Be 'Pass'
+            $f.Actual | Should -Match 'Minimum PIN length policy: 8'
+            $f.Actual | Should -Match 'Intune, user'
+        }
+
+        It 'passes on a device-wide Intune policy' {
+            $global:CETestReg["$script:pfw\$script:tenant\Policies\PINComplexity|MinimumPINLength"] = 6
+            (@(Invoke-CEAuditCore -Id 'SC-08')[0]).Status | Should -Be 'Pass'
+        }
+
+        It 'fails on a short Intune policy and points to Intune, not the local fix' {
+            $global:CETestReg["$script:pfw\$script:tenant\Policies\PINComplexity|MinimumPINLength"] = 4
+            $f = @(Invoke-CEAuditCore -Id 'SC-08')[0]
+            $f.Status | Should -Be 'Fail'
+            $f.Actual | Should -Match '4 \(Intune, all users\)'
+            $f.Recommendation | Should -Match 'In Intune'
+            $f.Remediation | Should -BeNullOrEmpty
+        }
+
+        It 'fails when any one policy is short, even if another is long enough' {
+            $global:CETestReg['HKLM:\SOFTWARE\Policies\Microsoft\PassportForWork\PINComplexity|MinimumPINLength'] = 6
+            $global:CETestReg["$script:pfw\$script:tenant\$script:sid\Policies\PINComplexity|MinimumPINLength"] = 4
+            $f = @(Invoke-CEAuditCore -Id 'SC-08')[0]
+            $f.Status | Should -Be 'Fail'
+            $f.Actual | Should -Match 'Intune, user'
+            $f.Actual | Should -Not -Match 'Group Policy'
+        }
+
+        It 'still fails with the local fix when nothing sets a length' {
+            $f = @(Invoke-CEAuditCore -Id 'SC-08')[0]
+            $f.Status | Should -Be 'Fail'
+            $f.Actual | Should -Match 'Not configured'
+            $f.Remediation.Id | Should -Be 'HelloPin-MinLength'
+        }
+    }
+
+    Context 'MP-09 AppLocker rules from Intune' {
+        BeforeAll {
+            $script:exeXml = '<RuleCollection EnforcementMode="Enabled" Type="Exe">' + "`r`n" +
+                '<!-- base policy -->' + "`r`n" +
+                '<FilePathRule Action="Allow" UserOrGroupSid="S-1-1-0" Name="Program Files" Id="1"><Conditions><FilePathCondition Path="%PROGRAMFILES%\*" /></Conditions></FilePathRule>' +
+                '<FilePublisherRule Action="Allow" UserOrGroupSid="S-1-1-0" Name="OneDrive" Id="2"><Conditions><FilePublisherCondition BinaryName="*" ProductName="MICROSOFT ONEDRIVE" PublisherName="O=MICROSOFT CORPORATION"><BinaryVersionRange LowSection="*" HighSection="*" /></FilePublisherCondition></Conditions></FilePublisherRule>' +
+                '</RuleCollection>'
+        }
+        BeforeEach {
+            Set-TestDevice -Kind Insecure -ContextOverride @{ EntraJoined = $true; MdmEnrolled = $true }
+        }
+
+        It 'parses a UTF-16 rule collection without a byte order mark, as Intune writes it' {
+            $c = InModuleScope CEAudit -Parameters @{ b = [Text.Encoding]::Unicode.GetBytes($script:exeXml) } { param($b) ConvertFrom-CEAppLockerPolicyFile -Bytes $b }
+            $c.Type | Should -Be 'Exe'
+            $c.EnforcementMode | Should -Be 'Enabled'
+            $c.RuleCount | Should -Be 2
+        }
+
+        It 'parses UTF-8 and UTF-16 with a byte order mark' {
+            $audit = $script:exeXml -replace 'Enabled', 'AuditOnly'
+            $utf8 = [byte[]](@(0xEF, 0xBB, 0xBF) + [Text.Encoding]::UTF8.GetBytes($audit))
+            $utf16 = [byte[]](@(0xFF, 0xFE) + [Text.Encoding]::Unicode.GetBytes($script:exeXml))
+            (InModuleScope CEAudit -Parameters @{ b = $utf8 } { param($b) ConvertFrom-CEAppLockerPolicyFile -Bytes $b }).EnforcementMode | Should -Be 'AuditOnly'
+            (InModuleScope CEAudit -Parameters @{ b = $utf16 } { param($b) ConvertFrom-CEAppLockerPolicyFile -Bytes $b }).Type | Should -Be 'Exe'
+        }
+
+        It 'returns nothing for a file that is not a rule collection, or that declares a DTD' {
+            foreach ($t in @('not xml', '<AppLockerPolicy Version="1" />', '<!DOCTYPE r [<!ENTITY e "x">]><RuleCollection Type="Exe" EnforcementMode="Enabled" />')) {
+                InModuleScope CEAudit -Parameters @{ b = [Text.Encoding]::UTF8.GetBytes($t) } { param($b) ConvertFrom-CEAppLockerPolicyFile -Bytes $b } | Should -BeNullOrEmpty -Because $t
+            }
+        }
+
+        It 'passes when Intune enforces AppLocker executable rules' {
+            $global:CETestMdmAppLocker = @(
+                [pscustomobject]@{ Type = 'Exe'; EnforcementMode = 'Enabled'; RuleCount = 16 },
+                [pscustomobject]@{ Type = 'Msi'; EnforcementMode = 'Enabled'; RuleCount = 3 })
+            $f = @(Invoke-CEAuditCore -Id 'MP-09')[0]
+            $f.Status | Should -Be 'Pass'
+            $f.Actual | Should -Be 'AppLocker'
+            $f.Evidence | Should -Contain 'Intune AppLocker Exe: Enabled, 16 rules'
+            $f.Evidence | Should -Contain 'AppIDSvc Status=Running'
+        }
+
+        It 'warns, naming audit mode, when the Intune executable rules only audit' {
+            $global:CETestMdmAppLocker = @([pscustomobject]@{ Type = 'Exe'; EnforcementMode = 'AuditOnly'; RuleCount = 16 })
+            $f = @(Invoke-CEAuditCore -Id 'MP-09')[0]
+            $f.Status | Should -Be 'Warn'
+            $f.Actual | Should -Match 'audit-only'
+        }
+
+        It 'does not count enforced rules for other types only' {
+            $global:CETestMdmAppLocker = @([pscustomobject]@{ Type = 'Msi'; EnforcementMode = 'Enabled'; RuleCount = 3 })
+            $f = @(Invoke-CEAuditCore -Id 'MP-09')[0]
+            $f.Status | Should -Be 'Warn'
+            $f.Actual | Should -Be 'No enforced application control policy'
+        }
+
+        It 'warns when the Application Identity service is not running' {
+            $global:CETestMdmAppLocker = @([pscustomobject]@{ Type = 'Exe'; EnforcementMode = 'Enabled'; RuleCount = 16 })
+            Mock -ModuleName CEAudit Get-Service { [pscustomobject]@{ Name = $Name; StartType = 'Manual'; Status = 'Stopped' } }
+            $f = @(Invoke-CEAuditCore -Id 'MP-09')[0]
+            $f.Status | Should -Be 'Warn'
+            $f.Actual | Should -Match 'AppIDSvc'
+        }
+    }
+
+    Context 'UA-04 local password policy' {
+        BeforeEach {
+            # Local minimum length 0 (the insecure device's net accounts), one LAPS-managed admin.
+            Set-TestDevice -Kind Insecure -ContextOverride @{ EntraJoined = $true; MdmEnrolled = $true }
+            $global:CETestUsers = @(
+                [pscustomobject]@{ Name = 'Administrator'; SID = 'S-1-5-21-1-2-3-500'; Enabled = $false; PasswordRequired = $true; LastLogon = $null },
+                [pscustomobject]@{ Name = 'Guest'; SID = 'S-1-5-21-1-2-3-501'; Enabled = $false; PasswordRequired = $false; LastLogon = $null },
+                [pscustomobject]@{ Name = 'itadmin'; SID = 'S-1-5-21-1-2-3-1002'; Enabled = $true; PasswordRequired = $true; LastLogon = (Get-Date).AddDays(-1) }
+            )
+            $script:laps = 'HKLM:\SOFTWARE\Microsoft\Policies\LAPS'
+            $script:lapsState = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\LAPS\State'
+            $global:CETestReg["$script:laps|BackupDirectory"] = 1
+            $global:CETestReg["$script:laps|PasswordAgeDays"] = 30
+            $global:CETestReg["$script:laps|PasswordComplexity"] = 7
+            $global:CETestReg["$script:laps|PassphraseLength"] = 6
+            $global:CETestReg["$script:lapsState|LastManagedAccountRid"] = 1002
+            $global:CETestReg["$script:lapsState|LastPasswordUpdateTime"] = [int64](Get-Date).AddDays(-3).ToFileTimeUtc()
+            $global:CETestReg['HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\DeviceLock|MinDevicePasswordLength'] = 8
+        }
+
+        It 'passes when the only enabled local account is managed by Windows LAPS' {
+            $global:CETestReg['HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\DeviceLock|DevicePasswordEnabled'] = 0
+            $f = @(Invoke-CEAuditCore -Id 'UA-04')[0]
+            $f.Status | Should -Be 'Pass'
+            $f.Actual | Should -Match 'itadmin'
+            $f.Actual | Should -Match '6-word passphrase, rotated every 30 days'
+            ($f.Evidence -join ' ') | Should -Match 'MinDevicePasswordLength=8'
+        }
+
+        It 'reads a Group Policy LAPS policy when Intune sets none' {
+            foreach ($n in 'BackupDirectory', 'PasswordAgeDays', 'PasswordComplexity', 'PassphraseLength') { $global:CETestReg.Remove("$script:laps|$n") }
+            $gp = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\LAPS'
+            $global:CETestReg["$gp|BackupDirectory"] = 2
+            $global:CETestReg["$gp|PasswordLength"] = 16
+            $f = @(Invoke-CEAuditCore -Id 'UA-04')[0]
+            $f.Status | Should -Be 'Pass'
+            $f.Actual | Should -Match '16-character random password'
+        }
+
+        It 'fails and names the account when another enabled local account is not managed' {
+            $global:CETestUsers += [pscustomobject]@{ Name = 'kiosk'; SID = 'S-1-5-21-1-2-3-1003'; Enabled = $true; PasswordRequired = $true; LastLogon = $null }
+            $f = @(Invoke-CEAuditCore -Id 'UA-04')[0]
+            $f.Status | Should -Be 'Fail'
+            $f.Actual | Should -Match 'It applies to: kiosk\.'
+            $f.Actual | Should -Not -Match 'itadmin'
+        }
+
+        It 'does not count LAPS when passwords are not backed up' {
+            $global:CETestReg["$script:laps|BackupDirectory"] = 0
+            $f = @(Invoke-CEAuditCore -Id 'UA-04')[0]
+            $f.Status | Should -Be 'Fail'
+            ($f.Evidence -join ' ') | Should -Match 'BackupDirectory=0'
+        }
+
+        It 'does not count LAPS when rotation has stopped' {
+            $global:CETestReg["$script:lapsState|LastPasswordUpdateTime"] = [int64](Get-Date).AddDays(-60).ToFileTimeUtc()
+            $f = @(Invoke-CEAuditCore -Id 'UA-04')[0]
+            $f.Status | Should -Be 'Fail'
+            ($f.Evidence -join ' ') | Should -Match 'more than 30 days ago'
+        }
+
+        It 'does not count a LAPS password shorter than 12 characters' {
+            $global:CETestReg["$script:laps|PassphraseLength"] = 3
+            $f = @(Invoke-CEAuditCore -Id 'UA-04')[0]
+            $f.Status | Should -Be 'Fail'
+            ($f.Evidence -join ' ') | Should -Match 'shorter than 12'
+        }
+
+        It 'does not count LAPS when the managed RID is not an enabled local account' {
+            $global:CETestReg["$script:lapsState|LastManagedAccountRid"] = 500
+            $f = @(Invoke-CEAuditCore -Id 'UA-04')[0]
+            $f.Status | Should -Be 'Fail'
+            $f.Actual | Should -Match 'It applies to: itadmin\.'
+        }
+
+        It 'warns, not fails, when Intune DeviceLock enforces 8 on local accounts that LAPS does not manage' {
+            $global:CETestReg['HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\DeviceLock|DevicePasswordEnabled'] = 0
+            $global:CETestUsers += [pscustomobject]@{ Name = 'kiosk'; SID = 'S-1-5-21-1-2-3-1003'; Enabled = $true; PasswordRequired = $true; LastLogon = $null }
+            $f = @(Invoke-CEAuditCore -Id 'UA-04')[0]
+            $f.Status | Should -Be 'Warn'
+            $f.Actual | Should -Match 'set by Intune DeviceLock\): 8'
+            $f.Actual | Should -Match 'repeats and sequences'
+            $f.Recommendation | Should -Match 'usually a compliance policy'
+        }
+
+        It 'passes when Intune DeviceLock enforces 12 or more' {
+            $global:CETestReg['HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\DeviceLock|DevicePasswordEnabled'] = 0
+            $global:CETestUsers += [pscustomobject]@{ Name = 'kiosk'; SID = 'S-1-5-21-1-2-3-1003'; Enabled = $true; PasswordRequired = $true; LastLogon = $null }
+            $global:CETestReg['HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\DeviceLock|MinDevicePasswordLength'] = 14
+            $f = @(Invoke-CEAuditCore -Id 'UA-04')[0]
+            $f.Status | Should -Be 'Pass'
+            $f.Actual | Should -Match 'set by Intune DeviceLock\): 14'
+        }
+
+        It 'ignores the Intune minimum when the DeviceLock password policy is off' {
+            $global:CETestUsers += [pscustomobject]@{ Name = 'kiosk'; SID = 'S-1-5-21-1-2-3-1003'; Enabled = $true; PasswordRequired = $true; LastLogon = $null }
+            $global:CETestReg['HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\DeviceLock|DevicePasswordEnabled'] = 1
+            $f = @(Invoke-CEAuditCore -Id 'UA-04')[0]
+            $f.Status | Should -Be 'Fail'
+            $f.Actual | Should -Match '^Local minimum password length: 0'
+        }
+
+        It 'falls back to the local policy result when local accounts cannot be listed' {
+            Mock -ModuleName CEAudit Get-LocalUser { throw 'Access denied' }
+            $f = @(Invoke-CEAuditCore -Id 'UA-04')[0]
+            $f.Status | Should -Be 'Fail'
+            ($f.Evidence -join ' ') | Should -Match 'could not be listed'
+        }
     }
 }

@@ -547,16 +547,46 @@ function Get-CEUserRegistryRoot {
         Normally HKCU:. When running as SYSTEM (Intune, scheduled task) it maps to
         the signed-in user's loaded hive under HKEY_USERS, or $null if nobody is
         signed in.
+        When elevated under a different account from the signed-in user (a separate
+        admin account, as CE asks for admin work), HKCU is that admin's own hive, so it
+        maps to the signed-in user's hive too, or $null if that can't be found: the
+        admin's settings say nothing about the person using the device.
     #>
     [CmdletBinding()]
     param()
     $ctx = Get-CEDeviceContext
-    if (-not $ctx.IsSystem) { return 'HKCU:' }
-    $sid = $ctx.ConsoleUserSid
+    if (-not $ctx.IsSystem) {
+        if (-not ($ctx.IsElevated -and $ctx.ConsoleUser -and $ctx.ConsoleUser -ne $ctx.RunningAs)) { return 'HKCU:' }
+        $sid = Get-CEOtherConsoleUserSid -ConsoleUser $ctx.ConsoleUser
+        if ($sid -eq '') { return 'HKCU:' }   # the same account after all, under another name
+    }
+    else { $sid = $ctx.ConsoleUserSid }
     if (-not $sid) { return $null }
     $root = "Registry::HKEY_USERS\$sid"
     if (Test-Path -LiteralPath $root) { return $root }
     return $null
+}
+
+function Get-CEOtherConsoleUserSid {
+    <#
+        The signed-in user's SID when it differs from this process's account; '' when it is the same
+        account; $null when it can't be resolved. Cached per user name, since several checks ask.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$ConsoleUser)
+    # Strict mode throws on reading an unset variable, so look it up first.
+    if (-not (Get-Variable -Name 'CEConsoleSidCache' -Scope Script -ErrorAction SilentlyContinue)) { $script:CEConsoleSidCache = @{} }
+    if ($script:CEConsoleSidCache.ContainsKey($ConsoleUser)) { return $script:CEConsoleSidCache[$ConsoleUser] }
+    $sid = Get-CEConsoleUserSid $ConsoleUser
+    $result = $null
+    if ($sid) {
+        $self = $null
+        try { $self = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value }
+        catch { Write-Verbose "Could not read this process's SID: $($_.Exception.Message)" }
+        $result = if ($self -and $sid -eq $self) { '' } else { $sid }
+    }
+    $script:CEConsoleSidCache[$ConsoleUser] = $result
+    return $result
 }
 
 function ConvertTo-CEDate {

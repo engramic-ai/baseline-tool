@@ -158,6 +158,9 @@ BeforeAll {
         }
         Mock -ModuleName CEAudit Test-CEPendingReboot { -not $global:CETestSecure }
         $global:CETestSubKeys = @{}
+        # The test context runs as TESTPC\admin with TESTPC\paul signed in; treat them as one account
+        # (HKCU) unless a test sets up a separate admin account.
+        Mock -ModuleName CEAudit Get-CEOtherConsoleUserSid { '' }
         $global:CETestMdmAppLocker = @()
         Mock -ModuleName CEAudit Get-CEMdmAppLockerPolicy { , @($global:CETestMdmAppLocker) }
         Mock -ModuleName CEAudit Get-CERegistrySubKeyName {
@@ -9081,5 +9084,81 @@ Describe 'Policies delivered by Intune (SC-08, SU-02, UA-04, MP-09)' {
             $f.Status | Should -Be 'Fail'
             ($f.Evidence -join ' ') | Should -Match 'could not be listed'
         }
+    }
+}
+
+Describe 'Per-user settings when elevated with a separate admin account' {
+    BeforeEach {
+        # Signed in as an Entra user; the audit runs elevated as a local admin account.
+        Set-TestDevice -Kind Secure -ContextOverride @{ RunningAs = 'TESTPC\itadmin'; ConsoleUser = 'AzureAD\SamUser'; IsElevated = $true; IsSystem = $false }
+        $script:userSid = 'S-1-12-1-1000000001-2000000002-3000000003-400000004'
+        $script:hive = "Registry::HKEY_USERS\$script:userSid"
+        Mock -ModuleName CEAudit Get-CEOtherConsoleUserSid { $script:userSid }
+        Mock -ModuleName CEAudit Test-Path {
+            if ("$LiteralPath$Path" -like 'Registry::HKEY_USERS\*') { return ("$LiteralPath$Path" -eq $script:hive) }
+            if ("$LiteralPath$Path" -like 'HKLM:\SOFTWARE\Microsoft\Office\*') { return $true }
+            Microsoft.PowerShell.Management\Test-Path @PesterBoundParameters
+        }
+    }
+
+    It 'reads the signed-in user''s hive, not the admin''s HKCU' {
+        InModuleScope CEAudit { Get-CEUserRegistryRoot } | Should -Be $script:hive
+    }
+
+    It 'reads HKCU when the elevated account is the signed-in user' {
+        Mock -ModuleName CEAudit Get-CEOtherConsoleUserSid { '' }
+        InModuleScope CEAudit { Get-CEUserRegistryRoot } | Should -Be 'HKCU:'
+    }
+
+    It 'reads HKCU when not elevated, without resolving the signed-in user' {
+        Set-TestDevice -Kind Secure -ContextOverride @{ RunningAs = 'TESTPC\itadmin'; ConsoleUser = 'AzureAD\SamUser'; IsElevated = $false; IsSystem = $false }
+        Mock -ModuleName CEAudit Get-CEOtherConsoleUserSid { throw 'should not be asked' }
+        InModuleScope CEAudit { Get-CEUserRegistryRoot } | Should -Be 'HKCU:'
+    }
+
+    It 'gives no root, rather than the admin''s, when the signed-in user''s hive is not found' {
+        Mock -ModuleName CEAudit Get-CEOtherConsoleUserSid { 'S-1-12-1-9-9-9-9' }
+        InModuleScope CEAudit { Get-CEUserRegistryRoot } | Should -BeNullOrEmpty
+        Mock -ModuleName CEAudit Get-CEOtherConsoleUserSid { $null }
+        InModuleScope CEAudit { Get-CEUserRegistryRoot } | Should -BeNullOrEmpty
+    }
+
+    It 'passes MP-08 on Office macro policies Intune set in the signed-in user''s hive' {
+        foreach ($app in 'word', 'excel', 'powerpoint') {
+            $global:CETestReg["$script:hive\Software\Policies\Microsoft\Office\16.0\$app\Security|VBAWarnings"] = 4
+            $global:CETestReg["$script:hive\Software\Policies\Microsoft\Office\16.0\$app\Security|blockcontentexecutionfrominternet"] = 1
+        }
+        $f = @(Invoke-CEAuditCore -Id 'MP-08')
+        $f.Count | Should -Be 3
+        @($f | Where-Object Status -ne 'Pass') | Should -BeNullOrEmpty
+        $f[0].Evidence | Should -Contain "Read from the signed-in user's settings (AzureAD\SamUser), not TESTPC\itadmin's"
+    }
+
+    It 'reports MP-08 as needing a manual check when the signed-in user''s hive is not found' {
+        Mock -ModuleName CEAudit Get-CEOtherConsoleUserSid { $null }
+        $f = @(Invoke-CEAuditCore -Id 'MP-08')[0]
+        $f.Status | Should -Be 'Manual'
+        $f.Actual | Should -Match 'registry hive was not found'
+        $f.Recommendation | Should -Match 'for users, not the device'
+        $f.Recommendation | Should -Match 'without elevation, as AzureAD\\SamUser'
+    }
+}
+
+Describe 'Resolving the signed-in user (Get-CEOtherConsoleUserSid)' {
+    It 'caches the signed-in user''s SID and says when it is this account' {
+        $r = InModuleScope CEAudit {
+            $script:CEConsoleSidCache = @{}
+            Mock Get-CEConsoleUserSid { 'S-1-5-21-1-2-3-1001' }
+            $first = Get-CEOtherConsoleUserSid -ConsoleUser 'TESTPC\paul'
+            $second = Get-CEOtherConsoleUserSid -ConsoleUser 'TESTPC\paul'
+            Should -Invoke Get-CEConsoleUserSid -Times 1 -Exactly
+            Mock Get-CEConsoleUserSid { $null }
+            $unresolved = Get-CEOtherConsoleUserSid -ConsoleUser 'AzureAD\Nobody'
+            $script:CEConsoleSidCache = @{}
+            @($first, $second, $unresolved)
+        }
+        $r[0] | Should -Be 'S-1-5-21-1-2-3-1001'
+        $r[1] | Should -Be 'S-1-5-21-1-2-3-1001'
+        $r[2] | Should -BeNullOrEmpty
     }
 }

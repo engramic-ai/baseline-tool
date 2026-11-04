@@ -123,6 +123,37 @@ function Get-CEMdmAppLockerPolicy {
     return , $out.ToArray()
 }
 
+function Get-CELocalPasswordAccount {
+    <#
+        Which enabled local accounts have a password a person chose. One Windows LAPS manages with a
+        strong generated password (see Get-CELapsManagedAccount) does not, so the local password
+        policies (length, expiry) only matter for the others. Returns:
+          Listed      - $false when local accounts could not be listed (then nothing else is known)
+          LapsAccount - the enabled account LAPS manages, or $null
+          LapsSummary - how LAPS sets its password ("6-word passphrase, rotated every 30 days")
+          Unmanaged   - the other enabled local accounts
+          Evidence    - lines for a finding's evidence
+    #>
+    [CmdletBinding()]
+    param()
+    $evidence = New-Object System.Collections.ArrayList
+    try { $enabled = @(Get-LocalUser -ErrorAction Stop | Where-Object { $_.Enabled }) }
+    catch {
+        [void]$evidence.Add("Local accounts could not be listed: $($_.Exception.Message)")
+        return [pscustomobject]@{ Listed = $false; LapsAccount = $null; LapsSummary = ''; Unmanaged = @(); Evidence = $evidence.ToArray() }
+    }
+    $laps = Get-CELapsManagedAccount
+    $lapsAccount = $null
+    if ($laps.Managed -and $laps.Strong) {
+        $lapsAccount = @($enabled | Where-Object { ("$($_.SID)" -split '-')[-1] -eq "$($laps.Rid)" })[0]
+    }
+    elseif ($laps.Managed) { [void]$evidence.Add("Windows LAPS password is shorter than 12 characters ($($laps.Summary))") }
+    elseif ($laps.Reason -ne 'No Windows LAPS policy') { [void]$evidence.Add($laps.Reason) }
+    $unmanaged = @($enabled | Where-Object { -not $lapsAccount -or "$($_.SID)" -ne "$($lapsAccount.SID)" })
+    if ($lapsAccount) { [void]$evidence.Add("Windows LAPS manages $($lapsAccount.Name): $($laps.Summary)") }
+    return [pscustomobject]@{ Listed = $true; LapsAccount = $lapsAccount; LapsSummary = $laps.Summary; Unmanaged = $unmanaged; Evidence = $evidence.ToArray() }
+}
+
 function Get-CELapsManagedAccount {
     <#
         The local account Windows LAPS manages, as an object:

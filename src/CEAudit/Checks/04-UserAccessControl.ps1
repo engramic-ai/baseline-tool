@@ -132,11 +132,21 @@ Register-CECheck -Id 'UA-04' -Category 'UserAccessControl' -Severity 'High' `
 
         # The local policy only governs local accounts. When every enabled local account is one
         # Windows LAPS manages with a strong generated password, nobody chooses a local password.
-        $evidence = @("Local minimum password length: $len")
-        # Intune's DeviceLock password settings (often sent by a compliance policy) don't change the
-        # local policy above, so show them separately.
-        $mdmLen = Get-CERegistryValue -Path 'HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\DeviceLock' -Name 'MinDevicePasswordLength'
-        if ($null -ne $mdmLen) { $evidence += "Intune DeviceLock MinDevicePasswordLength: $mdmLen (does not change the local policy)" }
+        $evidence = @("Local minimum password length (net accounts): $len")
+        # Intune's DeviceLock password policy (often sent by a compliance policy) is enforced when a
+        # local account's password is set, but net accounts doesn't show it. DevicePasswordEnabled=0
+        # means the policy is ON. Windows checks both, so the stricter minimum applies.
+        $lock = 'HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\DeviceLock'
+        $mdmOn = Get-CERegistryValue -Path $lock -Name 'DevicePasswordEnabled'
+        $mdmLen = Get-CERegistryValue -Path $lock -Name 'MinDevicePasswordLength'
+        $source = 'Local minimum password length'
+        if ("$mdmOn" -eq '0' -and $null -ne $mdmLen) {
+            $evidence += "Intune DeviceLock: password policy on, MinDevicePasswordLength=$mdmLen, AllowSimpleDevicePassword=$(Get-CERegistryValue -Path $lock -Name 'AllowSimpleDevicePassword')"
+            if ([int]$mdmLen -gt $len) { $len = [int]$mdmLen; $source = 'Minimum local password length (set by Intune DeviceLock)' }
+            if ($len -ge $min) {
+                return New-CEResult -Status 'Pass' -Expected "Minimum length >= $min" -Actual "${source}: $len" -Evidence $evidence -Recommendation $note
+            }
+        }
         $unmanaged = $null
         try {
             $enabled = @(Get-LocalUser -ErrorAction Stop | Where-Object { $_.Enabled })
@@ -158,10 +168,10 @@ Register-CECheck -Id 'UA-04' -Category 'UserAccessControl' -Severity 'High' `
         catch { $evidence += "Local accounts could not be listed: $($_.Exception.Message)" }
 
         $status = if ($len -ge 8) { 'Warn' } else { 'Fail' }
-        $extra = if ($len -ge 8) { ' 8-11 characters is only acceptable if common passwords are automatically blocked, which local Windows policy does not do.' } else { '' }
+        $extra = if ($len -ge 8) { ' 8-11 characters is only acceptable if common passwords are automatically blocked. Windows does not do that for local accounts: blocking simple passwords only stops repeats and sequences.' } else { '' }
         $applies = if ($unmanaged -and $unmanaged.Count -gt 0) { " It applies to: $((@($unmanaged | ForEach-Object { $_.Name })) -join ', ')." } else { '' }
-        return New-CEResult -Status $status -Expected "Minimum length >= $min" -Actual "Local minimum password length: $len.$extra$applies" -Evidence $evidence `
-            -Recommendation "Set the local minimum password length to $min. Existing passwords are not re-checked until they are next changed. $note" `
+        return New-CEResult -Status $status -Expected "Minimum length >= $min" -Actual "${source}: $len.$extra$applies" -Evidence $evidence `
+            -Recommendation "Set the local minimum password length to $min$(if ($source -ne 'Local minimum password length') { ', in the local policy or the Intune DeviceLock or compliance policy' }). Existing passwords are not re-checked until they are next changed. $note" `
             -Remediation (New-CERemediationRef -Id 'PasswordPolicy-Set' -Parameters @{ MinLength = $min })
     }
 

@@ -8917,11 +8917,12 @@ Describe 'Policies delivered by Intune (SC-08, SU-02, UA-04, MP-09)' {
         }
 
         It 'passes when the only enabled local account is managed by Windows LAPS' {
+            $global:CETestReg['HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\DeviceLock|DevicePasswordEnabled'] = 0
             $f = @(Invoke-CEAuditCore -Id 'UA-04')[0]
             $f.Status | Should -Be 'Pass'
             $f.Actual | Should -Match 'itadmin'
             $f.Actual | Should -Match '6-word passphrase, rotated every 30 days'
-            ($f.Evidence -join ' ') | Should -Match 'MinDevicePasswordLength: 8'
+            ($f.Evidence -join ' ') | Should -Match 'MinDevicePasswordLength=8'
         }
 
         It 'reads a Group Policy LAPS policy when Intune sets none' {
@@ -8968,6 +8969,33 @@ Describe 'Policies delivered by Intune (SC-08, SU-02, UA-04, MP-09)' {
             $f = @(Invoke-CEAuditCore -Id 'UA-04')[0]
             $f.Status | Should -Be 'Fail'
             $f.Actual | Should -Match 'It applies to: itadmin\.'
+        }
+
+        It 'warns, not fails, when Intune DeviceLock enforces 8 on local accounts that LAPS does not manage' {
+            $global:CETestReg['HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\DeviceLock|DevicePasswordEnabled'] = 0
+            $global:CETestUsers += [pscustomobject]@{ Name = 'kiosk'; SID = 'S-1-5-21-1-2-3-1003'; Enabled = $true; PasswordRequired = $true; LastLogon = $null }
+            $f = @(Invoke-CEAuditCore -Id 'UA-04')[0]
+            $f.Status | Should -Be 'Warn'
+            $f.Actual | Should -Match 'set by Intune DeviceLock\): 8'
+            $f.Actual | Should -Match 'repeats and sequences'
+            $f.Recommendation | Should -Match 'Intune DeviceLock or compliance policy'
+        }
+
+        It 'passes when Intune DeviceLock enforces 12 or more' {
+            $global:CETestReg['HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\DeviceLock|DevicePasswordEnabled'] = 0
+            $global:CETestUsers += [pscustomobject]@{ Name = 'kiosk'; SID = 'S-1-5-21-1-2-3-1003'; Enabled = $true; PasswordRequired = $true; LastLogon = $null }
+            $global:CETestReg['HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\DeviceLock|MinDevicePasswordLength'] = 14
+            $f = @(Invoke-CEAuditCore -Id 'UA-04')[0]
+            $f.Status | Should -Be 'Pass'
+            $f.Actual | Should -Match 'set by Intune DeviceLock\): 14'
+        }
+
+        It 'ignores the Intune minimum when the DeviceLock password policy is off' {
+            $global:CETestUsers += [pscustomobject]@{ Name = 'kiosk'; SID = 'S-1-5-21-1-2-3-1003'; Enabled = $true; PasswordRequired = $true; LastLogon = $null }
+            $global:CETestReg['HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\DeviceLock|DevicePasswordEnabled'] = 1
+            $f = @(Invoke-CEAuditCore -Id 'UA-04')[0]
+            $f.Status | Should -Be 'Fail'
+            $f.Actual | Should -Match '^Local minimum password length: 0'
         }
 
         It 'falls back to the local policy result when local accounts cannot be listed' {

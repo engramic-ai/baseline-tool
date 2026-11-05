@@ -11,6 +11,33 @@ function Get-CESidSuffix {
     return [int](([string]$User.SID) -split '-')[-1]
 }
 
+function Get-CEProfileLastUse {
+    <#
+        When Windows last loaded or unloaded this account's profile, from its ProfileList key, or $null if it has
+        no profile. Windows leaves the local last logon empty for an account linked to a Microsoft account, so this
+        is the record that such an account is used.
+    #>
+    param($User)
+    $key = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$([string]$User.SID)"
+    $latest = $null
+    foreach ($kind in 'Load', 'Unload') {
+        $parts = foreach ($half in 'High', 'Low') {
+            # A DWORD with its top bit set can read back as a negative number.
+            $value = Get-CERegistryValue -Path $key -Name "LocalProfile${kind}Time$half"
+            if ($null -eq $value) { break }
+            if ([int64]$value -lt 0) { [int64]$value + 4294967296 } else { [int64]$value }
+        }
+        if (@($parts).Count -ne 2 -or ($parts[0] -eq 0 -and $parts[1] -eq 0)) { continue }
+        try { $time = [DateTime]::FromFileTime(($parts[0] -shl 32) -bor $parts[1]) }
+        catch {
+            Write-Verbose "Ignoring an unreadable profile time for $($User.Name): $($_.Exception.Message)"
+            continue
+        }
+        if ($null -eq $latest -or $time -gt $latest) { $latest = $time }
+    }
+    return $latest
+}
+
 Register-CECheck -Id 'SC-01' -Category 'SecureConfiguration' -Severity 'High' `
     -Title 'Guest account disabled' `
     -Frameworks @('CE v3.3', 'NCSC') `
@@ -65,17 +92,27 @@ Register-CECheck -Id 'SC-03' -Category 'SecureConfiguration' -Severity 'Medium' 
         $cutoff = (Get-Date).AddDays(-[int]$cfg.staleLocalAccountDays)
         $builtIn = @(500, 501, 503, 504)
         $stale = @(Get-CELocalUsers | Where-Object {
-            $_.Enabled -and ($builtIn -notcontains (Get-CESidSuffix $_)) -and ((-not $_.LastLogon) -or ($_.LastLogon -lt $cutoff))
+            # The account signed in now is in use, whatever the records below say.
+            $_.Enabled -and ($builtIn -notcontains (Get-CESidSuffix $_)) -and ("$($ctx.ComputerName)\$($_.Name)" -ne $ctx.ConsoleUser)
+        } | ForEach-Object {
+            $profileUse = Get-CEProfileLastUse $_
+            $last = @($_.LastLogon, $profileUse) | Where-Object { $_ } | Sort-Object -Descending | Select-Object -First 1
+            if ((-not $last) -or ($last -lt $cutoff)) { [pscustomobject]@{ User = $_; Last = $last; ProfileUse = $profileUse } }
         })
         if ($stale.Count -eq 0) {
             return New-CEResult -Status 'Pass' -Expected "No enabled local accounts unused for $($cfg.staleLocalAccountDays)+ days" -Actual 'None found'
         }
-        foreach ($u in $stale) {
-            $last = if ($u.LastLogon) { $u.LastLogon.ToString('yyyy-MM-dd') } else { 'never' }
+        foreach ($row in $stale) {
+            $u = $row.User
+            $seen = if ($row.Last) { "last used: $($row.Last.ToString('yyyy-MM-dd'))" } else { 'no logon or use of its profile recorded' }
             New-CEResult -Status 'Warn' -Subject $u.Name `
                 -Expected "Accounts unused for $($cfg.staleLocalAccountDays)+ days are disabled" `
-                -Actual "Local account '$($u.Name)' is enabled; last logon: $last" `
+                -Actual "Local account '$($u.Name)' is enabled; $seen" `
                 -Recommendation 'Confirm whether the account is still required. Disable it if not. (Accounts used only for services may legitimately show no interactive logon.)' `
+                -Evidence @(
+                    "Last logon: $(if ($u.LastLogon) { $u.LastLogon.ToString('yyyy-MM-dd') } else { 'not recorded' })"
+                    "Profile last used: $(if ($row.ProfileUse) { $row.ProfileUse.ToString('yyyy-MM-dd') } else { 'not recorded' })"
+                ) `
                 -Remediation (New-CERemediationRef -Id 'LocalUser-DisableByName' -Parameters @{ Name = [string]$u.Name })
         }
     }

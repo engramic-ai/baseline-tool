@@ -20,6 +20,14 @@ namespace Engramic.Baseline.Engine;
 /// </list>
 /// Stopping the audit through its cancellation token stops the run, and tells the running check to stop;
 /// nothing else stops the run.
+/// <para>
+/// Finding identifiers are unique within a run, as the changeset, reports and status.json key on them. A
+/// subject's slug can repeat (two firewall rules with one display name, or long subjects that differ only after
+/// the slug's 40 characters), so an identifier already used gets -2, -3 and so on, in the order the findings
+/// come, as Invoke-CEAuditCore does. Identifiers are compared ignoring case, ordinally, as pwsh 7's hashtables
+/// compare them. Windows PowerShell 5.1's compare in the current culture instead, which differs only for the
+/// KELVIN SIGN and, in a Turkish culture, the dotted and dotless i.
+/// </para>
 /// </remarks>
 public sealed class AuditRunner
 {
@@ -61,21 +69,46 @@ public sealed class AuditRunner
     /// <param name="selection">Which checks to run.</param>
     /// <param name="context">What the checks may use; the same for every check.</param>
     /// <param name="cancel">Stops the audit.</param>
-    /// <returns>The findings, check by check in catalog order, each check's in the order it gave them.</returns>
+    /// <returns>The findings, check by check in catalog order, each check's in the order it gave them, each with an identifier no other has.</returns>
     /// <exception cref="OperationCanceledException"><paramref name="cancel"/> was cancelled.</exception>
     public async Task<IReadOnlyList<Finding>> RunAsync(CheckSelection selection, CheckContext context, CancellationToken cancel = default)
     {
         ArgumentNullException.ThrowIfNull(selection);
         ArgumentNullException.ThrowIfNull(context);
         var findings = new List<Finding>();
+        var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var check in _catalog.Select(selection))
         {
             cancel.ThrowIfCancellationRequested();
-            findings.AddRange(await RunCheckAsync(check, context, cancel).ConfigureAwait(false));
+            foreach (var finding in await RunCheckAsync(check, context, cancel).ConfigureAwait(false))
+            {
+                findings.Add(Unique(finding, used));
+            }
         }
 
         return findings;
     }
+
+    // Gives a finding whose identifier is already used the first free one of the identifier with -2, -3 and so on.
+    private static Finding Unique(Finding finding, HashSet<string> used)
+    {
+        var id = finding.FindingId;
+        if (used.Contains(id))
+        {
+            var n = 2;
+            while (used.Contains(Numbered(finding.FindingId, n)))
+            {
+                n++;
+            }
+
+            id = Numbered(finding.FindingId, n);
+        }
+
+        used.Add(id);
+        return ReferenceEquals(id, finding.FindingId) ? finding : finding with { FindingId = id };
+    }
+
+    private static string Numbered(string id, int n) => string.Create(CultureInfo.InvariantCulture, $"{id}-{n}");
 
     private static Finding[] One(CheckInfo info, CheckResult result) => [FindingFactory.Create(info, result)];
 

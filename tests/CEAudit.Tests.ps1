@@ -9255,3 +9255,188 @@ Describe 'Password expiry with Windows LAPS and Intune (UA-05)' {
         (@(Invoke-CEAuditCore -Id 'UA-05')[0]).Status | Should -Be 'Pass'
     }
 }
+
+Describe 'Settings set by Intune or Group Policy instead of locally (MP-06, SC-11, FW-04, SC-02, UA-09)' {
+    BeforeAll {
+        $script:csp = 'HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device'
+        $script:ts = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+    }
+
+    Context 'Get-CEPolicySetting' {
+        It 'prefers a policy over the local value, and reports a conflict between policies' {
+            InModuleScope CEAudit {
+                Mock Get-CERegistryValue { $global:CETestReg["$Path|$Name"] }
+                $global:CETestReg = @{ 'HKLM:\A|X' = 1; 'HKLM:\B|X' = 0; 'HKLM:\L|X' = 0 }
+                $src = @(@{ Label = 'Intune'; Path = 'HKLM:\A'; Name = 'X' }, @{ Label = 'Group Policy'; Path = 'HKLM:\B'; Name = 'X' }, @{ Label = 'Local'; Path = 'HKLM:\L'; Name = 'X' })
+                $r = Get-CEPolicySetting -Source $src
+                $r.Value | Should -Be 1
+                $r.Source | Should -Be 'Intune'
+                $r.Policy | Should -BeTrue
+                $r.Conflict | Should -BeTrue
+                @($r.Evidence).Count | Should -Be 3
+                $global:CETestReg = @{ 'HKLM:\L|X' = 1 }
+                $r = Get-CEPolicySetting -Source $src
+                $r.Source | Should -Be 'Local'
+                $r.Policy | Should -BeFalse
+                $r.Conflict | Should -BeFalse
+                $global:CETestReg = @{}
+                (Get-CEPolicySetting -Source $src).Value | Should -BeNullOrEmpty
+            }
+        }
+
+        It 'reads the enabled or disabled state of an ADMX-backed Intune policy' {
+            InModuleScope CEAudit {
+                ConvertFrom-CEAdmxPolicyState '<enabled/><data id="x" value="1"/>' | Should -Be 'Enabled'
+                ConvertFrom-CEAdmxPolicyState ' <disabled/>' | Should -Be 'Disabled'
+                ConvertFrom-CEAdmxPolicyState '1' | Should -BeNullOrEmpty
+            }
+        }
+    }
+
+    Context 'MP-06 Windows SmartScreen' {
+        BeforeEach {
+            Set-TestDevice -Kind Insecure
+            $global:CETestReg.Remove('HKLM:\SOFTWARE\Policies\Microsoft\Windows\System|EnableSmartScreen')
+            $global:CETestReg.Remove('HKLM:\SOFTWARE\Policies\Microsoft\Windows\System|ShellSmartScreenLevel')
+        }
+
+        It 'passes when Intune enforces SmartScreen in block mode, and says so' {
+            $global:CETestReg["$script:csp\SmartScreen|EnableSmartScreenInShell"] = 1
+            $global:CETestReg["$script:csp\SmartScreen|PreventOverrideForFilesInShell"] = 1
+            $f = @(Invoke-CEAuditCore -Id 'MP-06') | Where-Object Subject -eq 'Windows SmartScreen'
+            $f.Status | Should -Be 'Pass'
+            $f.Actual | Should -Match 'by Intune'
+            ($f.Evidence -join "`n") | Should -Match 'PolicyManager\\SmartScreen\\PreventOverrideForFilesInShell = 1'
+        }
+
+        It 'points at Intune, with no local fix, when Intune lets users click through' {
+            $global:CETestReg["$script:csp\SmartScreen|EnableSmartScreenInShell"] = 1
+            $global:CETestReg["$script:csp\SmartScreen|PreventOverrideForFilesInShell"] = 0
+            $f = @(Invoke-CEAuditCore -Id 'MP-06') | Where-Object Subject -eq 'Windows SmartScreen'
+            $f.Status | Should -Be 'Warn'
+            $f.Actual | Should -Match 'On \(Intune\)'
+            $f.Recommendation | Should -Match 'In Intune'
+            $f.Remediation | Should -BeNullOrEmpty
+        }
+
+        It 'reports a conflict when Intune and Group Policy disagree' {
+            $global:CETestReg["$script:csp\SmartScreen|PreventOverrideForFilesInShell"] = 1
+            $global:CETestReg['HKLM:\SOFTWARE\Policies\Microsoft\Windows\System|ShellSmartScreenLevel'] = 'Warn'
+            $f = @(Invoke-CEAuditCore -Id 'MP-06') | Where-Object Subject -eq 'Windows SmartScreen'
+            $f.Status | Should -Be 'Warn'
+            $f.Actual | Should -Match 'Conflicting policies'
+        }
+
+        It 'does not claim SmartScreen is on when nothing sets it, and offers the fix' {
+            $f = @(Invoke-CEAuditCore -Id 'MP-06') | Where-Object Subject -eq 'Windows SmartScreen'
+            $f.Status | Should -Be 'Warn'
+            $f.Actual | Should -Match 'No policy sets SmartScreen'
+            $f.Remediation.Id | Should -Be 'SmartScreen-Enforce'
+        }
+
+        It 'fails when Intune turns SmartScreen off' {
+            $global:CETestReg["$script:csp\SmartScreen|EnableSmartScreenInShell"] = 0
+            $f = @(Invoke-CEAuditCore -Id 'MP-06') | Where-Object Subject -eq 'Windows SmartScreen'
+            $f.Status | Should -Be 'Fail'
+            $f.Actual | Should -Match 'turned off by Intune'
+            $f.Remediation | Should -BeNullOrEmpty
+        }
+
+        It 'still passes Group Policy block mode' {
+            Set-TestDevice -Kind Secure
+            $f = @(Invoke-CEAuditCore -Id 'MP-06') | Where-Object Subject -eq 'Windows SmartScreen'
+            $f.Status | Should -Be 'Pass'
+            $f.Actual | Should -Match 'by Group Policy'
+        }
+    }
+
+    Context 'SC-11 Remote Assistance' {
+        BeforeEach { Set-TestDevice -Kind Insecure }
+
+        It 'passes when a policy turns Remote Assistance off, whatever the local box says' {
+            $global:CETestReg["$script:ts|fAllowToGetHelp"] = 0
+            $f = @(Invoke-CEAuditCore -Id 'SC-11') | Where-Object Subject -eq 'Remote Assistance'
+            $f.Status | Should -Be 'Pass'
+            $f.Actual | Should -Match 'disabled by Group Policy'
+        }
+
+        It 'reads the Intune ADMX policy' {
+            $global:CETestReg["$script:csp\RemoteAssistance|SolicitedRemoteAssistance"] = '<disabled/>'
+            $f = @(Invoke-CEAuditCore -Id 'SC-11') | Where-Object Subject -eq 'Remote Assistance'
+            $f.Status | Should -Be 'Pass'
+            $f.Actual | Should -Match 'by Intune'
+        }
+
+        It 'points at the policy, with no local fix, when a policy allows it' {
+            Set-TestDevice -Kind Secure
+            $global:CETestReg["$script:ts|fAllowUnsolicited"] = 1
+            $f = @(Invoke-CEAuditCore -Id 'SC-11') | Where-Object Subject -eq 'Remote Assistance'
+            $f.Status | Should -Be 'Warn'
+            $f.Actual | Should -Match 'offering help allowed by Group Policy'
+            $f.Recommendation | Should -Match 'would not last'
+            $f.Remediation | Should -BeNullOrEmpty
+        }
+
+        It 'keeps the local fix when only the local box allows it' {
+            $f = @(Invoke-CEAuditCore -Id 'SC-11') | Where-Object Subject -eq 'Remote Assistance'
+            $f.Status | Should -Be 'Warn'
+            $f.Remediation.Id | Should -Be 'RemoteAssistance-Disable'
+            ($f.Evidence -join "`n") | Should -Match 'Local: .*fAllowToGetHelp = 1'
+        }
+    }
+
+    Context 'FW-04 Remote Desktop' {
+        BeforeEach { Set-TestDevice -Kind Insecure }
+
+        It 'passes when a policy denies Remote Desktop, whatever the local setting says' {
+            $global:CETestReg["$script:ts|fDenyTSConnections"] = 1
+            $f = @(Invoke-CEAuditCore -Id 'FW-04')
+            $f.Count | Should -Be 1
+            $f[0].Status | Should -Be 'Pass'
+            $f[0].Actual | Should -Match 'disabled by Group Policy'
+        }
+
+        It 'reads Intune allowing Remote Desktop, and offers no local fix' {
+            Set-TestDevice -Kind Secure
+            $global:CETestReg["$script:csp\RemoteDesktopServices|AllowUsersToConnectRemotely"] = '<enabled/>'
+            $global:CETestReg["$script:ts|UserAuthentication"] = 1
+            $f = @(Invoke-CEAuditCore -Id 'FW-04')
+            @($f | Where-Object Subject -eq 'NLA').Count | Should -Be 0
+            $e = $f | Where-Object Subject -eq 'Enabled'
+            $e.Status | Should -Be 'Warn'
+            $e.Actual | Should -Match 'enabled by Intune'
+            $e.Remediation | Should -BeNullOrEmpty
+        }
+
+        It 'points the NLA failure at the policy that turns NLA off' {
+            $global:CETestReg["$script:ts|UserAuthentication"] = 0
+            $f = @(Invoke-CEAuditCore -Id 'FW-04') | Where-Object Subject -eq 'NLA'
+            $f.Status | Should -Be 'Fail'
+            $f.Actual | Should -Match 'Group Policy turns it off'
+            $f.Remediation | Should -BeNullOrEmpty
+        }
+    }
+
+    Context 'SC-02 and UA-09 with LAPS set by Group Policy' {
+        BeforeEach {
+            Set-TestDevice -Kind Insecure -ContextOverride @{ EntraJoined = $true; CentrallyManaged = $true }
+            $script:gpLaps = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\LAPS'
+        }
+
+        It 'counts a Group Policy LAPS policy' {
+            $global:CETestReg["$script:gpLaps|BackupDirectory"] = 2
+            (@(Invoke-CEAuditCore -Id 'UA-09')[0]).Actual | Should -Match 'enabled by Group Policy \(backup to Active Directory\)'
+            $sc = @(Invoke-CEAuditCore -Id 'SC-02')[0]
+            $sc.Status | Should -Be 'Pass'
+            $sc.Actual | Should -Match 'set by Group Policy'
+        }
+
+        It 'fails SC-02 when LAPS manages a different account than the enabled built-in Administrator' {
+            $global:CETestReg['HKLM:\SOFTWARE\Microsoft\Policies\LAPS|BackupDirectory'] = 1
+            $global:CETestReg['HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\LAPS\State|LastManagedAccountRid'] = 1001
+            $sc = @(Invoke-CEAuditCore -Id 'SC-02')[0]
+            $sc.Status | Should -Be 'Fail'
+            $sc.Actual | Should -Match 'manages a different account \(RID 1001\)'
+        }
+    }
+}

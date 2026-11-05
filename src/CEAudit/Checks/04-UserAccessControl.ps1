@@ -313,10 +313,10 @@ Register-CECheck -Id 'UA-09' -Category 'UserAccessControl' -Severity 'Medium' `
     -AppliesTo { param($ctx) if ($ctx.CentrallyManaged) { $true } else { 'Standalone device: LAPS requires Entra ID or Active Directory to store passwords.' } } `
     -Test {
         param($ctx)
-        $dir = Get-CERegistryValue -Path 'HKLM:\SOFTWARE\Microsoft\Policies\LAPS' -Name 'BackupDirectory' -Default 0
-        if ([int]$dir -gt 0) {
-            $where = if ([int]$dir -eq 1) { 'Entra ID' } else { 'Active Directory' }
-            return New-CEResult -Status 'Pass' -Expected 'Windows LAPS backing up to Entra ID or AD' -Actual "Windows LAPS enabled (backup to $where)"
+        $laps = Get-CELapsPolicy
+        if ($laps -and $laps.BackupDirectory -gt 0) {
+            $where = if ($laps.BackupDirectory -eq 1) { 'Entra ID' } else { 'Active Directory' }
+            return New-CEResult -Status 'Pass' -Expected 'Windows LAPS backing up to Entra ID or AD' -Actual "Windows LAPS enabled by $($laps.Source) (backup to $where)"
         }
         return New-CEResult -Status 'Warn' -Expected 'Windows LAPS backing up to Entra ID or AD' -Actual 'Windows LAPS not configured' `
             -Recommendation 'Configure Windows LAPS in Intune (Endpoint security > Account protection) or Group Policy.'

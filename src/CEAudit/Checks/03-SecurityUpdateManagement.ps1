@@ -193,14 +193,41 @@ Register-CECheck -Id 'SU-02' -Category 'SecurityUpdateManagement' -Severity 'Hig
         $deferQ   = Get-CERegistryValue -Path $wu -Name 'DeferQualityUpdatesPeriodInDays'
         $pauseEnd = Get-CERegistryValue -Path 'HKLM:\SOFTWARE\Microsoft\WindowsUpdate\UX\Settings' -Name 'PauseUpdatesExpiryTime'
         $svc      = Get-Service -Name 'wuauserv' -ErrorAction SilentlyContinue
+        # Intune (Update rings / Policy CSP) values. AllowAutoUpdate: 0 = notify to download,
+        # 1-4 = install automatically (at maintenance time, or on a schedule), 5 = turned off.
+        $mdm = 'HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\Update'
+        $mdmAuto     = Get-CERegistryValue -Path $mdm -Name 'AllowAutoUpdate'
+        $mdmDeferQ   = Get-CERegistryValue -Path $mdm -Name 'DeferQualityUpdatesPeriodInDays'
+        $mdmDeadline = Get-CERegistryValue -Path $mdm -Name 'ConfigureDeadlineForQualityUpdates'
+        $mdmGrace    = Get-CERegistryValue -Path $mdm -Name 'ConfigureDeadlineGracePeriod'
         $evidence = @("NoAutoUpdate=$noAuto", "AUOptions=$auOption", "DeferQualityUpdatesPeriodInDays=$deferQ", "PauseUpdatesExpiryTime=$pauseEnd", "wuauserv StartType=$(if ($svc) { $svc.StartType })")
+        if ($null -ne $mdmAuto) { $evidence += "Intune AllowAutoUpdate=$mdmAuto" }
+        if ($null -ne $mdmDeferQ) { $evidence += "Intune DeferQualityUpdatesPeriodInDays=$mdmDeferQ" }
+        if ($null -ne $mdmDeadline) { $evidence += "Intune ConfigureDeadlineForQualityUpdates=$mdmDeadline" }
+        if ($null -ne $mdmGrace) { $evidence += "Intune ConfigureDeadlineGracePeriod=$mdmGrace" }
+        $mdmWantsAuto = ($null -ne $mdmAuto -and [int]$mdmAuto -ge 1 -and [int]$mdmAuto -le 4)
 
         $results = @()
-        if ("$noAuto" -eq '1' -or "$auOption" -eq '2' -or ($svc -and "$($svc.StartType)" -eq 'Disabled')) {
+        if ("$noAuto" -eq '1' -and $mdmWantsAuto) {
+            # Two policies disagree. Name both, because the fix is to find what writes the old value.
+            $source = if ($ctx.DomainJoined) { 'a Group Policy object, an RMM or patching agent, a script, local Group Policy, or a value left in the build image' } `
+                else { 'an RMM or patching agent, a script (including one Intune deploys), local Group Policy, or a value left in the build image. The device is not domain-joined, so it is not a domain GPO' }
+            $results += New-CEResult -Status 'Fail' -Subject 'Automatic updates' -Expected 'Automatic download and install' `
+                -Actual "Conflicting policies: Intune asks for automatic updates (AllowAutoUpdate=$mdmAuto), but NoAutoUpdate=1 under HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU turns them off." -Evidence $evidence `
+                -Recommendation "Find what writes NoAutoUpdate=1 and stop it, then delete the value. Likely sources: $source. Deleting the value without stopping its source only lasts until it is written again. If another tool deliberately handles patching, keep its records showing updates install within 14 days, and remove the Intune update ring so the two don't compete." `
+                -Remediation (New-CERemediationRef -Id 'WindowsUpdate-EnableAuto')
+        }
+        elseif ("$noAuto" -eq '1' -or "$auOption" -eq '2' -or ($svc -and "$($svc.StartType)" -eq 'Disabled')) {
             $results += New-CEResult -Status 'Fail' -Subject 'Automatic updates' -Expected 'Automatic download and install' `
                 -Actual 'Automatic updates are disabled or set to notify only' -Evidence $evidence `
                 -Recommendation 'Enable automatic download and installation of updates.' `
                 -Remediation (New-CERemediationRef -Id 'WindowsUpdate-EnableAuto')
+        }
+        elseif ($null -ne $mdmAuto -and ([int]$mdmAuto -eq 0 -or [int]$mdmAuto -eq 5)) {
+            $how = if ([int]$mdmAuto -eq 5) { 'turned off' } else { 'set to notify before downloading' }
+            $results += New-CEResult -Status 'Fail' -Subject 'Automatic updates' -Expected 'Automatic download and install' `
+                -Actual "Intune sets automatic updates to $how (AllowAutoUpdate=$mdmAuto)" -Evidence $evidence `
+                -Recommendation "In the Intune update ring, set 'Automatic update behavior' to 'Auto install at maintenance time' or another automatic option."
         }
         else {
             $results += New-CEResult -Status 'Pass' -Subject 'Automatic updates' -Expected 'Automatic download and install' -Actual 'Automatic updates enabled' -Evidence $evidence
@@ -215,6 +242,7 @@ Register-CECheck -Id 'SU-02' -Category 'SecurityUpdateManagement' -Severity 'Hig
             }
         }
         $window = [int](Get-CEConfig).thresholds.patchWindowDays
+        if (-not $deferQ -and $mdmDeferQ) { $deferQ = $mdmDeferQ }
         if ($deferQ -and [int]$deferQ -gt 0) {
             $status = if ([int]$deferQ -ge $window) { 'Fail' } else { 'Warn' }
             $results += New-CEResult -Status $status -Subject 'Deferral' -Expected "Quality update deferral well under $window days" `
@@ -222,7 +250,18 @@ Register-CECheck -Id 'SU-02' -Category 'SecurityUpdateManagement' -Severity 'Hig
                 -Recommendation "Keep quality-update deferral short (0-3 days) with an install deadline, so security fixes land within $window days of release." `
                 -Remediation (New-CERemediationRef -Id 'WindowsUpdate-RemoveQualityDeferral')
         }
-        if ($ctx.CentrallyManaged -and ($noAuto -or $auOption -or $deferQ)) {
+        # With an Intune deadline, the latest a quality update is forced in is deferral + deadline + grace.
+        if ($null -ne $mdmDeadline) {
+            $defer = if ($deferQ) { [int]$deferQ } else { 0 }
+            $grace = if ($null -ne $mdmGrace) { [int]$mdmGrace } else { 0 }
+            $latest = $defer + [int]$mdmDeadline + $grace
+            if ($latest -ge $window) {
+                $results += New-CEResult -Status 'Warn' -Subject 'Deadline' -Expected "Quality updates forced in well under $window days" `
+                    -Actual "A quality update can wait $latest days before Windows forces it (deferral $defer + deadline $mdmDeadline + grace period $grace)" -Evidence $evidence `
+                    -Recommendation "Shorten the Intune update ring's quality-update deadline or grace period (for example a 2-3 day grace period), so a device that has been switched off still installs security fixes within $window days of release."
+            }
+        }
+        if ($ctx.CentrallyManaged -and ($noAuto -or $auOption -or $deferQ -or $null -ne $mdmAuto)) {
             $results += New-CEResult -Status 'Info' -Subject 'Managed' -Actual 'Update policy is set centrally (GPO/Intune). Fix it at the source; local changes may be overwritten.'
         }
         return $results

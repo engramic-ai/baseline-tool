@@ -35,9 +35,19 @@ Register-CECheck -Id 'SC-02' -Category 'SecureConfiguration' -Severity 'High' `
         if (-not $admin -or -not $admin.Enabled) {
             return New-CEResult -Status 'Pass' -Expected 'Built-in Administrator disabled' -Actual 'Built-in Administrator is disabled'
         }
-        $laps = Get-CERegistryValue -Path 'HKLM:\SOFTWARE\Microsoft\Policies\LAPS' -Name 'BackupDirectory' -Default 0
-        if ([int]$laps -gt 0) {
-            return New-CEResult -Status 'Pass' -Expected 'Built-in Administrator disabled or password managed by LAPS' -Actual "Enabled, password managed by Windows LAPS (BackupDirectory=$laps)"
+        # Windows LAPS manages one account: the built-in Administrator unless the policy names another.
+        $laps = Get-CELapsPolicy
+        $rid = Get-CERegistryValue -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\LAPS\State' -Name 'LastManagedAccountRid'
+        if ($laps -and $laps.BackupDirectory -gt 0) {
+            if ($null -eq $rid -or [int64]$rid -eq 500) {
+                return New-CEResult -Status 'Pass' -Expected 'Built-in Administrator disabled or password managed by LAPS' `
+                    -Actual "Enabled, password managed by Windows LAPS (set by $($laps.Source), BackupDirectory=$($laps.BackupDirectory))"
+            }
+            return New-CEResult -Status 'Fail' -Expected 'Built-in Administrator disabled or password managed by LAPS' `
+                -Actual "Built-in Administrator '$($admin.Name)' is enabled, and Windows LAPS manages a different account (RID $rid), not this one" `
+                -Evidence @("Windows LAPS policy set by $($laps.Source)") `
+                -Recommendation 'Disable the built-in Administrator account, since Windows LAPS manages your named admin account instead.' `
+                -Remediation (New-CERemediationRef -Id 'LocalUser-DisableBySidSuffix' -Parameters @{ SidSuffix = 500 })
         }
         return New-CEResult -Status 'Fail' -Expected 'Built-in Administrator disabled or password managed by LAPS' `
             -Actual "Built-in Administrator '$($admin.Name)' is enabled with an unmanaged password" `
@@ -165,12 +175,30 @@ Register-CECheck -Id 'SC-08' -Category 'SecureConfiguration' -Severity 'High' `
     -Test {
         param($ctx)
         $min = [int](Get-CEConfig).thresholds.minDeviceUnlockPinLength
-        $value = Get-CERegistryValue -Path 'HKLM:\SOFTWARE\Policies\Microsoft\PassportForWork\PINComplexity' -Name 'MinimumPINLength'
-        if ($null -ne $value -and [int]$value -ge $min) {
-            return New-CEResult -Status 'Pass' -Expected "Windows Hello PIN minimum length >= $min" -Actual "Minimum PIN length policy: $value"
+        $policies = Get-CEHelloPinPolicy
+        $policies = @($policies)
+        $evidence = @($policies | ForEach-Object { "$($_.Source): MinimumPINLength=$($_.Value)" })
+        $expected = "Windows Hello PIN minimum length >= $min"
+        if ($policies.Count -eq 0) {
+            return New-CEResult -Status 'Fail' -Expected $expected -Actual 'Not configured (Windows default allows a 4-digit PIN)' `
+                -Recommendation "Set the Windows Hello PIN minimum length to $min, then have users change any shorter PIN (Settings > Accounts > Sign-in options)." `
+                -Remediation (New-CERemediationRef -Id 'HelloPin-MinLength' -Parameters @{ Length = $min })
         }
-        $actual = if ($null -eq $value) { 'Not configured (Windows default allows a 4-digit PIN)' } else { "Minimum PIN length policy: $value" }
-        return New-CEResult -Status 'Fail' -Expected "Windows Hello PIN minimum length >= $min" -Actual $actual `
+        # Every policy that sets a length must reach the minimum: Group Policy, Intune device-wide,
+        # and Intune per user (one key per Entra user the policy targets).
+        $short = @($policies | Where-Object { [int]$_.Value -lt $min })
+        if ($short.Count -eq 0) {
+            $lengths = @($policies | ForEach-Object { [int]$_.Value } | Sort-Object -Unique)
+            return New-CEResult -Status 'Pass' -Expected $expected -Evidence $evidence `
+                -Actual "Minimum PIN length policy: $($lengths -join ', ') ($((@($policies | ForEach-Object { $_.Source } | Select-Object -Unique)) -join '; '))"
+        }
+        $managed = @($short | Where-Object { $_.Source -like 'Intune*' })
+        $actual = "Minimum PIN length policy below ${min}: $((@($short | ForEach-Object { "$($_.Value) ($($_.Source))" })) -join '; ')"
+        if ($managed.Count -gt 0) {
+            return New-CEResult -Status 'Fail' -Expected $expected -Actual $actual -Evidence $evidence `
+                -Recommendation "In Intune, set the Windows Hello for Business minimum PIN length to $min or more (Account protection or Identity protection policy), then have users change any shorter PIN."
+        }
+        return New-CEResult -Status 'Fail' -Expected $expected -Actual $actual -Evidence $evidence `
             -Recommendation "Set the Windows Hello PIN minimum length to $min, then have users change any shorter PIN (Settings > Accounts > Sign-in options)." `
             -Remediation (New-CERemediationRef -Id 'HelloPin-MinLength' -Parameters @{ Length = $min })
     }
@@ -261,14 +289,38 @@ Register-CECheck -Id 'SC-11' -Category 'SecureConfiguration' -Severity 'Low' `
     -Reference 'CE v3.3 Secure configuration: remove or disable unnecessary network services.' `
     -Test {
         param($ctx)
-        $ra = Get-CERegistryValue -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Remote Assistance' -Name 'fAllowToGetHelp' -Default 0
-        if ([int]$ra -eq 1) {
-            New-CEResult -Status 'Warn' -Subject 'Remote Assistance' -Expected 'Disabled' -Actual 'Remote Assistance invitations allowed' `
-                -Recommendation 'Disable Remote Assistance unless your support process depends on it.' `
-                -Remediation (New-CERemediationRef -Id 'RemoteAssistance-Disable')
+        # The policy overrides the local "Allow Remote Assistance connections" box. Intune's
+        # RemoteAssistance policies are ADMX-backed: Intune writes this same policy key.
+        $ts = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+        $bit = { param($v) if ("$v" -match '^[01]$') { [int]$v } }
+        $help = Get-CEPolicySetting -Source @(
+            @{ Label = 'Group Policy'; Path = $ts; Name = 'fAllowToGetHelp'; Map = $bit; IntuneMarker = 'RemoteAssistance\SolicitedRemoteAssistance' },
+            @{ Label = 'Local'; Path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Remote Assistance'; Name = 'fAllowToGetHelp'; Map = $bit }
+        )
+        $offer = Get-CEPolicySetting -Source @(
+            @{ Label = 'Group Policy'; Path = $ts; Name = 'fAllowUnsolicited'; Map = $bit; IntuneMarker = 'RemoteAssistance\UnsolicitedRemoteAssistance' }
+        )
+        $evidence = @(@($help.Evidence) + @($offer.Evidence))
+        $where = 'Administrative Templates > System > Remote Assistance (Group Policy, or the Intune settings catalog)'
+        if ($help.Value -eq 1 -or $offer.Value -eq 1) {
+            $allowed = @()
+            if ($help.Value -eq 1) { $allowed += "invitations allowed$(if ($help.Policy) { " by $($help.Source)" })" }
+            if ($offer.Value -eq 1) { $allowed += "offering help allowed by $($offer.Source)" }
+            $actual = "Remote Assistance $($allowed -join '; ')"
+            if ($help.Policy -or $offer.Policy) {
+                # The local fix would be overridden by the policy, so point at the policy instead.
+                New-CEResult -Status 'Warn' -Subject 'Remote Assistance' -Expected 'Disabled' -Actual $actual -Evidence $evidence `
+                    -Recommendation "Unless your support process depends on it, set Configure Solicited Remote Assistance and Configure Offer Remote Assistance to Disabled under $where. A policy sets this, so changing it on the device would not last."
+            }
+            else {
+                New-CEResult -Status 'Warn' -Subject 'Remote Assistance' -Expected 'Disabled' -Actual $actual -Evidence $evidence `
+                    -Recommendation 'Disable Remote Assistance unless your support process depends on it.' `
+                    -Remediation (New-CERemediationRef -Id 'RemoteAssistance-Disable')
+            }
         }
         else {
-            New-CEResult -Status 'Pass' -Subject 'Remote Assistance' -Expected 'Disabled' -Actual 'Remote Assistance disabled'
+            $actual = if ($help.Policy) { "Remote Assistance disabled by $($help.Source)" } else { 'Remote Assistance disabled' }
+            New-CEResult -Status 'Pass' -Subject 'Remote Assistance' -Expected 'Disabled' -Actual $actual -Evidence $evidence
         }
         $svc = Get-Service -Name 'RemoteRegistry' -ErrorAction SilentlyContinue
         if ($svc -and "$($svc.StartType)" -ne 'Disabled') {

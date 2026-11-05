@@ -254,6 +254,136 @@ Describe 'Test-ReleaseSignatures.ps1: every PE file signed and timestamped, ours
     }
 }
 
+Describe 'Get-ReleaseSignature: the signature in the file, not one in a catalog on this machine' {
+    BeforeAll {
+        function global:New-TestSignedPEFile {
+            # A PE32+ header whose certificate table holds one WIN_CERTIFICATE of the given type around the given bytes.
+            param([string]$Path, [byte[]]$Signature, [int]$Type = 2, [int]$TableOffset = 0x200, [int]$TableSize = -1)
+            $length = 8 + $Signature.Length
+            if ($TableSize -lt 0) { $TableSize = $length }
+            $bytes = New-Object byte[] ([Math]::Max(0x200 + $length, 0x200))
+            $bytes[0] = 0x4D; $bytes[1] = 0x5A
+            $bytes[0x3C] = 0x80
+            $bytes[0x80] = 0x50; $bytes[0x81] = 0x45
+            # The optional header at 0x98 (0x80 + 4 + 20): PE32+ magic, then the fifth data directory at 0x98 + 112 + 32.
+            $bytes[0x98] = 0x0B; $bytes[0x99] = 0x02
+            [BitConverter]::GetBytes([uint32]$TableOffset).CopyTo($bytes, 0x98 + 144)
+            [BitConverter]::GetBytes([uint32]$TableSize).CopyTo($bytes, 0x98 + 148)
+            [BitConverter]::GetBytes([uint32]$length).CopyTo($bytes, 0x200)
+            [BitConverter]::GetBytes([uint16]0x0200).CopyTo($bytes, 0x204)
+            [BitConverter]::GetBytes([uint16]$Type).CopyTo($bytes, 0x206)
+            $Signature.CopyTo($bytes, 0x208)
+            [IO.File]::WriteAllBytes($Path, $bytes)
+        }
+    }
+
+    It 'finds the signature a PE file carries in its certificate table, and nothing in a file without one' {
+        $signed = Join-Path $TestDrive 'signed.dll'
+        New-TestSignedPEFile -Path $signed -Signature ([byte[]](1..20))
+        $block = Get-ReleaseEmbeddedSignatureBlock -LiteralPath $signed
+        $block.Length | Should -Be 20
+        $block[0] | Should -Be 1
+        $plain = Join-Path $TestDrive 'plain.dll'
+        New-TestPEFile -Path $plain
+        Get-ReleaseEmbeddedSignatureBlock -LiteralPath $plain | Should -BeNullOrEmpty
+        Get-ReleaseEmbeddedSignature -LiteralPath $plain | Should -BeNullOrEmpty
+    }
+
+    It 'takes nothing from a certificate table that is not PKCS #7 or runs past the end of the file' {
+        $other = Join-Path $TestDrive 'other.dll'
+        New-TestSignedPEFile -Path $other -Signature ([byte[]](1..20)) -Type 1
+        Get-ReleaseEmbeddedSignatureBlock -LiteralPath $other | Should -BeNullOrEmpty
+        $past = Join-Path $TestDrive 'past.dll'
+        New-TestSignedPEFile -Path $past -Signature ([byte[]](1..20)) -TableSize 4096
+        Get-ReleaseEmbeddedSignatureBlock -LiteralPath $past | Should -BeNullOrEmpty
+        $outside = Join-Path $TestDrive 'outside.dll'
+        New-TestSignedPEFile -Path $outside -Signature ([byte[]](1..20)) -TableOffset 0x7FFFFFF0
+        Get-ReleaseEmbeddedSignatureBlock -LiteralPath $outside | Should -BeNullOrEmpty
+    }
+
+    Context 'when Get-AuthenticodeSignature reports a catalog' {
+        BeforeAll {
+            Mock -ModuleName Release Get-AuthenticodeSignature { Get-TestSignature -Path ([string]@($LiteralPath)[0]) }
+        }
+
+        BeforeEach {
+            $script:Payload = New-TestPayload -Path (Join-Path $TestDrive ([guid]::NewGuid().ToString('N')))
+            Set-TestReleaseUnsigned
+            $global:ReleaseTestSignatures['hostfxr.dll'] = New-TestSignature -Subject 'CN=Microsoft Windows, O=Microsoft Corporation' -Issuer $global:ReleaseTestMicrosoftCA -Thumbprint '99' -Type 'Catalog'
+        }
+
+        It 'judges the signature in the file instead, as the desktop runtime''s D3DCompiler_47_cor3.dll needs' {
+            Mock -ModuleName Release Get-ReleaseEmbeddedSignature {
+                [pscustomobject]@{
+                    Path = $LiteralPath; Status = 'Valid'; StatusMessage = 'Signature verified.'; SignatureType = 'Authenticode'
+                    Subject = $global:ReleaseTestMicrosoft; CommonName = '.NET'; Organisation = 'Microsoft Corporation'
+                    IssuerOrganisation = 'Microsoft Corporation'; Thumbprint = '12'; Timestamped = $true
+                }
+            } -ParameterFilter { $LiteralPath -like '*hostfxr.dll' }
+            $row = @(Get-ReleaseSignatureReport -Path $script:Payload -Unsigned) | Where-Object File -eq 'hostfxr.dll'
+            $row.Problems.Count | Should -Be 0
+            $row.Signer | Should -Be $global:ReleaseTestMicrosoft
+        }
+
+        It 'still fails a file signed only in the catalog' {
+            Mock -ModuleName Release Get-ReleaseEmbeddedSignature { $null }
+            $row = @(Get-ReleaseSignatureReport -Path $script:Payload -Unsigned) | Where-Object File -eq 'hostfxr.dll'
+            ($row.Problems -join ' | ') | Should -Match 'signed only in a catalog'
+        }
+
+        It 'reports what the signature in the file says when it does not verify' {
+            Mock -ModuleName Release Get-ReleaseEmbeddedSignature {
+                [pscustomobject]@{
+                    Path = $LiteralPath; Status = 'HashMismatch'; StatusMessage = 'changed'; SignatureType = 'Authenticode'
+                    Subject = $global:ReleaseTestMicrosoft; CommonName = '.NET'; Organisation = 'Microsoft Corporation'
+                    IssuerOrganisation = 'Microsoft Corporation'; Thumbprint = '12'; Timestamped = $true
+                }
+            } -ParameterFilter { $LiteralPath -like '*hostfxr.dll' }
+            $row = @(Get-ReleaseSignatureReport -Path $script:Payload -Unsigned) | Where-Object File -eq 'hostfxr.dll'
+            ($row.Problems -join ' | ') | Should -Match 'changed since it was signed'
+            ($row.Problems -join ' | ') | Should -Not -Match 'catalog'
+        }
+    }
+}
+
+BeforeDiscovery {
+    # The real-file tests need Windows, and the first two its desktop runtime, which the Windows runners have.
+    $NotWindows = -not ($PSVersionTable.PSEdition -eq 'Desktop' -or $IsWindows)
+    $script:NoDesktopRuntime = $true
+    if (-not $NotWindows) {
+        $script:NoDesktopRuntime = -not (Get-ChildItem -Path (Join-Path $env:ProgramFiles 'dotnet\shared\Microsoft.WindowsDesktop.App\*\D3DCompiler_47_cor3.dll') -ErrorAction SilentlyContinue)
+    }
+}
+
+Describe 'Get-ReleaseSignature on real files' -Skip:$NotWindows {
+    BeforeAll {
+        $script:D3D = [string](Get-ChildItem -Path (Join-Path $env:ProgramFiles 'dotnet\shared\Microsoft.WindowsDesktop.App\*\D3DCompiler_47_cor3.dll') -ErrorAction SilentlyContinue |
+            Sort-Object { [version]$_.Directory.Name } | Select-Object -Last 1 -ExpandProperty FullName)
+    }
+
+    It 'reads Microsoft''s timestamped signature in D3DCompiler_47_cor3.dll, which Windows also has in a catalog' -Skip:$script:NoDesktopRuntime {
+        $signature = Get-ReleaseSignature -LiteralPath $script:D3D
+        $signature.Status | Should -Be 'Valid'
+        $signature.SignatureType | Should -Be 'Authenticode'
+        $signature.Timestamped | Should -BeTrue
+        Test-ReleaseMicrosoftSignature -Signature $signature | Should -BeTrue
+    }
+
+    It 'says a changed copy of it no longer matches its signature' -Skip:$script:NoDesktopRuntime {
+        $bytes = [IO.File]::ReadAllBytes($script:D3D)
+        $bytes[[int]($bytes.Length / 3)] = $bytes[[int]($bytes.Length / 3)] -bxor 0xFF
+        $copy = Join-Path $TestDrive 'D3DCompiler_47_cor3.dll'
+        [IO.File]::WriteAllBytes($copy, $bytes)
+        (Get-ReleaseEmbeddedSignature -LiteralPath $copy).Status | Should -Be 'HashMismatch'
+    }
+
+    It 'finds no signature in a file Windows signs only in a catalog' {
+        $notepad = Join-Path $env:SystemRoot 'System32\notepad.exe'
+        if ((Get-AuthenticodeSignature -LiteralPath $notepad).SignatureType -ne 'Catalog') { Set-ItResult -Skipped -Because 'notepad.exe carries its own signature on this build' }
+        Get-ReleaseEmbeddedSignature -LiteralPath $notepad | Should -BeNullOrEmpty
+    }
+}
+
 Describe 'Get-ReleaseAzureLoginProblem: a login that cannot work stops a release in seconds' {
     BeforeAll {
         $script:LoginMetadata = Join-Path $TestDrive 'login-metadata.json'

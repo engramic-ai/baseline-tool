@@ -1153,12 +1153,6 @@ which needs no reproducibility.
   `Measure-RuntimeSpike.ps1 -Phase Determinism -ReferenceManifest` already makes the comparison.
 - The merge script: each app published to its own folder, then merged into one, failing on any file two apps
   publish with different content but the two exceptions above.
-- A fix for the catalog-signature defect in `tools/Release.psm1` (below): `Get-ReleaseSignature` takes what
-  `Get-AuthenticodeSignature` reports, which is a catalog's signature whenever the file's hash is also in a catalog
-  on the machine, so `Test-ReleaseSignatures.ps1 -Unsigned` fails the desktop pack's `D3DCompiler_47_cor3.dll` and
-  `vcruntime140_cor3.dll`, though both carry Microsoft's timestamped signature in the file. It is tracked as a
-  follow-up, and blocks only a release with the desktop app.
-
 **Size.** `baseline.exe` published as the release publishes it:
 
 | Self-contained win-x64 | Files | Folder (MB) | Zip (MB) | Our files (MB) | PDBs (MB) |
@@ -1230,12 +1224,15 @@ What it showed:
   package assemblies kept Microsoft's signatures. A list of names in `PublishReadyToRunExclude` would be long for
   it: the stand-in leaves out every package assembly by its `NuGetPackageId` instead, apart from this repository's
   libraries, which carry a package id too when they come through another project.
-- **The signature check fails two WPF files, wrongly.** `Test-ReleaseSignatures.ps1 -Unsigned` fails the folder on
+- **The signature check failed two WPF files, wrongly (fixed).** `Test-ReleaseSignatures.ps1 -Unsigned` failed the folder on
   the desktop pack's `D3DCompiler_47_cor3.dll` and `vcruntime140_cor3.dll` as signed only in a catalog. Both carry
   Microsoft's timestamped signature in the file, but their hashes are also in this machine's catalogs (Windows ships
-  the same D3DCompiler build), and `Get-AuthenticodeSignature` then reports the catalog's signature. Any release
-  with the WPF app would meet this, shared folder or not, so the check must read the signature in the file before
-  the desktop app ships (still to build, above).
+  the same D3DCompiler build), and `Get-AuthenticodeSignature` looks in the catalogs first and then reports the
+  catalog's signature. `Get-ReleaseSignature` in `tools/Release.psm1` now reads the signature in the file whenever
+  the cmdlet reports a catalog: whether it verifies from `WinVerifyTrust` for the file alone (`WTD_CHOICE_FILE`,
+  which never consults a catalog), and the signer and timestamp from the PKCS #7 signature in the file's
+  certificate table. Only a file that carries no signature of its own is still reported as signed in a catalog
+  alone. The same folder, `baseline.exe` published with the two WPF files added, now passes.
 
 **ReadyToRun determinism.** Two clean publishes of the ReadyToRun build, each from its own clone at a different
 path, every file compared by SHA-256:

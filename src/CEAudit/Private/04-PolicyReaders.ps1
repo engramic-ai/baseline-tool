@@ -154,21 +154,6 @@ function Get-CELocalPasswordAccount {
     return [pscustomobject]@{ Listed = $true; LapsAccount = $lapsAccount; LapsSummary = $laps.Summary; Unmanaged = $unmanaged; Evidence = $evidence.ToArray() }
 }
 
-function ConvertFrom-CEAdmxPolicyState {
-    <#
-        An ADMX-backed Intune policy is kept under PolicyManager as the SyncML text it arrived
-        in, such as '<enabled/>' or '<disabled/>' followed by any data elements. Returns
-        'Enabled', 'Disabled' or $null when the text is neither.
-    #>
-    [CmdletBinding()]
-    param($Value)
-    if ($null -eq $Value) { return $null }
-    $text = "$Value".Trim()
-    if ($text -match '^<enabled\s*/>') { return 'Enabled' }
-    if ($text -match '^<disabled\s*/>') { return 'Disabled' }
-    return $null
-}
-
 function Get-CEPolicySetting {
     <#
         Reads one setting from every place Windows takes it from, and says which applies.
@@ -180,6 +165,10 @@ function Get-CEPolicySetting {
           Path, Name - the registry value
           Map  - optional scriptblock turning the raw value into the form the check compares
                  (return $null for "not set")
+          IntuneMarker - optional 'Area\Policy' of an ADMX-backed Intune policy. Intune applies
+                 those by writing the Group Policy key itself, and records only that it did
+                 (Policy_ProviderSet under PolicyManager\current\device\Area). When that marker
+                 is there the value is labelled Intune, not Group Policy.
         A policy (any source but 'Local') beats the local setting. Returns:
           Value    - the value that applies, or $null when no source sets it
           Source   - the label of the source it came from ('' when none)
@@ -197,7 +186,13 @@ function Get-CEPolicySetting {
         $value = $raw
         if ($s.ContainsKey('Map') -and $s.Map) { $value = & $s.Map $raw }
         if ($null -eq $value) { continue }
-        [void]$found.Add([pscustomobject]@{ Label = $s.Label; Path = $s.Path; Name = $s.Name; Raw = $raw; Value = $value })
+        $label = $s.Label
+        if ($s.ContainsKey('IntuneMarker') -and $s.IntuneMarker) {
+            $area, $policy = "$($s.IntuneMarker)" -split '\\', 2
+            $marker = Get-CERegistryValue -Path "HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\$area" -Name "${policy}_ProviderSet"
+            if ($null -ne $marker) { $label = 'Intune' }
+        }
+        [void]$found.Add([pscustomobject]@{ Label = $label; Path = $s.Path; Name = $s.Name; Raw = $raw; Value = $value })
     }
     $policies = @($found | Where-Object { $_.Label -ne 'Local' })
     $winner = $null

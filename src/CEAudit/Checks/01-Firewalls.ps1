@@ -113,22 +113,15 @@ Register-CECheck -Id 'FW-04' -Category 'Firewalls' -Severity 'High' `
     -Reference 'CE v3.3 Firewalls/User access control: remote administrative access must be protected by MFA or an IP allow list; disable unnecessary services.' `
     -Test {
         param($ctx)
-        # The Remote Desktop Services policy (Group Policy, or Intune's ADMX-backed
-        # RemoteDesktopServices policies, which write the same key) overrides the local settings.
+        # The Remote Desktop Services policy overrides the local settings. Intune's
+        # RemoteDesktopServices policies are ADMX-backed: Intune writes this same policy key.
         $ts = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
         $bit = { param($v) if ("$v" -match '^[01]$') { [int]$v } }
         $deny = Get-CEPolicySetting -Source @(
-            # "Allow users to connect remotely" Enabled means connections are not denied.
-            @{ Label = 'Intune'; Path = 'HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\RemoteDesktopServices'; Name = 'AllowUsersToConnectRemotely'; Map = { param($v) switch (ConvertFrom-CEAdmxPolicyState $v) { 'Enabled' { 0 } 'Disabled' { 1 } } } },
-            @{ Label = 'Group Policy'; Path = $ts; Name = 'fDenyTSConnections'; Map = $bit },
+            @{ Label = 'Group Policy'; Path = $ts; Name = 'fDenyTSConnections'; Map = $bit; IntuneMarker = 'RemoteDesktopServices\AllowUsersToConnectRemotely' },
             @{ Label = 'Local'; Path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server'; Name = 'fDenyTSConnections'; Map = $bit }
         )
         $policyWhere = 'Administrative Templates > Windows Components > Remote Desktop Services > Remote Desktop Session Host (Group Policy, or the Intune settings catalog)'
-        if ($deny.Conflict) {
-            return New-CEResult -Status 'Warn' -Subject 'Enabled' -Expected 'RDP disabled, or enabled with NLA and restricted access' `
-                -Actual 'Conflicting policies: Intune and Group Policy set Remote Desktop differently' -Evidence $deny.Evidence `
-                -Recommendation "Set Remote Desktop in one place only, under $policyWhere."
-        }
         if ($null -eq $deny.Value -or $deny.Value -eq 1) {
             $actual = if ($deny.Policy) { "Remote Desktop is disabled by $($deny.Source)" } else { 'Remote Desktop is disabled' }
             return New-CEResult -Status 'Pass' -Expected 'RDP disabled, or enabled with NLA and restricted access' -Actual $actual -Evidence $deny.Evidence

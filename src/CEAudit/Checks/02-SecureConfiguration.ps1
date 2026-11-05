@@ -289,28 +289,20 @@ Register-CECheck -Id 'SC-11' -Category 'SecureConfiguration' -Severity 'Low' `
     -Reference 'CE v3.3 Secure configuration: remove or disable unnecessary network services.' `
     -Test {
         param($ctx)
-        # The policy (Group Policy, or Intune's ADMX-backed RemoteAssistance policies, which write
-        # the same key) overrides the local "Allow Remote Assistance connections" box.
+        # The policy overrides the local "Allow Remote Assistance connections" box. Intune's
+        # RemoteAssistance policies are ADMX-backed: Intune writes this same policy key.
         $ts = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
-        $csp = 'HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\RemoteAssistance'
-        $admx = { param($v) switch (ConvertFrom-CEAdmxPolicyState $v) { 'Enabled' { 1 } 'Disabled' { 0 } } }
         $bit = { param($v) if ("$v" -match '^[01]$') { [int]$v } }
         $help = Get-CEPolicySetting -Source @(
-            @{ Label = 'Intune'; Path = $csp; Name = 'SolicitedRemoteAssistance'; Map = $admx },
-            @{ Label = 'Group Policy'; Path = $ts; Name = 'fAllowToGetHelp'; Map = $bit },
+            @{ Label = 'Group Policy'; Path = $ts; Name = 'fAllowToGetHelp'; Map = $bit; IntuneMarker = 'RemoteAssistance\SolicitedRemoteAssistance' },
             @{ Label = 'Local'; Path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Remote Assistance'; Name = 'fAllowToGetHelp'; Map = $bit }
         )
         $offer = Get-CEPolicySetting -Source @(
-            @{ Label = 'Intune'; Path = $csp; Name = 'UnsolicitedRemoteAssistance'; Map = $admx },
-            @{ Label = 'Group Policy'; Path = $ts; Name = 'fAllowUnsolicited'; Map = $bit }
+            @{ Label = 'Group Policy'; Path = $ts; Name = 'fAllowUnsolicited'; Map = $bit; IntuneMarker = 'RemoteAssistance\UnsolicitedRemoteAssistance' }
         )
         $evidence = @(@($help.Evidence) + @($offer.Evidence))
         $where = 'Administrative Templates > System > Remote Assistance (Group Policy, or the Intune settings catalog)'
-        if ($help.Conflict -or $offer.Conflict) {
-            New-CEResult -Status 'Warn' -Subject 'Remote Assistance' -Expected 'Disabled' -Actual 'Conflicting policies: Intune and Group Policy set Remote Assistance differently' `
-                -Evidence $evidence -Recommendation "Set Remote Assistance in one place only, under $where."
-        }
-        elseif ($help.Value -eq 1 -or $offer.Value -eq 1) {
+        if ($help.Value -eq 1 -or $offer.Value -eq 1) {
             $allowed = @()
             if ($help.Value -eq 1) { $allowed += "invitations allowed$(if ($help.Policy) { " by $($help.Source)" })" }
             if ($offer.Value -eq 1) { $allowed += "offering help allowed by $($offer.Source)" }

@@ -9284,11 +9284,14 @@ Describe 'Settings set by Intune or Group Policy instead of locally (MP-06, SC-1
             }
         }
 
-        It 'reads the enabled or disabled state of an ADMX-backed Intune policy' {
+        It 'labels a policy key Intune wrote (an ADMX-backed policy) as Intune' {
             InModuleScope CEAudit {
-                ConvertFrom-CEAdmxPolicyState '<enabled/><data id="x" value="1"/>' | Should -Be 'Enabled'
-                ConvertFrom-CEAdmxPolicyState ' <disabled/>' | Should -Be 'Disabled'
-                ConvertFrom-CEAdmxPolicyState '1' | Should -BeNullOrEmpty
+                Mock Get-CERegistryValue { $global:CETestReg["$Path|$Name"] }
+                $src = @(@{ Label = 'Group Policy'; Path = 'HKLM:\B'; Name = 'X'; IntuneMarker = 'Area\Pol' })
+                $global:CETestReg = @{ 'HKLM:\B|X' = 0 }
+                (Get-CEPolicySetting -Source $src).Source | Should -Be 'Group Policy'
+                $global:CETestReg['HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\Area|Pol_ProviderSet'] = 1
+                (Get-CEPolicySetting -Source $src).Source | Should -Be 'Intune'
             }
         }
     }
@@ -9342,6 +9345,17 @@ Describe 'Settings set by Intune or Group Policy instead of locally (MP-06, SC-1
             $f.Remediation | Should -BeNullOrEmpty
         }
 
+        It 'passes a device set up the way a real Intune tenant was' {
+            # Intune's SmartScreen CSP set, plus EnableSmartScreen=1 in the policy key with no level.
+            $global:CETestReg["$script:csp\SmartScreen|EnableSmartScreenInShell"] = 1
+            $global:CETestReg["$script:csp\SmartScreen|EnableSmartScreenInShell_ProviderSet"] = 1
+            $global:CETestReg["$script:csp\SmartScreen|PreventOverrideForFilesInShell"] = 1
+            $global:CETestReg['HKLM:\SOFTWARE\Policies\Microsoft\Windows\System|EnableSmartScreen'] = 1
+            $f = @(Invoke-CEAuditCore -Id 'MP-06') | Where-Object Subject -eq 'Windows SmartScreen'
+            $f.Status | Should -Be 'Pass'
+            $f.Actual | Should -Be 'Enforced in block mode by Intune'
+        }
+
         It 'still passes Group Policy block mode' {
             Set-TestDevice -Kind Secure
             $f = @(Invoke-CEAuditCore -Id 'MP-06') | Where-Object Subject -eq 'Windows SmartScreen'
@@ -9360,11 +9374,14 @@ Describe 'Settings set by Intune or Group Policy instead of locally (MP-06, SC-1
             $f.Actual | Should -Match 'disabled by Group Policy'
         }
 
-        It 'reads the Intune ADMX policy' {
-            $global:CETestReg["$script:csp\RemoteAssistance|SolicitedRemoteAssistance"] = '<disabled/>'
+        It 'names Intune when Intune wrote the policy' {
+            $global:CETestReg["$script:ts|fAllowToGetHelp"] = 0
+            $global:CETestReg["$script:ts|fAllowUnsolicited"] = 0
+            $global:CETestReg["$script:csp\RemoteAssistance|SolicitedRemoteAssistance_ProviderSet"] = 2
+            $global:CETestReg["$script:csp\RemoteAssistance|UnsolicitedRemoteAssistance_ProviderSet"] = 2
             $f = @(Invoke-CEAuditCore -Id 'SC-11') | Where-Object Subject -eq 'Remote Assistance'
             $f.Status | Should -Be 'Pass'
-            $f.Actual | Should -Match 'by Intune'
+            $f.Actual | Should -Be 'Remote Assistance disabled by Intune'
         }
 
         It 'points at the policy, with no local fix, when a policy allows it' {
@@ -9398,7 +9415,8 @@ Describe 'Settings set by Intune or Group Policy instead of locally (MP-06, SC-1
 
         It 'reads Intune allowing Remote Desktop, and offers no local fix' {
             Set-TestDevice -Kind Secure
-            $global:CETestReg["$script:csp\RemoteDesktopServices|AllowUsersToConnectRemotely"] = '<enabled/>'
+            $global:CETestReg["$script:ts|fDenyTSConnections"] = 0
+            $global:CETestReg["$script:csp\RemoteDesktopServices|AllowUsersToConnectRemotely_ProviderSet"] = 1
             $global:CETestReg["$script:ts|UserAuthentication"] = 1
             $f = @(Invoke-CEAuditCore -Id 'FW-04')
             @($f | Where-Object Subject -eq 'NLA').Count | Should -Be 0

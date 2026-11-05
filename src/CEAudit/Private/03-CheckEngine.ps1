@@ -213,6 +213,22 @@ function Invoke-CEAuditCore {
     )
     if ($ExcludeId) { $checks = @($checks | Where-Object { $ExcludeId -notcontains $_.Id }) }
 
+    # Finding IDs must be unique within an audit: the changeset, reports and status.json key on them.
+    # A subject's slug can repeat (two firewall rules with one display name, or long subjects that only
+    # differ after the slug's 40 characters), so a repeat gets -2, -3 and so on, in the order found.
+    $seen = @{}
+    $emit = {
+        param($Finding)
+        $base = $Finding.FindingId
+        if ($seen.ContainsKey($base)) {
+            $n = 2
+            while ($seen.ContainsKey("$base-$n")) { $n++ }
+            $Finding.FindingId = "$base-$n"
+        }
+        $seen[$Finding.FindingId] = $true
+        $Finding
+    }
+
     $i = 0
     foreach ($check in $checks) {
         $i++
@@ -220,7 +236,7 @@ function Invoke-CEAuditCore {
         if ($ProgressState) { $ProgressState.Current = "$($check.Id) $($check.Title)"; $ProgressState.Done = $i - 1; $ProgressState.Total = $checks.Count }
 
         if ($check.RequiresAdmin -and -not $ctx.IsElevated) {
-            ConvertTo-CEFinding -Check $check -Result (New-CEResult -Status 'Skipped' -Actual 'Not run: requires an elevated (Run as administrator) PowerShell session.' -Recommendation 'Re-run the audit from an elevated PowerShell prompt.')
+            & $emit (ConvertTo-CEFinding -Check $check -Result (New-CEResult -Status 'Skipped' -Actual 'Not run: requires an elevated (Run as administrator) PowerShell session.' -Recommendation 'Re-run the audit from an elevated PowerShell prompt.'))
             continue
         }
 
@@ -229,7 +245,7 @@ function Invoke-CEAuditCore {
             try { $applies = & $check.AppliesTo $ctx } catch { $applies = "Applicability test failed: $_" }
             if ($applies -is [string] -or $applies -eq $false) {
                 $reason = if ($applies -is [string]) { $applies } else { 'Not applicable to this device.' }
-                ConvertTo-CEFinding -Check $check -Result (New-CEResult -Status 'NotApplicable' -Actual $reason)
+                & $emit (ConvertTo-CEFinding -Check $check -Result (New-CEResult -Status 'NotApplicable' -Actual $reason))
                 continue
             }
         }
@@ -241,11 +257,11 @@ function Invoke-CEAuditCore {
             }
             foreach ($r in $results) {
                 if ($null -eq $r -or -not ($r.PSObject.TypeNames -contains 'CEAudit.Result')) { continue }
-                ConvertTo-CEFinding -Check $check -Result $r
+                & $emit (ConvertTo-CEFinding -Check $check -Result $r)
             }
         }
         catch {
-            ConvertTo-CEFinding -Check $check -Result (New-CEResult -Status 'Error' -Actual "Check failed: $($_.Exception.Message)" -Recommendation 'Investigate manually; see Evidence.' -Evidence @("$($_.InvocationInfo.PositionMessage)"))
+            & $emit (ConvertTo-CEFinding -Check $check -Result (New-CEResult -Status 'Error' -Actual "Check failed: $($_.Exception.Message)" -Recommendation 'Investigate manually; see Evidence.' -Evidence @("$($_.InvocationInfo.PositionMessage)")))
         }
     }
     Write-Progress -Activity 'Cyber Essentials audit' -Completed

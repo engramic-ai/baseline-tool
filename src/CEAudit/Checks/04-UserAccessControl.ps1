@@ -147,29 +147,18 @@ Register-CECheck -Id 'UA-04' -Category 'UserAccessControl' -Severity 'High' `
                 return New-CEResult -Status 'Pass' -Expected "Minimum length >= $min" -Actual "${source}: $len" -Evidence $evidence -Recommendation $note
             }
         }
-        $unmanaged = $null
-        try {
-            $enabled = @(Get-LocalUser -ErrorAction Stop | Where-Object { $_.Enabled })
-            $laps = Get-CELapsManagedAccount
-            $lapsAccount = $null
-            if ($laps.Managed -and $laps.Strong) {
-                $lapsAccount = @($enabled | Where-Object { ("$($_.SID)" -split '-')[-1] -eq "$($laps.Rid)" })[0]
-            }
-            elseif ($laps.Managed) { $evidence += "Windows LAPS password is shorter than 12 characters ($($laps.Summary))" }
-            elseif ($laps.Reason -ne 'No Windows LAPS policy') { $evidence += $laps.Reason }
-            $unmanaged = @($enabled | Where-Object { -not $lapsAccount -or "$($_.SID)" -ne "$($lapsAccount.SID)" })
-            if ($lapsAccount) { $evidence += "Windows LAPS manages $($lapsAccount.Name): $($laps.Summary)" }
-            if ($lapsAccount -and $unmanaged.Count -eq 0) {
-                return New-CEResult -Status 'Pass' -Expected "Minimum length >= $min, or no local account with a chosen password" `
-                    -Actual "The only enabled local account, $($lapsAccount.Name), is managed by Windows LAPS ($($laps.Summary))." `
-                    -Evidence $evidence -Recommendation "If you add a local account that LAPS doesn't manage, set the local minimum password length to $min. $note"
-            }
+        $accounts = Get-CELocalPasswordAccount
+        $evidence += @($accounts.Evidence)
+        $unmanaged = @($accounts.Unmanaged)
+        if ($accounts.Listed -and $accounts.LapsAccount -and $unmanaged.Count -eq 0) {
+            return New-CEResult -Status 'Pass' -Expected "Minimum length >= $min, or no local account with a chosen password" `
+                -Actual "The only enabled local account, $($accounts.LapsAccount.Name), is managed by Windows LAPS ($($accounts.LapsSummary))." `
+                -Evidence $evidence -Recommendation "If you add a local account that LAPS doesn't manage, set the local minimum password length to $min. $note"
         }
-        catch { $evidence += "Local accounts could not be listed: $($_.Exception.Message)" }
 
         $status = if ($len -ge 8) { 'Warn' } else { 'Fail' }
         $extra = if ($len -ge 8) { ' 8-11 characters is only acceptable if common passwords are automatically blocked. Windows does not do that for local accounts: blocking simple passwords only stops repeats and sequences.' } else { '' }
-        $applies = if ($unmanaged -and $unmanaged.Count -gt 0) { " It applies to: $((@($unmanaged | ForEach-Object { $_.Name })) -join ', ')." } else { '' }
+        $applies = if ($unmanaged.Count -gt 0) { " It applies to: $((@($unmanaged | ForEach-Object { $_.Name })) -join ', ')." } else { '' }
         return New-CEResult -Status $status -Expected "Minimum length >= $min" -Actual "${source}: $len.$extra$applies" -Evidence $evidence `
             -Recommendation "Set the local minimum password length to $min$(if ($source -ne 'Local minimum password length') { ' in the Intune policy that sets it, usually a compliance policy. If a configuration policy sets it too, keep the two the same, or Intune reports a conflict' }). Existing passwords are not re-checked until they are next changed. $note" `
             -Remediation (New-CERemediationRef -Id 'PasswordPolicy-Set' -Parameters @{ MinLength = $min })
@@ -182,12 +171,40 @@ Register-CECheck -Id 'UA-05' -Category 'UserAccessControl' -Severity 'Low' `
     -Test {
         param($ctx)
         $pol = Get-CEAccountPolicy
-        if ($pol.MaxPasswordAgeDays -le 0) {
-            return New-CEResult -Status 'Pass' -Expected 'Maximum password age: unlimited' -Actual 'Passwords do not expire'
+        $evidence = @("Local maximum password age (net accounts): $(if ($pol.MaxPasswordAgeDays -le 0) { 'unlimited' } else { "$($pol.MaxPasswordAgeDays) days" })")
+        # Intune's DeviceLock expiry (often sent by a compliance policy) also applies to local accounts,
+        # and net accounts doesn't show it. DevicePasswordEnabled=0 means the policy is ON; 0 days is none.
+        $lock = 'HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\DeviceLock'
+        $mdmOn = Get-CERegistryValue -Path $lock -Name 'DevicePasswordEnabled'
+        $mdmDays = Get-CERegistryValue -Path $lock -Name 'DevicePasswordExpiration'
+        $mdmExpiry = ("$mdmOn" -eq '0' -and $null -ne $mdmDays -and [int]$mdmDays -gt 0)
+        if ("$mdmOn" -eq '0' -and $null -ne $mdmDays) { $evidence += "Intune DeviceLock DevicePasswordExpiration: $mdmDays days" }
+        $sources = @()
+        if ($pol.MaxPasswordAgeDays -gt 0) { $sources += "the local policy, every $($pol.MaxPasswordAgeDays) days" }
+        if ($mdmExpiry) { $sources += "Intune DeviceLock (usually a compliance policy), every $mdmDays days" }
+        if ($sources.Count -eq 0) {
+            return New-CEResult -Status 'Pass' -Expected 'Maximum password age: unlimited' -Actual 'Passwords do not expire' -Evidence $evidence
         }
-        return New-CEResult -Status 'Warn' -Expected 'Maximum password age: unlimited' -Actual "Passwords expire every $($pol.MaxPasswordAgeDays) days" `
-            -Recommendation 'Remove periodic expiry; change passwords only when compromise is suspected.' `
-            -Remediation (New-CERemediationRef -Id 'PasswordPolicy-Set' -Parameters @{ MaxAgeUnlimited = $true })
+
+        # Expiry only touches local accounts. When the only one is managed by Windows LAPS, nobody is
+        # made to change a password they chose: LAPS rotating its own password is the point of it.
+        $accounts = Get-CELocalPasswordAccount
+        $evidence += @($accounts.Evidence)
+        $unmanaged = @($accounts.Unmanaged)
+        if ($accounts.Listed -and $accounts.LapsAccount -and $unmanaged.Count -eq 0) {
+            return New-CEResult -Status 'Pass' -Expected 'No forced expiry for passwords people choose' -Evidence $evidence `
+                -Actual "Passwords expire under $($sources -join ' and '), but the only enabled local account, $($accounts.LapsAccount.Name), is managed by Windows LAPS ($($accounts.LapsSummary))." `
+                -Recommendation 'If you add a local account that LAPS does not manage, remove periodic expiry first.'
+        }
+        $applies = if ($unmanaged.Count -gt 0) { " It applies to: $((@($unmanaged | ForEach-Object { $_.Name })) -join ', ')." } else { '' }
+        $how = @()
+        if ($pol.MaxPasswordAgeDays -gt 0) { $how += 'set the local maximum password age to unlimited' }
+        if ($mdmExpiry) { $how += 'set password expiration to 0 (none) in the Intune policy that sets it, usually a compliance policy' }
+        $fix = if ($pol.MaxPasswordAgeDays -gt 0) { New-CERemediationRef -Id 'PasswordPolicy-Set' -Parameters @{ MaxAgeUnlimited = $true } } else { $null }
+        return New-CEResult -Status 'Warn' -Expected 'Maximum password age: unlimited' -Evidence $evidence `
+            -Actual "Passwords expire under $($sources -join ' and ').$applies" `
+            -Recommendation "Remove periodic expiry ($($how -join '; and ')); change passwords only when compromise is suspected." `
+            -Remediation $fix
     }
 
 Register-CECheck -Id 'UA-06' -Category 'UserAccessControl' -Severity 'Low' -RequiresAdmin `
@@ -296,10 +313,10 @@ Register-CECheck -Id 'UA-09' -Category 'UserAccessControl' -Severity 'Medium' `
     -AppliesTo { param($ctx) if ($ctx.CentrallyManaged) { $true } else { 'Standalone device: LAPS requires Entra ID or Active Directory to store passwords.' } } `
     -Test {
         param($ctx)
-        $dir = Get-CERegistryValue -Path 'HKLM:\SOFTWARE\Microsoft\Policies\LAPS' -Name 'BackupDirectory' -Default 0
-        if ([int]$dir -gt 0) {
-            $where = if ([int]$dir -eq 1) { 'Entra ID' } else { 'Active Directory' }
-            return New-CEResult -Status 'Pass' -Expected 'Windows LAPS backing up to Entra ID or AD' -Actual "Windows LAPS enabled (backup to $where)"
+        $laps = Get-CELapsPolicy
+        if ($laps -and $laps.BackupDirectory -gt 0) {
+            $where = if ($laps.BackupDirectory -eq 1) { 'Entra ID' } else { 'Active Directory' }
+            return New-CEResult -Status 'Pass' -Expected 'Windows LAPS backing up to Entra ID or AD' -Actual "Windows LAPS enabled by $($laps.Source) (backup to $where)"
         }
         return New-CEResult -Status 'Warn' -Expected 'Windows LAPS backing up to Entra ID or AD' -Actual 'Windows LAPS not configured' `
             -Recommendation 'Configure Windows LAPS in Intune (Endpoint security > Account protection) or Group Policy.'

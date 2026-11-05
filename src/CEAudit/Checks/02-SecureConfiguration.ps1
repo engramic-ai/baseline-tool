@@ -35,9 +35,19 @@ Register-CECheck -Id 'SC-02' -Category 'SecureConfiguration' -Severity 'High' `
         if (-not $admin -or -not $admin.Enabled) {
             return New-CEResult -Status 'Pass' -Expected 'Built-in Administrator disabled' -Actual 'Built-in Administrator is disabled'
         }
-        $laps = Get-CERegistryValue -Path 'HKLM:\SOFTWARE\Microsoft\Policies\LAPS' -Name 'BackupDirectory' -Default 0
-        if ([int]$laps -gt 0) {
-            return New-CEResult -Status 'Pass' -Expected 'Built-in Administrator disabled or password managed by LAPS' -Actual "Enabled, password managed by Windows LAPS (BackupDirectory=$laps)"
+        # Windows LAPS manages one account: the built-in Administrator unless the policy names another.
+        $laps = Get-CELapsPolicy
+        $rid = Get-CERegistryValue -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\LAPS\State' -Name 'LastManagedAccountRid'
+        if ($laps -and $laps.BackupDirectory -gt 0) {
+            if ($null -eq $rid -or [int64]$rid -eq 500) {
+                return New-CEResult -Status 'Pass' -Expected 'Built-in Administrator disabled or password managed by LAPS' `
+                    -Actual "Enabled, password managed by Windows LAPS (set by $($laps.Source), BackupDirectory=$($laps.BackupDirectory))"
+            }
+            return New-CEResult -Status 'Fail' -Expected 'Built-in Administrator disabled or password managed by LAPS' `
+                -Actual "Built-in Administrator '$($admin.Name)' is enabled, and Windows LAPS manages a different account (RID $rid), not this one" `
+                -Evidence @("Windows LAPS policy set by $($laps.Source)") `
+                -Recommendation 'Disable the built-in Administrator account, since Windows LAPS manages your named admin account instead.' `
+                -Remediation (New-CERemediationRef -Id 'LocalUser-DisableBySidSuffix' -Parameters @{ SidSuffix = 500 })
         }
         return New-CEResult -Status 'Fail' -Expected 'Built-in Administrator disabled or password managed by LAPS' `
             -Actual "Built-in Administrator '$($admin.Name)' is enabled with an unmanaged password" `
@@ -279,14 +289,38 @@ Register-CECheck -Id 'SC-11' -Category 'SecureConfiguration' -Severity 'Low' `
     -Reference 'CE v3.3 Secure configuration: remove or disable unnecessary network services.' `
     -Test {
         param($ctx)
-        $ra = Get-CERegistryValue -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Remote Assistance' -Name 'fAllowToGetHelp' -Default 0
-        if ([int]$ra -eq 1) {
-            New-CEResult -Status 'Warn' -Subject 'Remote Assistance' -Expected 'Disabled' -Actual 'Remote Assistance invitations allowed' `
-                -Recommendation 'Disable Remote Assistance unless your support process depends on it.' `
-                -Remediation (New-CERemediationRef -Id 'RemoteAssistance-Disable')
+        # The policy overrides the local "Allow Remote Assistance connections" box. Intune's
+        # RemoteAssistance policies are ADMX-backed: Intune writes this same policy key.
+        $ts = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+        $bit = { param($v) if ("$v" -match '^[01]$') { [int]$v } }
+        $help = Get-CEPolicySetting -Source @(
+            @{ Label = 'Group Policy'; Path = $ts; Name = 'fAllowToGetHelp'; Map = $bit; IntuneMarker = 'RemoteAssistance\SolicitedRemoteAssistance' },
+            @{ Label = 'Local'; Path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Remote Assistance'; Name = 'fAllowToGetHelp'; Map = $bit }
+        )
+        $offer = Get-CEPolicySetting -Source @(
+            @{ Label = 'Group Policy'; Path = $ts; Name = 'fAllowUnsolicited'; Map = $bit; IntuneMarker = 'RemoteAssistance\UnsolicitedRemoteAssistance' }
+        )
+        $evidence = @(@($help.Evidence) + @($offer.Evidence))
+        $where = 'Administrative Templates > System > Remote Assistance (Group Policy, or the Intune settings catalog)'
+        if ($help.Value -eq 1 -or $offer.Value -eq 1) {
+            $allowed = @()
+            if ($help.Value -eq 1) { $allowed += "invitations allowed$(if ($help.Policy) { " by $($help.Source)" })" }
+            if ($offer.Value -eq 1) { $allowed += "offering help allowed by $($offer.Source)" }
+            $actual = "Remote Assistance $($allowed -join '; ')"
+            if ($help.Policy -or $offer.Policy) {
+                # The local fix would be overridden by the policy, so point at the policy instead.
+                New-CEResult -Status 'Warn' -Subject 'Remote Assistance' -Expected 'Disabled' -Actual $actual -Evidence $evidence `
+                    -Recommendation "Unless your support process depends on it, set Configure Solicited Remote Assistance and Configure Offer Remote Assistance to Disabled under $where. A policy sets this, so changing it on the device would not last."
+            }
+            else {
+                New-CEResult -Status 'Warn' -Subject 'Remote Assistance' -Expected 'Disabled' -Actual $actual -Evidence $evidence `
+                    -Recommendation 'Disable Remote Assistance unless your support process depends on it.' `
+                    -Remediation (New-CERemediationRef -Id 'RemoteAssistance-Disable')
+            }
         }
         else {
-            New-CEResult -Status 'Pass' -Subject 'Remote Assistance' -Expected 'Disabled' -Actual 'Remote Assistance disabled'
+            $actual = if ($help.Policy) { "Remote Assistance disabled by $($help.Source)" } else { 'Remote Assistance disabled' }
+            New-CEResult -Status 'Pass' -Subject 'Remote Assistance' -Expected 'Disabled' -Actual $actual -Evidence $evidence
         }
         $svc = Get-Service -Name 'RemoteRegistry' -ErrorAction SilentlyContinue
         if ($svc -and "$($svc.StartType)" -ne 'Disabled') {

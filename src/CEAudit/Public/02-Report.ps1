@@ -322,6 +322,22 @@ function Export-CEMarkdown {
     Set-Content -LiteralPath $Path -Value $sb.ToString() -Encoding UTF8
 }
 
+function Get-CEReportFindingOrder {
+    <#
+        Findings worst first: by status, then severity, with auto-fails ahead within a severity. The index keeps the
+        check order among equals, as Sort-Object is not stable on Windows PowerShell.
+    #>
+    param($Findings)
+    $statusRank = @{ Fail = 0; Error = 1; Warn = 2; Manual = 3; Info = 4; Skipped = 5; NotApplicable = 6; Pass = 7 }
+    $severityRank = @{ Critical = 0; High = 1; Medium = 2; Low = 3; Info = 4; '' = 5 }
+    $index = 0
+    return @(@($Findings | ForEach-Object { [pscustomobject]@{ Finding = $_; Index = ($index++) } }) | Sort-Object `
+        @{ Expression = { $statusRank[[string]$_.Finding.Status] } },
+        @{ Expression = { $severityRank[[string]$_.Finding.Severity] } },
+        @{ Expression = { -not $_.Finding.AutoFail } },
+        Index | ForEach-Object { $_.Finding })
+}
+
 function Export-CEHtml {
     param($Findings, $Summary, $Context, $Changeset, [string]$Path, [string]$ChangesetPath)
 
@@ -334,22 +350,22 @@ function Export-CEHtml {
     $sevClasses = (@($sevStyles.Keys | ForEach-Object { ".sev-$($_){color:var(--sev-$($_));font-weight:600}" }) -join ' ')
     $stPill = { param($s) $x = Get-CEStatusStyle ([string]$s); "<span class='st st-$s'>&#$($x.Icon); $(ConvertTo-CEHtmlText $x.Label)</span>" }
     $sevCell = { param($sv) if (-not "$sv") { return '' } "<span class='sev sev-$sv'>$(ConvertTo-CEHtmlText ([string]$sv))</span>" }
-    $rows = foreach ($f in $Findings) {
+    $worstFirst = Get-CEReportFindingOrder -Findings $Findings
+    $rows = foreach ($f in $worstFirst) {
         $t = if ($f.Subject) { "$($f.Title) <span class='sub'>($(& $e $f.Subject))</span>" } else { & $e $f.Title }
-        $ev = ''
-        if (@($f.Evidence).Count) {
-            $ev = "<details><summary>Evidence ($(@($f.Evidence).Count))</summary><pre>" + ((@($f.Evidence) | ForEach-Object { & $e ([string]$_) }) -join "`n") + '</pre></details>'
-        }
+        $evCount = @($f.Evidence).Count
+        $more = "<details class='more'><summary>Details$(if ($evCount) { " and evidence ($evCount)" })</summary>" +
+            "<div class='exp'>Expected: $(& $e $f.Expected)</div><div class='ref'>$(& $e $f.Reference)</div>" +
+            "<div>$((@($f.Frameworks) | ForEach-Object { "<span class='fw'>$(& $e $_)</span>" }) -join ' ')</div>" +
+            $(if ($evCount) { '<pre>' + ((@($f.Evidence) | ForEach-Object { & $e ([string]$_) }) -join "`n") + '</pre>' } else { '' }) + '</details>'
         $af = if ($f.AutoFail) { "<span class='badge autofail'>AUTO-FAIL</span>" } else { '' }
         $rem = if ($f.Remediation) { "<div class='rem'>Automated fix: <code>$(& $e $f.Remediation.Id)</code></div>" } else { '' }
 @"
 <tr data-status="$($f.Status)" data-cat="$($f.Category)">
-<td><code>$(& $e $f.FindingId)</code></td>
 <td>$(& $stPill $f.Status)$af</td>
-<td><strong>$t</strong><div class="ref">$(& $e $f.Reference)</div></td>
-<td><div>$(& $e $f.Actual)</div><div class="exp">Expected: $(& $e $f.Expected)</div>$(if ($f.Recommendation) { "<div class='rec'>$(& $e $f.Recommendation)</div>" })$rem$ev</td>
+<td><strong>$t</strong><div class="ref"><code>$(& $e $f.FindingId)</code></div></td>
+<td><div>$(& $e $f.Actual)</div>$(if ($f.Recommendation) { "<div class='rec'>$(& $e $f.Recommendation)</div>" })$rem$more</td>
 <td>$(& $sevCell $f.Severity)</td>
-<td>$((@($f.Frameworks) | ForEach-Object { "<span class='fw'>$(& $e $_)</span>" }) -join ' ')</td>
 </tr>
 "@
     }
@@ -369,7 +385,7 @@ function Export-CEHtml {
         }) -join ''
         $page = if ($mt.DownloadPage -match '^https://') { " More formats are on <a href=`"$(& $e $mt.DownloadPage)`" target=`"_blank`" rel=`"noopener noreferrer`">EICAR's download page</a>." } else { '' }
         $mtHtml = @"
-<h2 id="malware-test">Malware download test (CE+ TC3)</h2>
+<details class="section"><summary><h2 id="malware-test">Malware download test (CE+ TC3)</h2></summary>
 <div class="testbox">
 <p>A Cyber Essentials Plus assessor checks that malware is stopped when someone downloads it. You can run the same test here with EICAR's industry-standard test files. They are harmless, but every anti-malware product treats them as malware.</p>
 <p class="warnline"><strong>Expect an alert.</strong> Your anti-malware will report a detection, and your IT or security team may see it in their console. Let them know before you test.</p>
@@ -382,13 +398,14 @@ function Export-CEHtml {
 <p class="ref">Nothing malicious is included with this tool: the links go to EICAR (eicar.org).$page</p>
 <p>Last result: $(& $stPill $mtStatus) $mtText</p>
 </div>
+</details>
 "@
     }
     $hwRows = Get-CEHardwareRow $Context
     $hwHtml = ''
     if ($hwRows.Count) {
-        $hwHtml = "<h2>Device hardware</h2>`n<div class=`"tablewrap`"><table><thead><tr><th>Component</th><th>Details</th></tr></thead><tbody>" +
-            (($hwRows | ForEach-Object { "<tr><td>$(& $e $_.Label)</td><td>$(& $e $_.Value)</td></tr>" }) -join '') + '</tbody></table></div>'
+        $hwHtml = "<details class=`"section`" id=`"hardware`"><summary><h2>Device hardware</h2></summary>`n<div class=`"tablewrap`"><table><thead><tr><th>Component</th><th>Details</th></tr></thead><tbody>" +
+            (($hwRows | ForEach-Object { "<tr><td>$(& $e $_.Label)</td><td>$(& $e $_.Value)</td></tr>" }) -join '') + '</tbody></table></div></details>'
     }
     $itemRows = foreach ($i in $Changeset.Items) {
         $af = if ($i.AutoFail) { "<span class='badge autofail'>AUTO-FAIL</span>" } else { '' }
@@ -416,7 +433,7 @@ function Export-CEHtml {
 
     $fwBars = ''
     if (-not $Summary.PartialRun) {
-        $fwBars = "<h2>Frameworks</h2><div class='fwbars'>"
+        $fwBars = "<h2 id='frameworks'>Frameworks</h2><div class='fwbars'>"
         foreach ($k in $fwRoll.Keys) {
             $x = $fwRoll[$k]
             if ($k -eq 'ce-plus') { $pct = if ($x.total) { [int][math]::Round(($x.onTrack / $x.total) * 100) } else { 0 }; $frac = "$($x.onTrack) / $($x.total) TCs"; $dev = $x.total - $x.onTrack }
@@ -462,6 +479,15 @@ function Export-CEHtml {
     if ($aiNotRead) { $aiNotRead += "<div class='ref'>$(& $e ((Get-CENotReadAdvice -Records $notReadShown -Scope Machine) -join ' '))</div>" }
     $aiPaidHtml = if ($aiPosture.agentsFound -gt 0 -and $script:CEAIPaidTierNote) { "<p class='ref' style='margin:6px 0 0'>$(& $e $script:CEAIPaidTierNote)</p>" } else { '' }
     $aiHtml = "<h2 id='ai'>AI on this device</h2><div class='aibox'><div class='h'><strong>$(Get-CEAIToolCountText $aiPosture.agentsFound)</strong><span class='dev0 $aiDevCls'>$aiDevTxt</span></div>$aiEmpty$(if ($agentsLi) { "<ul>$agentsLi</ul>" })$(if ($envLi) { "<div class='ref' style='margin-top:8px'>Where AI runs</div><ul>$envLi</ul>" })$(if ($mcpLi) { "<div class='ref' style='margin-top:8px'>MCP servers</div><ul>$mcpLi</ul>" })$aiNotRead<p class='ref' style='margin:10px 0 0'>Baseline finds recognised AI apps and browser extensions installed on this device. It can't see AI websites used in a browser tab.</p>$aiPaidHtml</div>"
+
+    $jumps = New-Object System.Collections.ArrayList
+    if ($fwBars) { [void]$jumps.Add("<a href='#frameworks'>Frameworks</a>") }
+    [void]$jumps.Add("<a href='#ceplus'>CE+ readiness</a>")
+    [void]$jumps.Add("<a href='#ai'>AI on this device</a>")
+    [void]$jumps.Add("<a href='#changeset'>Automated fixes ($(@($Changeset.Items).Count))</a>")
+    [void]$jumps.Add("<a href='#manual'>Manual actions ($(@($Changeset.ManualActions).Count))</a>")
+    if ($mtHtml) { [void]$jumps.Add("<a href='#malware-test'>Malware test</a>") }
+    if ($hwHtml) { [void]$jumps.Add("<a href='#hardware'>Hardware</a>") }
 
     $applyCmd = & $e ".\app\Apply-CEChangeset.ps1 -Path '$ChangesetPath' -WhatIf"
 
@@ -509,7 +535,20 @@ tr:last-child td { border-bottom:none; }
 .fw { display:inline-block; font-size:.72rem; border:1px solid var(--line); border-radius:4px; padding:0 4px; margin:1px; white-space:nowrap; }
 pre { white-space:pre-wrap; font-size:.8rem; max-height:280px; overflow:auto; background:var(--bg); padding:8px; border-radius:6px; }
 code { font-size:.85em; }
-.toolbar { display:flex; gap:8px; flex-wrap:wrap; margin:12px 0; }
+.toolbar { display:flex; gap:8px 12px; flex-wrap:wrap; align-items:center; margin:12px 0; }
+.showing { color:var(--muted); font-size:.88rem; }
+.linkbtn { background:none; border:none; padding:0; color:var(--brand); font:inherit; font-size:.88rem; font-weight:600; cursor:pointer; text-decoration:underline; }
+tr.hide { display:none; }
+.jumps { display:flex; flex-wrap:wrap; gap:4px 14px; font-size:.88rem; margin:0 0 4px; }
+.jumps a { color:var(--muted); }
+#findings td:first-child { width:1%; white-space:nowrap; }
+.more { margin-top:6px; font-size:.82rem; color:var(--muted); }
+.more summary { cursor:pointer; width:fit-content; }
+.more > div { margin-top:4px; }
+.section { margin-top:36px; }
+.section > summary { cursor:pointer; }
+.section > summary h2 { display:inline; margin:0; }
+.section > summary ~ * { margin-top:12px; }
 select, input { font:inherit; padding:6px 8px; border-radius:6px; border:1px solid var(--line); background:var(--card); color:var(--fg); }
 ul.manual { padding-left:18px; } ul.manual li { margin-bottom:10px; }
 .testbox { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:4px 16px; }
@@ -537,6 +576,7 @@ footer { margin-top:40px; color:var(--muted); font-size:.82rem; }
 .aibox .dev0.ok { color:var(--pass); } .aibox .dev0.bad { color:var(--fail); }
 .aibox ul { margin:8px 0 0; padding-left:18px; } .aibox li { margin:2px 0; font-size:.9rem; }
 .agent-admin { color:var(--fail); font-weight:600; }
+@media print { tr.hide { display:table-row; } .toolbar, .jumps { display:none; } }
 @media (max-width:640px) { .fwbar { grid-template-columns:1fr 58px; } .fwbar .frac, .fwbar .track { grid-column:1 / -1; } }
 </style>
 </head>
@@ -547,59 +587,103 @@ footer { margin-top:40px; color:var(--muted); font-size:.82rem; }
 <div class="meta">$(& $e $Context.ComputerName) &middot; $(& $e "$($Context.OSFamily) $($Context.DisplayVersion) $($Context.EditionID) build $($Context.FullBuild)") &middot; audited $($Context.AuditTime.ToString('d MMMM yyyy HH:mm')) by $(& $e $Context.RunningAs)$(if (-not $Context.IsElevated) { ' &middot; <strong>not elevated: some checks skipped</strong>' })</div>
 <div class="meta">Domain joined: $($Context.DomainJoined) &middot; Entra ID joined: $($Context.EntraJoined) &middot; MDM enrolled: $($Context.MdmEnrolled)$(if (@(Get-CEPack | Where-Object { $_.Status -eq 'Loaded' }).Count) { ' &middot; Packs: ' + (& $e ((@(Get-CEPack | Where-Object { $_.Status -eq 'Loaded' } | ForEach-Object { "$($_.Name) $($_.Version)" })) -join ', ')) })</div>
 $msgHtml
-$aiHtml
-$fwBars
-<h2>Controls by status</h2>
-<div class="cards">$($statCards -join '')</div>
+<nav class="jumps" aria-label="Sections of this report">$($jumps -join '')</nav>
 
-<h2>Cyber Essentials Plus readiness</h2>
+<h2 id="all-findings">Findings</h2>
+<div class="cards">$($statCards -join '')</div>
+<div class="toolbar">
+<select id="cat" aria-label="Filter by theme"><option value="">All themes</option>$(($script:CEValidCategory | ForEach-Object { "<option value='$_'>$(Get-CECategoryLabel $_)</option>" }) -join '')</select>
+<input id="q" type="search" placeholder="Filter text" aria-label="Filter by text">
+<span class="showing" id="showing"></span>
+<button type="button" class="linkbtn" id="toggle" hidden></button>
+</div>
+<div class="tablewrap"><table id="findings"><thead><tr><th>Status</th><th>Check</th><th>Result and what to do</th><th>Severity</th></tr></thead><tbody>
+$($rows -join "`n")
+</tbody></table></div>
+
+$fwBars
+
+<h2 id="ceplus">Cyber Essentials Plus readiness</h2>
 <div class="tablewrap"><table><thead><tr><th>Test case</th><th>What is tested</th><th>Estimate</th></tr></thead><tbody>$($tcRows -join '')</tbody></table></div>
+
+$aiHtml
+
+<details class="section" id="changeset"><summary><h2>Changeset: $(@($Changeset.Items).Count) automated fixes</h2></summary>
+<p>Preview, then apply from the repo folder:</p>
+<div class="cmd"><code>$applyCmd</code></div>
+<div class="tablewrap"><table><thead><tr><th>Item</th><th>Selected</th><th>Change</th><th>Why</th><th>Severity</th><th>Risk</th><th>Reboot</th></tr></thead><tbody>$($itemRows -join '')</tbody></table></div>
+</details>
+
+<details class="section" id="manual"><summary><h2>Manual actions ($(@($Changeset.ManualActions).Count))</h2></summary>
+<ul class="manual">$($manualRows -join '')</ul>
+</details>
 
 $mtHtml
 
 $hwHtml
 
-<h2>Changeset: $(@($Changeset.Items).Count) automated fixes</h2>
-<p>Preview, then apply from the repo folder:</p>
-<div class="cmd"><code>$applyCmd</code></div>
-<div class="tablewrap"><table><thead><tr><th>Item</th><th>Selected</th><th>Change</th><th>Why</th><th>Severity</th><th>Risk</th><th>Reboot</th></tr></thead><tbody>$($itemRows -join '')</tbody></table></div>
-
-<h2>Manual actions ($(@($Changeset.ManualActions).Count))</h2>
-<ul class="manual">$($manualRows -join '')</ul>
-
-<h2>All findings</h2>
-<div class="toolbar">
-<select id="cat"><option value="">All themes</option>$(($script:CEValidCategory | ForEach-Object { "<option value='$_'>$(Get-CECategoryLabel $_)</option>" }) -join '')</select>
-<input id="q" type="search" placeholder="Filter text">
-</div>
-<div class="tablewrap"><table id="findings"><thead><tr><th>ID</th><th>Status</th><th>Check</th><th>Result</th><th>Severity</th><th>Frameworks</th></tr></thead><tbody>
-$($rows -join "`n")
-</tbody></table></div>
 <footer>Checks map to Cyber Essentials: Requirements for IT Infrastructure v3.3 (Danzell), the Cyber Essentials Plus test specification and NCSC Windows device security guidance. This is a self-assessment aid: it does not replace an IASME-licensed Certification Body and cannot see network devices, cloud tenants or other devices in scope. Cyber Essentials is a UK Government scheme owned by the NCSC and delivered by IASME; Engramic Baseline is independent and is not affiliated with, endorsed by or approved by either. Certification can only be issued by an IASME-licensed Certification Body.</footer>
 </main>
 <script>
 (function () {
-  var status = '';
+  // What the table shows: 'attention', 'all', or one status from the cards. Without script every row shows, worst first.
+  var attention = ['Fail', 'Error', 'Warn', 'Manual'];
   var rows = Array.prototype.slice.call(document.querySelectorAll('#findings tbody tr'));
+  var cards = Array.prototype.slice.call(document.querySelectorAll('.card'));
   var cat = document.getElementById('cat'), q = document.getElementById('q');
+  var showing = document.getElementById('showing'), toggle = document.getElementById('toggle');
+  var needsAttention = function (r) { return attention.indexOf(r.getAttribute('data-status')) !== -1; };
+  var anyAttention = rows.some(needsAttention);
+  var mode = anyAttention ? 'attention' : 'all';
+  function wanted(r, text) {
+    if (mode === 'all' || (mode === 'attention' && text)) { return true; }
+    return mode === 'attention' ? needsAttention(r) : r.getAttribute('data-status') === mode;
+  }
   function apply() {
-    var text = q.value.toLowerCase();
+    var text = q.value.toLowerCase(), shown = 0;
     rows.forEach(function (r) {
-      var ok = (!status || r.getAttribute('data-status') === status) &&
-               (!cat.value || r.getAttribute('data-cat') === cat.value) &&
+      var ok = wanted(r, text) && (!cat.value || r.getAttribute('data-cat') === cat.value) &&
                (!text || r.textContent.toLowerCase().indexOf(text) !== -1);
-      r.style.display = ok ? '' : 'none';
+      r.classList.toggle('hide', !ok);
+      if (ok) { shown++; }
+    });
+    showing.textContent = 'Showing ' + shown + ' of ' + rows.length + ' findings' +
+      (mode === 'attention' && !text ? ': what needs attention, worst first.' : ', worst first.');
+    toggle.textContent = mode === 'all' ? 'Show what needs attention' : 'Show all ' + rows.length;
+    toggle.hidden = mode === 'all' && !anyAttention;
+    cards.forEach(function (c) {
+      var on = c.getAttribute('data-filter') === mode;
+      c.classList.toggle('active', on);
+      c.setAttribute('aria-pressed', on ? 'true' : 'false');
     });
   }
-  Array.prototype.forEach.call(document.querySelectorAll('.card'), function (c) {
+  cards.forEach(function (c) {
     c.addEventListener('click', function () {
       var f = c.getAttribute('data-filter');
-      status = (status === f) ? '' : f;
-      Array.prototype.forEach.call(document.querySelectorAll('.card'), function (x) { x.classList.toggle('active', x.getAttribute('data-filter') === status); });
+      mode = (mode === f) ? (anyAttention ? 'attention' : 'all') : f;
       apply();
     });
   });
+  toggle.addEventListener('click', function () { mode = (mode === 'all') ? 'attention' : 'all'; apply(); });
   cat.addEventListener('change', apply); q.addEventListener('input', apply);
+  apply();
+
+  // A link to a section inside a closed fold opens the fold first.
+  function openTarget() {
+    var id = decodeURIComponent(location.hash.slice(1)), el = id && document.getElementById(id);
+    var fold = el && el.closest('details');
+    if (fold) { fold.open = true; el.scrollIntoView(); }
+  }
+  window.addEventListener('hashchange', openTarget);
+  openTarget();
+
+  // A printed report holds every section, and the print styles show every finding.
+  var closed = [];
+  window.addEventListener('beforeprint', function () {
+    closed = Array.prototype.slice.call(document.querySelectorAll('details.section:not([open])'));
+    closed.forEach(function (d) { d.open = true; });
+  });
+  window.addEventListener('afterprint', function () { closed.forEach(function (d) { d.open = false; }); });
 })();
 </script>
 </body>

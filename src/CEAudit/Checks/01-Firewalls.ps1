@@ -113,21 +113,47 @@ Register-CECheck -Id 'FW-04' -Category 'Firewalls' -Severity 'High' `
     -Reference 'CE v3.3 Firewalls/User access control: remote administrative access must be protected by MFA or an IP allow list; disable unnecessary services.' `
     -Test {
         param($ctx)
-        $deny = Get-CERegistryValue -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Default 1
-        if ([int]$deny -eq 1) {
-            return New-CEResult -Status 'Pass' -Expected 'RDP disabled, or enabled with NLA and restricted access' -Actual 'Remote Desktop is disabled'
+        # The Remote Desktop Services policy overrides the local settings. Intune's
+        # RemoteDesktopServices policies are ADMX-backed: Intune writes this same policy key.
+        $ts = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+        $bit = { param($v) if ("$v" -match '^[01]$') { [int]$v } }
+        $deny = Get-CEPolicySetting -Source @(
+            @{ Label = 'Group Policy'; Path = $ts; Name = 'fDenyTSConnections'; Map = $bit; IntuneMarker = 'RemoteDesktopServices\AllowUsersToConnectRemotely' },
+            @{ Label = 'Local'; Path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server'; Name = 'fDenyTSConnections'; Map = $bit }
+        )
+        $policyWhere = 'Administrative Templates > Windows Components > Remote Desktop Services > Remote Desktop Session Host (Group Policy, or the Intune settings catalog)'
+        if ($null -eq $deny.Value -or $deny.Value -eq 1) {
+            $actual = if ($deny.Policy) { "Remote Desktop is disabled by $($deny.Source)" } else { 'Remote Desktop is disabled' }
+            return New-CEResult -Status 'Pass' -Expected 'RDP disabled, or enabled with NLA and restricted access' -Actual $actual -Evidence $deny.Evidence
         }
-        $nla = Get-CERegistryValue -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'UserAuthentication' -Default 0
+        $nla = Get-CEPolicySetting -Source @(
+            @{ Label = 'Group Policy'; Path = $ts; Name = 'UserAuthentication'; Map = $bit },
+            @{ Label = 'Local'; Path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'; Name = 'UserAuthentication'; Map = $bit }
+        )
         $results = @()
-        if ([int]$nla -ne 1) {
-            $results += New-CEResult -Status 'Fail' -Subject 'NLA' -Expected 'Network Level Authentication required' -Actual 'RDP enabled without NLA' `
-                -Recommendation 'Require Network Level Authentication for Remote Desktop.' `
-                -Remediation (New-CERemediationRef -Id 'RDP-RequireNLA')
+        if ($nla.Value -ne 1) {
+            if ($nla.Policy) {
+                $results += New-CEResult -Status 'Fail' -Subject 'NLA' -Expected 'Network Level Authentication required' -Actual "RDP enabled without NLA ($($nla.Source) turns it off)" `
+                    -Evidence $nla.Evidence -Recommendation "Set Require user authentication for remote connections by using Network Level Authentication to Enabled under $policyWhere > Security. A policy sets this, so changing it on the device would not last."
+            }
+            else {
+                $results += New-CEResult -Status 'Fail' -Subject 'NLA' -Expected 'Network Level Authentication required' -Actual 'RDP enabled without NLA' -Evidence $nla.Evidence `
+                    -Recommendation 'Require Network Level Authentication for Remote Desktop.' `
+                    -Remediation (New-CERemediationRef -Id 'RDP-RequireNLA')
+            }
         }
-        $results += New-CEResult -Status 'Warn' -Subject 'Enabled' -Expected 'RDP disabled unless there is a documented need' `
-            -Actual 'Remote Desktop is enabled' `
-            -Recommendation 'Disable RDP if not needed. If needed, never expose it to the internet; reach it via a VPN or gateway enforcing MFA, and restrict the firewall rule to trusted addresses.' `
-            -Remediation (New-CERemediationRef -Id 'RDP-Disable')
+        $advice = 'If needed, never expose it to the internet; reach it via a VPN or gateway enforcing MFA, and restrict the firewall rule to trusted addresses.'
+        if ($deny.Policy) {
+            $results += New-CEResult -Status 'Warn' -Subject 'Enabled' -Expected 'RDP disabled unless there is a documented need' `
+                -Actual "Remote Desktop is enabled by $($deny.Source)" -Evidence $deny.Evidence `
+                -Recommendation "If RDP is not needed, set Allow users to connect remotely by using Remote Desktop Services to Disabled under $policyWhere > Connections. $advice"
+        }
+        else {
+            $results += New-CEResult -Status 'Warn' -Subject 'Enabled' -Expected 'RDP disabled unless there is a documented need' `
+                -Actual 'Remote Desktop is enabled' -Evidence $deny.Evidence `
+                -Recommendation "Disable RDP if not needed. $advice" `
+                -Remediation (New-CERemediationRef -Id 'RDP-Disable')
+        }
         return $results
     }
 

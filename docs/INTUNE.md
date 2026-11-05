@@ -237,7 +237,7 @@ To change the thresholds, edit the operands in your copy of the rules file, as f
 The **Pre-remediation detection output** column then gives you one line per device across the tenant:
 
 ```
-FAIL | autofail=2 fail=7 review=4 | age=5h | TC2=Likely fail TC3=Likely pass TC4=Check TC5=Likely fail | v0.3.3 | SU-03:Overdue,SU-05:7zip-7zip,UA-01
+FAIL | autofail=2 fail=7 review=4 | age=5h | TC2=Likely fail TC3=Likely pass TC4=Check TC5=Likely fail | v0.3.4 | SU-03:Overdue,SU-05:7zip-7zip,UA-01
 ```
 
 A device also counts as not ready, with `LAST_RUN_ERROR` at the start of its line, when an audit failed after the last `status.json` was written, so the remediation script runs a fresh audit.

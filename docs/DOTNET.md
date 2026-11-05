@@ -29,6 +29,7 @@ This note covers the layout, the rules the build enforces, and how to build and 
 | `tools/contracts` | Runs the unchanged Intune scripts on a status.json, and proves the contract end to end as SYSTEM in CI (below). |
 | `tools/ci` | Helpers for CI runners only: running a program, or the SYSTEM tests of a test assembly, as SYSTEM through a temporary scheduled task, and running the attack suite with a throwaway standard user as the attacker. |
 | `tools/Release.psm1` | What the release scripts beside it share: which PE files of a published folder this repository built, and what their signatures say (below). |
+| `tools/Merge-PublishedApps.ps1` | Merges apps published each to its own folder into one runtime folder, failing on a file two publish differently but the two known exceptions (below). |
 | `tools/spikes` | Measurements behind the port's spikes, run by hand: nothing in them ships, builds with the solution or runs in CI. |
 
 Model, Platform, Engine and Controls target `net10.0` and must not depend on Windows, so their tests
@@ -1151,8 +1152,6 @@ which needs no reproducibility.
 - The release's side of the gate: `New-SignedRelease.ps1 -DotNet` publishing the tagged commit as above, fetching
   the list from the tag's run and refusing to sign on any difference, any file only one side has, or no list.
   `Measure-RuntimeSpike.ps1 -Phase Determinism -ReferenceManifest` already makes the comparison.
-- The merge script: each app published to its own folder, then merged into one, failing on any file two apps
-  publish with different content but the two exceptions above.
 
 **Size.** `baseline.exe` published as the release publishes it:
 
@@ -1219,7 +1218,10 @@ What it showed:
   assembly the command line ships refers to WindowsBase, and the service read the event log through the desktop
   copy. Which copy a
   publish into one folder keeps depends on timestamps, since `dotnet publish` copies a file only when it is newer
-  than the one there, and not on the order. Hence the merge, with these two as its only exceptions.
+  than the one there, and not on the order. Hence the merge, with these two as its only exceptions:
+  `tools/Merge-PublishedApps.ps1` takes each app's own publish, copies a file several apps publish with the same
+  content once, keeps the copy of the app on the desktop runtime for these two, and otherwise stops, naming every
+  file that differs, before writing anything.
 - **Signing ours alone still works.** `Get-ReleaseOwnFile` reads every `.deps.json` in the folder, so it found our
   eleven files, three launchers, three app assemblies and our five libraries, and nothing else. The service's 31
   package assemblies kept Microsoft's signatures. A list of names in `PublishReadyToRunExclude` would be long for

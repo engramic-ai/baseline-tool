@@ -1153,6 +1153,7 @@ which needs no reproducibility.
   `Measure-RuntimeSpike.ps1 -Phase Determinism -ReferenceManifest` already makes the comparison.
 - The merge script: each app published to its own folder, then merged into one, failing on any file two apps
   publish with different content but the two exceptions above.
+
 **Size.** `baseline.exe` published as the release publishes it:
 
 | Self-contained win-x64 | Files | Folder (MB) | Zip (MB) | Our files (MB) | PDBs (MB) |

@@ -158,14 +158,214 @@ function Get-ReleaseNamePart {
     return ''
 }
 
+function Get-ReleaseEmbeddedSignatureBlock {
+    <#
+    .SYNOPSIS
+        The PKCS #7 signature a PE file carries in itself (its certificate table), as bytes, or $null when it has none.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$LiteralPath)
+    $stream = [IO.File]::Open($LiteralPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try {
+        $reader = New-Object IO.BinaryReader($stream)
+        if ($stream.Length -lt 64 -or $reader.ReadUInt16() -ne 0x5A4D) { return $null }
+        $stream.Position = 0x3C
+        $pe = [int64]$reader.ReadInt32()
+        # The optional header follows the 4-byte signature and the 20-byte file header.
+        $optional = $pe + 24
+        if ($pe -lt 64 -or $optional + 2 -gt $stream.Length) { return $null }
+        $stream.Position = $pe
+        if ($reader.ReadUInt32() -ne 0x4550) { return $null }
+        $stream.Position = $optional
+        $magic = $reader.ReadUInt16()
+        # The data directories start 96 bytes into a PE32 optional header and 112 into a PE32+ one; the certificate
+        # table is the fifth, 8 bytes each. Its address is a file offset, not a virtual address.
+        $directories = switch ($magic) { 0x10B { $optional + 96 } 0x20B { $optional + 112 } default { -1 } }
+        if ($directories -lt 0 -or $directories + 40 -gt $stream.Length) { return $null }
+        $stream.Position = $directories + 32
+        $offset = [int64]$reader.ReadUInt32()
+        $size = [int64]$reader.ReadUInt32()
+        if ($offset -eq 0 -or $size -lt 8 -or $offset + $size -gt $stream.Length) { return $null }
+        # The first WIN_CERTIFICATE: its length, revision and type (2, PKCS #7 signed data), then the signature.
+        $stream.Position = $offset
+        $length = [int64]$reader.ReadUInt32()
+        [void]$reader.ReadUInt16()
+        $type = $reader.ReadUInt16()
+        if ($type -ne 2 -or $length -lt 9 -or $length -gt $size) { return $null }
+        return , $reader.ReadBytes([int]($length - 8))
+    }
+    finally { $stream.Dispose() }
+}
+
+function Initialize-ReleaseWinTrust {
+    <# Compiles the WinVerifyTrust call that checks only the signature in a file, once per session. #>
+    if ('EngramicRelease.WinTrust' -as [type]) { return }
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+namespace EngramicRelease
+{
+    public static class WinTrust
+    {
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct FileInfo
+        {
+            public uint Size;
+            public string Path;
+            public IntPtr File;
+            public IntPtr KnownSubject;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct Data
+        {
+            public uint Size;
+            public IntPtr PolicyCallbackData;
+            public IntPtr SipClientData;
+            public uint UiChoice;
+            public uint RevocationChecks;
+            public uint UnionChoice;
+            public IntPtr Choice;
+            public uint StateAction;
+            public IntPtr StateData;
+            public IntPtr UrlReference;
+            public uint ProvFlags;
+            public uint UiContext;
+            public IntPtr SignatureSettings;
+        }
+
+        [DllImport("wintrust.dll", CharSet = CharSet.Unicode)]
+        private static extern int WinVerifyTrust(IntPtr window, ref Guid action, ref Data data);
+
+        // WINTRUST_ACTION_GENERIC_VERIFY_V2, the Authenticode policy.
+        private static readonly Guid Authenticode = new Guid("00AAC56B-CD44-11d0-8CC2-00C04FC295EE");
+
+        // Checks the signature in the file alone (WTD_CHOICE_FILE): a catalog is never consulted. No UI, no
+        // revocation check, as Get-AuthenticodeSignature. Returns the HRESULT, 0 when the signature verifies.
+        public static int VerifyFile(string path)
+        {
+            var file = new FileInfo { Size = (uint)Marshal.SizeOf(typeof(FileInfo)), Path = path };
+            var filePointer = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(FileInfo)));
+            try
+            {
+                Marshal.StructureToPtr(file, filePointer, false);
+                var data = new Data
+                {
+                    Size = (uint)Marshal.SizeOf(typeof(Data)),
+                    UiChoice = 2,
+                    RevocationChecks = 0,
+                    UnionChoice = 1,
+                    Choice = filePointer,
+                    StateAction = 1,
+                };
+                var action = Authenticode;
+                var result = WinVerifyTrust(IntPtr.Zero, ref action, ref data);
+                data.StateAction = 2;
+                WinVerifyTrust(IntPtr.Zero, ref action, ref data);
+                return result;
+            }
+            finally
+            {
+                Marshal.DestroyStructure(filePointer, typeof(FileInfo));
+                Marshal.FreeHGlobal(filePointer);
+            }
+        }
+    }
+}
+'@
+}
+
+function ConvertFrom-ReleaseWinTrustResult {
+    <#
+    .SYNOPSIS
+        A WinVerifyTrust result as the status Get-AuthenticodeSignature would give it.
+    #>
+    param([int]$Result)
+    switch ($Result) {
+        0 { return 'Valid' }
+        -2146893816 { return 'Incompatible' }    # NTE_BAD_ALGID
+        -2146762496 { return 'NotSigned' }       # TRUST_E_NOSIGNATURE
+        -2146869232 { return 'HashMismatch' }    # TRUST_E_BAD_DIGEST
+        -2146885619 { return 'HashMismatch' }    # CRYPT_E_BAD_MSG
+        -2146762479 { return 'NotTrusted' }      # TRUST_E_EXPLICIT_DISTRUST
+        default { return 'UnknownError' }
+    }
+}
+
+function Get-ReleaseEmbeddedSignature {
+    <#
+    .SYNOPSIS
+        The signature a PE file carries in itself, whatever catalogs this machine has, in the shape of
+        Get-ReleaseSignature, or $null when the file carries none.
+    .DESCRIPTION
+        Whether it verifies is WinVerifyTrust's answer for the file alone. The signer and the timestamp are read from
+        the signature itself: the first signer's certificate, and an RFC 3161 or Authenticode countersignature.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$LiteralPath)
+    $block = Get-ReleaseEmbeddedSignatureBlock -LiteralPath $LiteralPath
+    if ($null -eq $block) { return $null }
+    Initialize-ReleaseWinTrust
+    $result = [EngramicRelease.WinTrust]::VerifyFile($LiteralPath)
+    $subject = ''
+    $issuer = ''
+    $thumbprint = ''
+    $timestamped = $false
+    try {
+        if (-not ('System.Security.Cryptography.Pkcs.SignedCms' -as [type])) { Add-Type -AssemblyName System.Security }
+        $cms = New-Object System.Security.Cryptography.Pkcs.SignedCms
+        $cms.Decode($block)
+        $signerInfo = @($cms.SignerInfos)[0]
+        if ($null -ne $signerInfo -and $null -ne $signerInfo.Certificate) {
+            $subject = [string]$signerInfo.Certificate.Subject
+            $issuer = [string]$signerInfo.Certificate.Issuer
+            $thumbprint = [string]$signerInfo.Certificate.Thumbprint
+        }
+        if ($null -ne $signerInfo) {
+            $oids = @($signerInfo.UnsignedAttributes | ForEach-Object { $_.Oid.Value })
+            $timestamped = ($oids -contains '1.3.6.1.4.1.311.3.3.1' -or $oids -contains '1.2.840.113549.1.9.6')
+        }
+    }
+    catch {
+        # A signature that cannot be decoded names no signer; WinVerifyTrust has said whether it verifies.
+        Write-Verbose "The signature in $LiteralPath could not be decoded: $($_.Exception.Message)"
+    }
+    $status = ConvertFrom-ReleaseWinTrustResult -Result $result
+    [pscustomobject]@{
+        Path               = $LiteralPath
+        Status             = $status
+        StatusMessage      = $(if ($result -eq 0) { 'Signature verified.' } else { (New-Object ComponentModel.Win32Exception($result)).Message })
+        SignatureType      = 'Authenticode'
+        Subject            = $subject
+        CommonName         = Get-ReleaseNamePart -Name $subject -Attribute 'CN'
+        Organisation       = Get-ReleaseNamePart -Name $subject -Attribute 'O'
+        IssuerOrganisation = Get-ReleaseNamePart -Name $issuer -Attribute 'O'
+        Thumbprint         = $thumbprint
+        Timestamped        = $timestamped
+    }
+}
+
 function Get-ReleaseSignature {
     <#
     .SYNOPSIS
         What a file's Authenticode signature says, in the terms the release checks use.
+    .DESCRIPTION
+        The signature in the file is what travels with it. Get-AuthenticodeSignature looks in this machine's
+        catalogs first and, when the file's hash is in one, reports the catalog's signature instead (Windows ships
+        some of the desktop runtime's files, such as D3DCompiler_47_cor3.dll, under its own catalog). So when it
+        reports a catalog, the signature in the file is read instead; only a file that carries none is reported as
+        signed in a catalog alone.
     #>
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$LiteralPath)
     $signature = Get-AuthenticodeSignature -LiteralPath $LiteralPath
+    $type = ''
+    if ($signature.PSObject.Properties['SignatureType']) { $type = [string]$signature.SignatureType }
+    if ($type -eq 'Catalog') {
+        $embedded = Get-ReleaseEmbeddedSignature -LiteralPath $LiteralPath
+        if ($null -ne $embedded) { return $embedded }
+    }
     $signer = $signature.SignerCertificate
     $subject = ''
     $issuer = ''
@@ -175,9 +375,6 @@ function Get-ReleaseSignature {
         $issuer = [string]$signer.Issuer
         $thumbprint = [string]$signer.Thumbprint
     }
-    # Authenticode (in the file) or Catalog (in a catalog on this machine, which does not travel with the file).
-    $type = ''
-    if ($signature.PSObject.Properties['SignatureType']) { $type = [string]$signature.SignatureType }
     [pscustomobject]@{
         Path               = $LiteralPath
         Status             = [string]$signature.Status
@@ -404,5 +601,6 @@ function Get-ReleaseAzureLoginProblem {
 }
 
 Export-ModuleMember -Function Test-ReleasePEFile, Get-ReleasePEFile, Get-ReleaseOwnFile, Get-ReleaseNamePart, Get-ReleaseSignature,
+    Get-ReleaseEmbeddedSignature, Get-ReleaseEmbeddedSignatureBlock,
     Test-ReleaseMicrosoftSignature, Get-ReleaseSignatureReport, Get-ReleaseDotNetVersion, Invoke-ReleaseSignTool,
     Get-ReleaseAzureLoginProblem

@@ -170,8 +170,10 @@ function Get-CEFirmwareCatalogRecord {
     # loader do: whoever can write the data folder could replace cache\ wholesale, and a file
     # keeps the owner who created it even in a folder locked later.
     $rootTrusted = Test-CEDataPathTrusted -Path $dataRoot
-    $cacheTrusted = $rootTrusted -and ((-not (Test-Path -LiteralPath $cacheDir)) -or (Test-CEDataPathTrusted -Path $cacheDir))
-    if ($cacheTrusted -and (Test-Path -LiteralPath $cacheFile) -and (Test-CEDataPathTrusted -Path $cacheFile)) {
+    # A standard user can't read a data folder locked by the installer: Test-Path reports access denied, which stops
+    # the check when errors are terminating. Treat that as no cache, as the catalog can still answer.
+    $cacheTrusted = $rootTrusted -and ((-not (Test-Path -LiteralPath $cacheDir -ErrorAction SilentlyContinue)) -or (Test-CEDataPathTrusted -Path $cacheDir))
+    if ($cacheTrusted -and (Test-Path -LiteralPath $cacheFile -ErrorAction SilentlyContinue) -and (Test-CEDataPathTrusted -Path $cacheFile)) {
         try {
             $wrapper = Get-Content -LiteralPath $cacheFile -Raw | ConvertFrom-Json
             if (Test-CEFirmwareCatalogRecord $wrapper.record $key.Vendor $key.Id) {

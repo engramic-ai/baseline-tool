@@ -3701,6 +3701,22 @@ Describe 'Firmware catalog (SU-08 with the catalog service)' {
             }
         }
 
+        It 'still asks the catalog when a standard user cannot read the locked data folder' {
+            InModuleScope CEAudit -Parameters @{ Hw = $script:hw } {
+                param($Hw)
+                $body = New-TestCatalogRecord -Vendor 'dell' -Id '0CF1' -Releases @(New-TestRelease '1.17.0' 30 'Urgent') | ConvertTo-Json -Depth 5
+                Mock Invoke-CEHttpGet { [pscustomobject]@{ StatusCode = 200; Body = $body; ETag = '"abc"' } }
+                # Test-Path reports access denied on the locked folder, and the app runs with errors terminating.
+                Mock Test-Path {
+                    if ($LiteralPath -like '*cache*' -and -not $PesterBoundParameters.ContainsKey('ErrorAction')) { throw 'Access is denied' }
+                    $false
+                }
+                $r = Get-CEFirmwareCatalogRecord -Hardware $Hw
+                $r.Status | Should -Be 'Found'
+                $r.Record.releases[0].version | Should -Be '1.17.0'
+            }
+        }
+
         It 'revalidates an old cache with its ETag and falls back to it when the service is down' {
             InModuleScope CEAudit -Parameters @{ Hw = $script:hw } {
                 param($Hw)

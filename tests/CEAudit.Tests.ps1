@@ -9256,6 +9256,75 @@ Describe 'Password expiry with Windows LAPS and Intune (UA-05)' {
     }
 }
 
+Describe 'HTML report layout' {
+    BeforeAll {
+        Set-TestDevice -Kind Insecure
+        $script:layoutFindings = @(Invoke-CEAuditCore)
+        $r = Export-CEReport -Findings $script:layoutFindings -Context $global:CETestCtx -OutputPath (Join-Path $TestDrive 'layout')
+        $script:layout = Get-Content $r.Paths.Html -Raw
+        $script:layoutRows = @([regex]::Matches($script:layout, '<tr data-status="(\w+)"') | ForEach-Object { $_.Groups[1].Value })
+    }
+
+    It 'puts the status filters and findings before every other section' {
+        $table = $script:layout.IndexOf('<table id="findings">')
+        $table | Should -BeGreaterThan $script:layout.IndexOf('<div class="cards">')
+        foreach ($next in "id='frameworks'", 'id="ceplus"', "id='ai'", 'id="changeset"', 'id="manual"', 'id="hardware"') {
+            $script:layout.IndexOf($next) | Should -BeGreaterThan $table -Because "$next comes after the findings"
+        }
+    }
+
+    It 'lists every finding in the page, so a report read without script loses nothing' {
+        $script:layoutRows.Count | Should -Be $script:layoutFindings.Count
+        $script:layout | Should -Not -Match '<tr class="hide"'
+    }
+
+    It 'lists the worst first' {
+        $ranks = @{ Fail = 0; Error = 1; Warn = 2; Manual = 3; Info = 4; Skipped = 5; NotApplicable = 6; Pass = 7 }
+        $order = @($script:layoutRows | ForEach-Object { $ranks[$_] })
+        ($order -join ',') | Should -Be (@($order | Sort-Object) -join ',')
+        $script:layoutRows[0] | Should -Be 'Fail'
+    }
+
+    It 'orders failures by severity, with auto-fails first within a severity, keeping check order among equals' {
+        $f = @(
+            [pscustomobject]@{ Status = 'Fail'; Severity = 'High'; AutoFail = $false; Mark = 'high-1' }
+            [pscustomobject]@{ Status = 'Fail'; Severity = 'High'; AutoFail = $true; Mark = 'high-auto' }
+            [pscustomobject]@{ Status = 'Fail'; Severity = 'Critical'; AutoFail = $false; Mark = 'critical' }
+            [pscustomobject]@{ Status = 'Fail'; Severity = 'High'; AutoFail = $false; Mark = 'high-2' }
+            [pscustomobject]@{ Status = 'Pass'; Severity = 'Critical'; AutoFail = $false; Mark = 'pass' }
+        )
+        InModuleScope CEAudit -Parameters @{ F = $f } {
+            param($F)
+            @(Get-CEReportFindingOrder -Findings $F | ForEach-Object { $_.Mark }) -join ',' |
+                Should -Be 'critical,high-auto,high-1,high-2,pass'
+        }
+    }
+
+    It 'folds the long sections, and keeps the hardware and malware test headings' {
+        foreach ($fold in 'id="changeset"', 'id="manual"', 'id="hardware"') {
+            $script:layout | Should -Match ([regex]::Escape("<details class=`"section`" $fold><summary>"))
+        }
+        $script:layout | Should -Match '<summary><h2>Device hardware</h2></summary>'
+    }
+
+    It 'links to each section from the top of the report' {
+        foreach ($link in '#ceplus', '#ai', '#changeset', '#manual', '#hardware') {
+            $script:layout | Should -Match ([regex]::Escape("<a href='$link'>"))
+        }
+    }
+
+    It 'folds each finding''s expected value, reference, frameworks and evidence away from its result' {
+        $row = [regex]::Match($script:layout, '(?s)<tr data-status="Fail".*?</tr>').Value
+        $row | Should -Match "(?s)<details class='more'>.*Expected: .*class='fw'"
+        $row.IndexOf('Expected: ') | Should -BeGreaterThan $row.IndexOf("<details class='more'>")
+    }
+
+    It 'prints every finding and every section' {
+        $script:layout | Should -Match '@media print \{ tr\.hide \{ display:table-row; \}'
+        $script:layout | Should -Match "addEventListener\('beforeprint'"
+    }
+}
+
 Describe 'Settings set by Intune or Group Policy instead of locally (MP-06, SC-11, FW-04, SC-02, UA-09)' {
     BeforeAll {
         $script:csp = 'HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device'

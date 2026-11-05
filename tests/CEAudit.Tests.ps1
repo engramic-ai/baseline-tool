@@ -9325,6 +9325,90 @@ Describe 'HTML report layout' {
     }
 }
 
+Describe 'Stale local accounts (SC-03)' {
+    BeforeAll {
+        function global:Set-TestProfileTime {
+            # Records when the account's profile was last loaded, in ProfileList's two DWORDs.
+            param([string]$Sid, [datetime]$When, [string]$Kind = 'Load')
+            $key = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$Sid"
+            $time = $When.ToFileTime()
+            $global:CETestReg["$key|LocalProfile${Kind}TimeHigh"] = [int64]($time -shr 32)
+            $global:CETestReg["$key|LocalProfile${Kind}TimeLow"] = $time -band 0xFFFFFFFFL
+        }
+        function global:Set-TestLinkedAccountDevice {
+            # Set-TestDevice resets the users, so add the account after it. Linked to a Microsoft account, so
+            # Windows records no local last logon.
+            param([hashtable]$Context = @{})
+            Set-TestDevice -Kind Secure -ContextOverride $Context
+            $global:CETestUsers = @(
+                [pscustomobject]@{ Name = 'paul'; SID = 'S-1-5-21-1-2-3-1001'; Enabled = $true; PasswordRequired = $true; LastLogon = (Get-Date).AddDays(-1) }
+                [pscustomobject]@{ Name = 'linked'; SID = 'S-1-5-21-1-2-3-1009'; Enabled = $true; PasswordRequired = $true; LastLogon = $null }
+            )
+        }
+        $script:sid = 'S-1-5-21-1-2-3-1009'
+    }
+
+    BeforeEach {
+        Set-TestLinkedAccountDevice
+    }
+
+    It 'does not flag an account with no last logon whose profile was used recently' {
+        Set-TestProfileTime -Sid $script:sid -When (Get-Date).AddDays(-13)
+        $f = @(Invoke-CEAuditCore -Id 'SC-03')
+        $f.Count | Should -Be 1
+        $f[0].Status | Should -Be 'Pass'
+    }
+
+    It 'counts the profile being unloaded as use, not only loaded' {
+        Set-TestProfileTime -Sid $script:sid -When (Get-Date).AddDays(-400)
+        Set-TestProfileTime -Sid $script:sid -When (Get-Date).AddDays(-2) -Kind 'Unload'
+        @(Invoke-CEAuditCore -Id 'SC-03')[0].Status | Should -Be 'Pass'
+    }
+
+    It 'reads a profile time whose low DWORD comes back negative' {
+        $high = (Get-Date).AddDays(-1).ToFileTime() -shr 32
+        $key = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$script:sid"
+        $global:CETestReg["$key|LocalProfileLoadTimeHigh"] = [int]$high
+        $global:CETestReg["$key|LocalProfileLoadTimeLow"] = [int]-2147483648
+        @(Invoke-CEAuditCore -Id 'SC-03')[0].Status | Should -Be 'Pass'
+    }
+
+    It 'does not flag the account signed in now, whatever the records say' {
+        Set-TestLinkedAccountDevice -Context @{ ConsoleUser = 'testpc\LINKED' }
+        @(Invoke-CEAuditCore -Id 'SC-03')[0].Status | Should -Be 'Pass'
+    }
+
+    It 'still flags a local account of the same name when someone else signed in from a domain' {
+        Set-TestLinkedAccountDevice -Context @{ ConsoleUser = 'CORP\linked' }
+        $f = @(Invoke-CEAuditCore -Id 'SC-03')[0]
+        $f.Subject | Should -Be 'linked'
+        $f.Status | Should -Be 'Warn'
+    }
+
+    It 'flags an account last used before the cut-off, giving the date and both readings' {
+        $when = (Get-Date).AddDays(-200)
+        Set-TestProfileTime -Sid $script:sid -When $when
+        $f = @(Invoke-CEAuditCore -Id 'SC-03')[0]
+        $f.Status | Should -Be 'Warn'
+        $f.Actual | Should -BeLike "*last used: $($when.ToString('yyyy-MM-dd'))"
+        $f.Evidence | Should -Contain 'Last logon: not recorded'
+        $f.Evidence | Should -Contain "Profile last used: $($when.ToString('yyyy-MM-dd'))"
+    }
+
+    It 'flags an account with no logon and no profile, and offers to disable it' {
+        $f = @(Invoke-CEAuditCore -Id 'SC-03')[0]
+        $f.Status | Should -Be 'Warn'
+        $f.Actual | Should -BeLike '*no logon or use of its profile recorded'
+        $f.Remediation.Id | Should -Be 'LocalUser-DisableByName'
+    }
+
+    It 'uses the newer of the last logon and the profile' {
+        $global:CETestUsers[1].LastLogon = (Get-Date).AddDays(-3)
+        Set-TestProfileTime -Sid $script:sid -When (Get-Date).AddDays(-200)
+        @(Invoke-CEAuditCore -Id 'SC-03')[0].Status | Should -Be 'Pass'
+    }
+}
+
 Describe 'Settings set by Intune or Group Policy instead of locally (MP-06, SC-11, FW-04, SC-02, UA-09)' {
     BeforeAll {
         $script:csp = 'HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device'

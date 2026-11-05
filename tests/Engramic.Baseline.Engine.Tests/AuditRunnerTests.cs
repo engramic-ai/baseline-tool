@@ -418,6 +418,51 @@ public sealed class AuditRunnerTests
         _ = new AuditRunner(Samples.Catalog(), new AuditRunnerOptions { CheckTimeout = Timeout.InfiniteTimeSpan });
     }
 
+    [Fact]
+    public async Task Numbers_a_finding_whose_identifier_is_already_used_in_the_order_found()
+    {
+        // Two firewall rules with one display name, as the PowerShell tool's FW-03 can give them.
+        var check = FakeCheck.Returning(
+            Samples.Info("FW-03"),
+            new CheckResult(FindingStatus.Warn) { Subject = "Remote monitor" },
+            new CheckResult(FindingStatus.Warn) { Subject = "Remote monitor" },
+            new CheckResult(FindingStatus.Warn) { Subject = "Remote-monitor" });
+
+        var findings = await Run(Samples.Catalog(check));
+
+        Assert.Equal(["FW-03:Remote-monitor", "FW-03:Remote-monitor-2", "FW-03:Remote-monitor-3"], findings.Select(f => f.FindingId));
+        Assert.Equal(["Remote monitor", "Remote monitor", "Remote-monitor"], findings.Select(f => f.Subject));
+    }
+
+    [Fact]
+    public async Task Skips_a_number_a_subject_already_took_and_compares_ignoring_case()
+    {
+        var check = FakeCheck.Returning(
+            Samples.Info("FW-03"),
+            new CheckResult(FindingStatus.Warn) { Subject = "Rule" },
+            new CheckResult(FindingStatus.Warn) { Subject = "Rule 2" },
+            new CheckResult(FindingStatus.Warn) { Subject = "RULE" });
+
+        var findings = await Run(Samples.Catalog(check));
+
+        Assert.Equal(["FW-03:Rule", "FW-03:Rule-2", "FW-03:RULE-3"], findings.Select(f => f.FindingId));
+    }
+
+    [Fact]
+    public async Task Numbers_long_subjects_that_differ_only_after_the_slug_s_40_characters()
+    {
+        var stem = new string('a', FindingIds.MaxSlugLength);
+        var check = FakeCheck.Returning(
+            Samples.Info("SC-13"),
+            new CheckResult(FindingStatus.Warn) { Subject = stem + " one" },
+            new CheckResult(FindingStatus.Warn) { Subject = stem + " two" });
+
+        var findings = await Run(Samples.Catalog(check));
+
+        Assert.Equal(["SC-13:" + stem, "SC-13:" + stem + "-2"], findings.Select(f => f.FindingId));
+        Assert.Equal(stem + " two", findings[1].Subject);
+    }
+
     private static Task<IReadOnlyList<Finding>> Run(CheckCatalog catalog, DeviceContext? device = null)
     {
         return new AuditRunner(catalog).RunAsync(CheckSelection.All, Samples.Context(device), TestContext.Current.CancellationToken).WithTimeout();
